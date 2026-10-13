@@ -294,6 +294,7 @@ Read-only: it decodes a random sample straight from disk and prints the mean lum
 | `python facet.py --train-keeper --train-keeper-force` | Persist the keeper head even if its accuracy gate is not met (also honors `--ranker-category` and `--user`) |
 | `python facet.py --report-unreviewed-bursts` | Report how many burst groups remain unreviewed (read-only) |
 | `python facet.py --eval-iqa-srcc` | Report Spearman SRCC of each IQA/aesthetic metric vs your star ratings (read-only) |
+| `python facet.py --evaluate-models SLOT` | Rank candidate models for a slot (`aesthetic`, `quality`, `face-quality`, `end-to-end`) by how often they agree with your pairwise picks in the comparisons table; `--candidates a,b` (`stored:<column>` or a registered name) and `--eval-out PATH` (default `.facet_cache/eval/<slot>-<timestamp>.json`) refine it (read-only) |
 | `python facet.py --mine-insights` | Data-mining report: label inventory, metric-label correlations, category distribution, percentile drift, comparison health |
 | `python facet.py --mine-insights report.json` | Same, also writes the full report as JSON |
 | `python calibrate.py --db <path> --ava-annotations AVA.txt` | Calibrate per-category scoring weights against the [AVA dataset](https://github.com/imfing/ava_downloader) by maximising SRCC vs AVA mean opinion scores (read-only; prints proposed weights) |

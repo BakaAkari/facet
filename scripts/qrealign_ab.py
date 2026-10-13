@@ -55,13 +55,23 @@ import argparse
 import json
 import logging
 import os
-import random
-import sqlite3
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from optimization.eval_common import (  # noqa: E402
+    N_DECILES,
+    append_partial,
+    bound_to_inference_size,
+    done_keys,
+    ensure_fresh_partial_file,
+    filter_todo,
+    load_partial_records,
+    partial_path,
+    ro_connection,
+    stratified_sample_rows,
+)
 from optimization.iqa_eval import spearman_srcc  # noqa: E402
 from utils.image_loading import load_image_from_path  # noqa: E402
 
@@ -87,109 +97,14 @@ STORED_METRIC_COLUMNS = ["topiq_score", "liqe_score", "aesthetic"]
 # the AVA-MOS-style scale the qalign_score column is documented against.
 SCORE_TASK = "aesthetic"
 
-N_DECILES = 10
 SHIP_SRCC_TOLERANCE = 0.01
 
 
 # --------------------------------------------------------------------------
-# Pure functions: stratified sampling, resume bookkeeping, correlation/verdict.
-# No DB connection, no model load — these are what tests/test_qrealign_ab.py
-# exercises directly with synthetic data.
+# Pure functions: correlation/verdict (sampling and resume bookkeeping live in
+# optimization/eval_common). No DB connection, no model load — these are what
+# tests/test_qrealign_ab.py exercises directly with synthetic data.
 # --------------------------------------------------------------------------
-
-def stratified_sample_rows(rows, n, seed):
-    """Return up to ``n`` rows from ``rows`` spread evenly across aggregate deciles.
-
-    ``rows`` is a sequence of ``(path, aggregate)`` pairs. Rows are ranked by
-    aggregate and split into ``N_DECILES`` equal-population buckets, then a
-    seeded, roughly even number is drawn from each bucket so the sample covers
-    the full quality range rather than clustering near the mean. If a bucket
-    has fewer candidates than its share, it is simply under-filled (never
-    backfilled from another bucket) so deciles stay honestly representative.
-    """
-    rows = list(rows)
-    if not rows or n <= 0:
-        return []
-    if n >= len(rows):
-        # Taking the whole population — stratification is moot, and the
-        # per-bucket remainder math below can under-fill when population
-        # doesn't divide evenly across N_DECILES buckets.
-        rng = random.Random(seed)
-        sample = list(rows)
-        rng.shuffle(sample)
-        return sample
-
-    order = sorted(range(len(rows)), key=lambda i: rows[i][1])
-    n_rows = len(order)
-    buckets = [[] for _ in range(N_DECILES)]
-    for rank, i in enumerate(order):
-        bucket = min(N_DECILES - 1, rank * N_DECILES // n_rows)
-        buckets[bucket].append(rows[i])
-
-    rng = random.Random(seed)
-    target = min(n, n_rows)
-    per_bucket, remainder = divmod(target, N_DECILES)
-    sample = []
-    for b, bucket in enumerate(buckets):
-        take = per_bucket + (1 if b < remainder else 0)
-        take = min(take, len(bucket))
-        sample.extend(rng.sample(bucket, take))
-    rng.shuffle(sample)
-    return sample
-
-
-def partial_path(out_path):
-    return f"{out_path}.partial.jsonl"
-
-
-def ensure_fresh_partial_file(partial_file, resume):
-    """Remove a stale ``.partial.jsonl`` sidecar unless ``--resume`` was passed.
-
-    Without ``--resume``, ``score_model`` treats every sample photo as "to
-    do" (its ``done`` set is empty) and appends a fresh record for each one
-    regardless of what is already on disk. Leftover rows from a prior run —
-    possibly against a different ``--db``/``--sample``/``--seed`` that
-    happened to share ``--out`` — would then sit alongside the new run's
-    rows: ``analyze()`` folds both in (inflating ``n_scored`` and skewing
-    ``mean_latency_s``) and repeated non-resume reruns double-count skips.
-    Called once, before the model loop, so a non-resume run always starts
-    from an empty sidecar. Resuming leaves the file untouched.
-    """
-    if not resume and os.path.exists(partial_file):
-        os.remove(partial_file)
-
-
-def load_partial_records(partial_file):
-    """Parse the partial JSONL sidecar into a list of dicts, skipping bad lines."""
-    records = []
-    if not os.path.exists(partial_file):
-        return records
-    with open(partial_file) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return records
-
-
-def done_keys(records):
-    """{(model, path)} already recorded (scored or skipped) — resume skips these."""
-    return {(r.get("model"), r.get("path")) for r in records}
-
-
-def append_partial(partial_file, record):
-    with open(partial_file, "a") as f:
-        f.write(json.dumps(record) + "\n")
-
-
-def filter_todo(sample, model_id, done):
-    """Sample paths not yet recorded (scored or skipped) for ``model_id`` — the resume filter."""
-    return [path for path, _agg in sample if (model_id, path) not in done]
-
 
 def _correlate(xs, ys):
     """(SRCC, PLCC) between equal-length sequences, or (None, None) if undefined."""
@@ -297,12 +212,6 @@ def compute_verdict(per_model, models):
 # DB / IO
 # --------------------------------------------------------------------------
 
-def ro_connection(db_path):
-    conn = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def fetch_stratified_sample(conn, n, seed):
     rows = conn.execute(
         "SELECT path, aggregate FROM photos WHERE path IS NOT NULL AND aggregate IS NOT NULL"
@@ -326,33 +235,6 @@ def fetch_stored_metrics(conn, paths):
     return out
 
 
-def _bounded_size(w, h, max_side):
-    """Target (w, h) after the production long-edge bound; unchanged if within it."""
-    long_edge = max(w, h)
-    if long_edge <= max_side:
-        return w, h
-    scale = max_side / long_edge
-    return int(w * scale), int(h * scale)
-
-
-def _bound_to_inference_size(img):
-    """Mirror the production input contract before scoring.
-
-    PyIQAScorer bounds every image to _MAX_INFERENCE_SIZE on the long edge
-    before any pyiqa metric sees it (models/pyiqa_scorer.py). Feeding this
-    harness native-resolution originals instead measured qrealign encoding
-    24MP frames whole — 23s/img and ~13GB of activations for a 0.8B model —
-    a regime no shipped code path ever enters. Both arms get the same bound
-    so the latency half of the ship gate compares what production runs.
-    """
-    from models.pyiqa_scorer import PyIQAScorer
-    from PIL import Image
-    w, h = _bounded_size(*img.size, PyIQAScorer._MAX_INFERENCE_SIZE)
-    if (w, h) == img.size:
-        return img
-    return img.resize((w, h), Image.LANCZOS)
-
-
 def _load_pil_image(path, use_thumbnails, conn):
     if use_thumbnails:
         row = conn.execute("SELECT thumbnail FROM photos WHERE path = ?", (path,)).fetchone()
@@ -367,7 +249,7 @@ def _load_pil_image(path, use_thumbnails, conn):
     pil_img, _ = load_image_from_path(path)
     if pil_img is None:
         return None
-    return _bound_to_inference_size(pil_img)
+    return bound_to_inference_size(pil_img)
 
 
 def _ensure_pyiqa():

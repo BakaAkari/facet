@@ -293,6 +293,7 @@ Lecture seule : elle décode un échantillon aléatoire directement depuis le d
 | `python facet.py --train-keeper --train-keeper-force` | Persiste la tête de classement même si son seuil de précision n'est pas atteint (respecte aussi `--ranker-category` et `--user`) |
 | `python facet.py --report-unreviewed-bursts` | Indique combien de groupes de rafales restent non examinés (lecture seule) |
 | `python facet.py --eval-iqa-srcc` | Rapporte le SRCC de Spearman de chaque métrique IQA/esthétique vs vos notes en étoiles (lecture seule) |
+| `python facet.py --evaluate-models SLOT` | Classe les modèles candidats d'un slot (`aesthetic`, `quality`, `face-quality`, `end-to-end`) selon leur accord avec vos choix par paires de la table comparisons ; `--candidates a,b` (`stored:<colonne>` ou un nom enregistré) et `--eval-out CHEMIN` (par défaut `.facet_cache/eval/<slot>-<horodatage>.json`) l'affinent (lecture seule) |
 | `python facet.py --mine-insights` | Rapport d'exploration de données : inventaire des labels, corrélations métrique-label, distribution des catégories, dérive des percentiles, santé des comparaisons |
 | `python facet.py --mine-insights report.json` | Idem, écrit aussi le rapport complet en JSON |
 | `python calibrate.py --db <path> --ava-annotations AVA.txt` | Calibre les poids de notation par catégorie par rapport au [jeu de données AVA](https://github.com/imfing/ava_downloader) en maximisant le SRCC vs les scores moyens d'opinion AVA (lecture seule ; affiche les poids proposés) |

@@ -291,6 +291,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --train-keeper --train-keeper-force` | 即使未通过准确率门槛也保存保留照片排序头（同样支持 `--ranker-category` 和 `--user`） |
 | `python facet.py --report-unreviewed-bursts` | 报告还有多少个连拍分组尚未复核（只读） |
 | `python facet.py --eval-iqa-srcc` | 报告各 IQA／美学指标与你的星级评分之间的 Spearman SRCC（只读） |
+| `python facet.py --evaluate-models SLOT` | 按与你在 comparisons 表中的成对选择的一致程度，对某个槽位（`aesthetic`、`quality`、`face-quality`、`end-to-end`）的候选模型排序；可用 `--candidates a,b`（`stored:<列名>` 或已注册名称）和 `--eval-out 路径`（默认 `.facet_cache/eval/<slot>-<时间戳>.json`）进一步指定（只读） |
 | `python facet.py --mine-insights` | 数据挖掘报告：标注清单、指标与标注的相关性、类别分布、百分位漂移、比较数据健康度 |
 | `python facet.py --mine-insights report.json` | 同上，并把完整报告另存为 JSON |
 | `python calibrate.py --db <path> --ava-annotations AVA.txt` | 以最大化与 AVA 平均主观评分的 SRCC 为目标，针对 [AVA 数据集](https://github.com/imfing/ava_downloader) 校准各类别的评分权重（只读；打印建议的权重） |

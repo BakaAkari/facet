@@ -310,6 +310,17 @@ Configuration:
                         help='Report how many burst groups remain unreviewed (read-only)')
     weight_group.add_argument('--eval-iqa-srcc', action='store_true',
                         help='Report Spearman SRCC of each IQA/aesthetic metric vs star ratings (read-only)')
+    weight_group.add_argument('--evaluate-models', type=str, default=None, metavar='SLOT',
+                        choices=['aesthetic', 'quality', 'faces-detect', 'faces-recognize',
+                                 'face-quality', 'end-to-end'],
+                        help='Rank candidate models for a slot by agreement with your pairwise '
+                             'picks in the comparisons table (read-only)')
+    weight_group.add_argument('--candidates', type=str, default=None, metavar='A,B,...',
+                        help='Comma-separated candidates for --evaluate-models '
+                             '(stored:<column> or a registered name; default: all registered)')
+    weight_group.add_argument('--eval-out', type=str, default=None, metavar='PATH',
+                        help='JSON report path for --evaluate-models '
+                             '(default: .facet_cache/eval/<slot>-<timestamp>.json)')
 
     # Model information
     model_group = parser.add_argument_group('Model information')

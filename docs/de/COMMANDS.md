@@ -294,6 +294,7 @@ Nur lesend: Es dekodiert eine Zufallsstichprobe direkt von der Festplatte und gi
 | `python facet.py --train-keeper --train-keeper-force` | Den Keeper-Ranking-Head persistieren, auch wenn seine Genauigkeitsschwelle nicht erreicht wird (berücksichtigt auch `--ranker-category` und `--user`) |
 | `python facet.py --report-unreviewed-bursts` | Berichten, wie viele Serienbild-Gruppen ungeprüft bleiben (nur lesend) |
 | `python facet.py --eval-iqa-srcc` | Spearman-SRCC jeder IQA-/Ästhetik-Metrik gegenüber Ihren Sternebewertungen berichten (nur lesend) |
+| `python facet.py --evaluate-models SLOT` | Kandidatenmodelle für einen Slot (`aesthetic`, `quality`, `face-quality`, `end-to-end`) danach einordnen, wie oft sie mit Ihren paarweisen Entscheidungen in der Tabelle comparisons übereinstimmen; `--candidates a,b` (`stored:<Spalte>` oder ein registrierter Name) und `--eval-out PFAD` (Standard `.facet_cache/eval/<slot>-<Zeitstempel>.json`) präzisieren dies (nur lesend) |
 | `python facet.py --mine-insights` | Data-Mining-Bericht: Label-Inventar, Metrik-Label-Korrelationen, Kategorienverteilung, Perzentil-Drift, Vergleichsgesundheit |
 | `python facet.py --mine-insights report.json` | Dasselbe, schreibt zusätzlich den vollständigen Bericht als JSON |
 | `python calibrate.py --db <path> --ava-annotations AVA.txt` | Bewertungsgewichtungen pro Kategorie gegen den [AVA-Datensatz](https://github.com/imfing/ava_downloader) kalibrieren, indem die SRCC gegenüber den AVA-Mean-Opinion-Scores maximiert wird (nur lesend; gibt vorgeschlagene Gewichtungen aus) |

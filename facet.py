@@ -2317,6 +2317,14 @@ def main():
         print_iqa_srcc_report(args.db or DEFAULT_DB_PATH)
         exit()
 
+    # Evaluate candidate models against pairwise picks (read-only)
+    if args.evaluate_models:
+        from optimization.model_eval import evaluate
+        candidates = [c.strip() for c in args.candidates.split(',') if c.strip()] if args.candidates else None
+        evaluate(args.db or DEFAULT_DB_PATH, args.evaluate_models, candidates=candidates,
+                 out=args.eval_out, config_path=args.config)
+        exit()
+
     # Report unreviewed burst groups (read-only, no GPU)
     if args.report_unreviewed_bursts:
         import sqlite3 as _sqlite3
