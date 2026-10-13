@@ -229,3 +229,7 @@ Prima volta? Segui il percorso **[Per iniziare](docs/it/GETTING_STARTED.md)**: s
 ## Licenza
 
 [MIT](LICENSE)
+
+### Licenze
+
+Il codice di Facet è con licenza MIT. Alcuni dei modelli predefiniti **non** sono licenziati per l'uso commerciale: pyiqa (TOPIQ, LIQE e altri) e i pesi di InsightFace sono non commerciali. L'impostazione `licensing.mode: commercial` (in arrivo in questa versione) limita Facet ai modelli con licenza permissiva. Vedere [Modelli di terze parti e licenze](docs/it/THIRD_PARTY_MODELS.md).

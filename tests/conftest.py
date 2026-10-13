@@ -52,6 +52,20 @@ from db.schema import init_database  # noqa: E402
 init_database(_TEST_DB_FILE.name)
 
 
+@pytest.fixture(autouse=True)
+def _reset_licensing_policy():
+    """Licensing policy is process-global state: never let one test's mode leak.
+
+    Pinned to default rather than reset, so a test never lazily resolves the
+    operator's own repo-root scoring_config.json. A test of lazy resolution
+    calls ``licensing.reset_policy()`` itself.
+    """
+    import licensing
+    licensing.set_policy(licensing.MODE_DEFAULT)
+    yield
+    licensing.reset_policy()
+
+
 # ---------------------------------------------------------------------------
 # Minimal config constants — enough to satisfy most API code paths.
 # ---------------------------------------------------------------------------

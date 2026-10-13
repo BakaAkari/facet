@@ -3,6 +3,7 @@
 import importlib.metadata
 import logging
 import os
+import pathlib
 import platform
 import shutil
 import sqlite3
@@ -75,6 +76,106 @@ def _report_cuda_arch_mismatch(status):
     _log_pytorch_reinstall_hint("  Bare metal — reinstall PyTorch from the matching CUDA index:")
 
 
+def _registry_id(name):
+    """Registry id for a config model name ('clip-mlp', 'qwen3.5-2b', 'topiq_iaa'...)."""
+    import licensing
+    aliases = {'clip-mlp': 'clip_mlp_head', 'samp-net': 'samp_net'}
+    for candidate in (aliases.get(name), name, name.replace('.', '_').replace('-', '_')):
+        if candidate in licensing.COMPONENTS:
+            return candidate
+    return None
+
+
+def _components_in_use(cfg, profile_name):
+    """Registry ids the active profile would load, in a stable order."""
+    profile_name = profile_name or 'legacy'
+    models = cfg.get('models', {})
+    profile = models.get('profiles', {}).get(profile_name, {})
+    ids = []
+
+    def add(component_id):
+        if component_id and component_id not in ids:
+            ids.append(component_id)
+
+    add(_registry_id(profile.get('aesthetic_model', 'clip-mlp')))
+    add('siglip2' if profile.get('clip_config') == 'clip' else 'clip')
+    tagging = profile.get('tagging_model', 'clip')
+    if tagging != 'clip':
+        add(_registry_id(tagging))
+    for name in profile.get('supplementary_pyiqa', []):
+        add(_registry_id(name))
+    composition = profile.get('composition_model', 'rule-based')
+    if composition != 'rule-based':
+        add(_registry_id(composition))
+        if composition == 'samp-net':
+            add('u2netp')
+    if profile.get('saliency_enabled', True):
+        add('birefnet')
+    add('insightface')
+    if cfg.get('face_detection', {}).get('blendshapes', {}).get('enabled', True):
+        add('mediapipe_face_landmarker')
+    extended = cfg.get('iqa_extended', {})
+    qrealign = extended.get('qrealign', 'auto')
+    if qrealign is True or (qrealign == 'auto' and profile_name != 'legacy'):
+        add('qrealign')
+    for name in ('aesthetic_v25', 'deqa'):
+        if extended.get(name):
+            add(name)
+    return ids
+
+
+def _report_model_licences(config_path, db_path, profile_name):
+    """Licensing mode, the commercial status of each component in use, and face-model drift."""
+    import licensing
+    try:
+        from config_resolve import load_resolved
+        cfg = load_resolved(config_path)
+        pol = licensing.resolve_policy(cfg)
+    except Exception as e:
+        _warn("Licensing", f"could not resolve the configuration: {e}")
+        return
+    mode = pol.mode + (" (allow_unclear)" if pol.allow_unclear else "")
+    _ok("Licensing mode", mode)
+    if profile_name is None:
+        _info("Profile", "unknown — showing the legacy profile's components")
+    for component_id in _components_in_use(cfg, profile_name):
+        comp = licensing.COMPONENTS[component_id]
+        label = f"{comp.name} ({component_id})"
+        if not licensing.allowed(component_id, pol):
+            hint = f" — use {comp.replacement}" if comp.replacement else ""
+            _warn(label, f"not permitted in commercial mode (commercial use: {comp.commercial}){hint}")
+        elif comp.commercial == 'yes':
+            _ok(label, "commercial use: yes")
+        elif comp.commercial == 'unclear':
+            _info(label, f"commercial use: unclear ({comp.weights_licence})")
+        else:
+            _info(label, f"commercial use: no ({comp.weights_licence})")
+    _warn_face_model_mismatch(db_path)
+
+
+def _warn_face_model_mismatch(db_path):
+    """Warn when stored face embeddings come from a model other than the active one."""
+    if not os.path.exists(db_path):
+        return
+    from faces.clusterer import ACTIVE_EMBEDDING_MODEL
+    try:
+        uri = pathlib.Path(db_path).resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT embedding_model, COUNT(*) FROM faces "
+                "WHERE embedding_model IS NOT NULL AND embedding_model != ? "
+                "GROUP BY embedding_model", (ACTIVE_EMBEDDING_MODEL,)).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return  # no faces table / unreadable DB: reported by the database section
+    for model, count in rows:
+        _warn("Face embedding model",
+              f"{count:,} stored faces use '{model}' but the active model is "
+              f"'{ACTIVE_EMBEDDING_MODEL}' — re-extract faces or cluster per model")
+
+
 def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=None):
     """Run full diagnostic report.
 
@@ -92,6 +193,7 @@ def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=
     selected_device = None
     has_mps = False
     arch_mismatch = None
+    resolved_profile = None
 
     if simulating:
         vram_str = f", {simulate_vram:.0f}GB VRAM" if simulate_vram else ""
@@ -255,6 +357,7 @@ def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=
         config = ScoringConfig(config_path, validate=False)
         current = config.get_model_config().get('vram_profile', 'legacy')
         _ok("Configured", current)
+        resolved_profile = suggested if current == 'auto' else current
         if current == 'auto':
             _info("Note", "auto mode will select the recommended profile at runtime")
         elif current != suggested:
@@ -311,6 +414,10 @@ def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=
                 _ok("darktable-cli", dt_path)
         else:
             _warn("darktable-cli", f"not found ({dt_exec}) — RAW downloads will fail")
+
+    # --- Model licences ---
+    _section("Model licences")
+    _report_model_licences(config_path, db_path, resolved_profile)
 
     # --- Config & Database ---
     _section("Config / Database")

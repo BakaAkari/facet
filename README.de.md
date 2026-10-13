@@ -230,3 +230,7 @@ Zum ersten Mal hier? Folgen Sie der Anleitung **[Erste Schritte](docs/de/GETTING
 ## Lizenz
 
 [MIT](LICENSE)
+
+### Lizenzen
+
+Der Code von Facet steht unter der MIT-Lizenz. Einige Standardmodelle sind **nicht** für die kommerzielle Nutzung lizenziert: pyiqa (TOPIQ, LIQE usw.) und die InsightFace-Gewichte sind nichtkommerziell. Die Einstellung `licensing.mode: commercial` (in diesem Release geplant) beschränkt Facet auf freizügig lizenzierte Modelle. Siehe [Modelle von Drittanbietern und Lizenzen](docs/de/THIRD_PARTY_MODELS.md).
