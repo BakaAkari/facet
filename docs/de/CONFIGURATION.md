@@ -631,6 +631,8 @@ Wenn `vram_profile` auf `"auto"` (Standard) gesetzt ist, erkennt das System beim
 | ≥ 6GB | `8gb` |
 | Keine GPU | `legacy` (verwendet System-RAM) |
 
+**Karten mit 10-14 GB können sich für den vollen Funktionsumfang entscheiden.** Die automatische Erkennung bleibt unverändert: Unterhalb von 14 GB wählt sie weiterhin `8gb`. Eine Karte mit 10-14 GB kann stattdessen das Profil `16gb` ausführen (SigLIP-2-Embeddings, TOPIQ, Tagging mit Qwen3.5-2B, Q-ReAlign, Salienz), indem Sie `"vram_profile": "16gb"` oder `FACET_VRAM_PROFILE=16gb` setzen. Der Durchlauf-Planer teilt die Modelle dann in drei passende Durchläufe auf (siehe [Dynamische Durchlauf-Gruppierung](#dynamische-durchlauf-gruppierung)), die Salienz, die hier früher nicht genug Speicher hatte, bemisst ihre Batchgröße nun nach dem freien VRAM, und ein Foto, das sie dennoch nicht bewerten kann, speichert NULL und protokolliert einen ERROR statt eines neutralen Werts. **Der Wechsel einer bestehenden `8gb`-Bibliothek zu `16gb` ändert das Embedding-Modell** (CLIP ViT-L-14 mit 768 Dimensionen → SigLIP 2 mit 1152 Dimensionen), sodass die Bibliothek zwei Embedding-Dimensionen mischen würde: Scannen Sie sie erneut oder führen Sie `--recompute-embeddings` aus, um sie neu einzubetten. Wie sich die Suche bis dahin verhält, steht unter *Semantische Suche und eine unter einem anderen Profil eingebettete Bibliothek* im Abschnitt [Models](#models).
+
 ---
 
 ### Override über die Umgebungsvariable `FACET_VRAM_PROFILE`
@@ -799,12 +801,16 @@ Das System überwacht die Ressourcennutzung und passt an:
 
 Wenn der VRAM es zulässt, laufen mehrere kleine Modelle zusammen:
 
-| VRAM | Durchlauf 1 | Durchlauf 2 |
-|------|--------|--------|
-| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ |
-| 12GB | CLIP + SAMP-Net + InsightFace + TOPIQ | - |
-| 16GB | CLIP + SAMP-Net + InsightFace + TOPIQ | Tagger-VLM |
-| 24GB+ | Alle Modelle zusammen (Single-Pass) | - |
+| VRAM | Durchlauf 1 | Durchlauf 2 | Durchlauf 3 |
+|------|--------|--------|--------|
+| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ | - |
+| 12GB (Profil `16gb`, Opt-in) | Qwen3.5-Tagger + Q-ReAlign | SigLIP + Salienz + TOPIQ | TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace |
+| 16GB | Qwen3.5-Tagger + SigLIP + TOPIQ | Q-ReAlign + Salienz + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
+| 24GB+ | Alle Modelle zusammen (Single-Pass) | - | - |
+
+Die Zeilen 12GB und 16GB sind die Ausgabe des Planers für das Profil `16gb`. Eine 12-GB-Karte wird nicht automatisch ausgewählt (siehe [Automatische VRAM-Erkennung](#automatische-vram-erkennung)): Sie benötigt `"vram_profile": "16gb"` oder `FACET_VRAM_PROFILE=16gb`.
+
+Gemessen in einem Lauf mit 49 Fotos und einer harten Obergrenze von 11,7 GiB für PyTorch, ONNX Runtime und die Anzeige des freien VRAM (RTX 4070 Ti SUPER): VRAM-Spitze 9,06 GiB für die gesamte Karte einschließlich Desktop (Spitzen je Durchlauf ca. 8,5, ca. 9,1 und ca. 3,9 GiB), Salienz-Batchgröße 2 und Ergebnisse identisch mit einem Lauf ohne Obergrenze auf 16 GiB (Tags 49/49, Salienz-Motivrahmen 44 gegenüber 44, Gesichter gleich). Die Laufzeit betrug 226 s gegenüber ca. 240 s ohne Obergrenze. Auf der 16-GiB-Karte ohne Obergrenze beträgt die Salienz-Batchgröße 3.
 
 ### CLI-Optionen
 

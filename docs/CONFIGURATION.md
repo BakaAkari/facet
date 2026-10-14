@@ -617,6 +617,8 @@ When `vram_profile` is `"auto"` (default), the system detects available GPU VRAM
 | ≥ 6GB | `8gb` |
 | No GPU | `legacy` (uses system RAM) |
 
+**Cards with 10-14GB can opt in to the full feature set.** Auto-detect is unchanged: below 14GB it still selects `8gb`. A 10-14GB card can instead run the `16gb` profile (SigLIP 2 embeddings, TOPIQ, Qwen3.5-2B tagging, Q-ReAlign, saliency) by setting `"vram_profile": "16gb"` or `FACET_VRAM_PROFILE=16gb`. The pass planner then splits the models into three passes that fit (see [Dynamic Pass Grouping](#dynamic-pass-grouping)), saliency, which used to run out of memory here, now sizes its batch from the free VRAM, and a photo it still cannot score stores NULL and logs an ERROR instead of a neutral score. **Switching an existing `8gb` library to `16gb` changes the embedding model** (CLIP ViT-L-14 768-dim → SigLIP 2 1152-dim), so the library would mix two embedding dimensions: rescan it or run `--recompute-embeddings` to re-embed it. See *Semantic search and a library embedded under a different profile* under [Models](#models) for how search behaves until you do.
+
 ### `FACET_VRAM_PROFILE` environment override
 
 The `FACET_VRAM_PROFILE` environment variable overrides `models.vram_profile` at load time (honored by `config/scoring_config.py`), so a single mounted config can serve every Docker profile without editing the JSON. Accepted values are `auto`, `legacy`, `8gb`, `16gb`, and `24gb`; any other value is ignored with a warning (so a typo can't silently mis-scan). The per-profile Docker Compose overlays (`docker-compose.{legacy,8gb,16gb,24gb}.yml`) set this variable for you.
@@ -783,12 +785,16 @@ The system monitors resource usage and adjusts:
 
 When VRAM allows, multiple small models run together:
 
-| VRAM | Pass 1 | Pass 2 |
-|------|--------|--------|
-| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ |
-| 12GB | CLIP + SAMP-Net + InsightFace + TOPIQ | - |
-| 16GB | CLIP + SAMP-Net + InsightFace + TOPIQ | tagger VLM |
-| 24GB+ | All models together (single-pass) | - |
+| VRAM | Pass 1 | Pass 2 | Pass 3 |
+|------|--------|--------|--------|
+| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ | - |
+| 12GB (`16gb` profile, opt-in) | Qwen3.5 tagger + Q-ReAlign | SigLIP + saliency + TOPIQ | TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace |
+| 16GB | Qwen3.5 tagger + SigLIP + TOPIQ | Q-ReAlign + saliency + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
+| 24GB+ | All models together (single-pass) | - | - |
+
+The 12GB and 16GB rows are the planner's output for the `16gb` profile. A 12GB card is not selected automatically (see [VRAM Auto-Detection](#vram-auto-detection)): it needs `"vram_profile": "16gb"` or `FACET_VRAM_PROFILE=16gb`.
+
+Measured on a 49-photo run with a hard 11.7 GiB cap on PyTorch, ONNX Runtime and the free-VRAM reading (RTX 4070 Ti SUPER): peak VRAM 9.06 GiB for the whole card, desktop included (per-pass peaks ~8.5, ~9.1 and ~3.9 GiB), saliency batch size 2, and results identical to an uncapped 16 GiB run (tags 49/49, saliency subject boxes 44 vs 44, faces equal). Wall time was 226 s versus ~240 s uncapped. On the uncapped 16 GiB card the saliency batch size is 3.
 
 ### CLI Options
 

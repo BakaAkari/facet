@@ -30,6 +30,8 @@ All notable changes to Facet are documented in this file.
 
 - **Packaging extras.** `faces-insightface` (insightface, onnxruntime), `iqa` (pyiqa, setuptools<81), `commercial` (mediapipe's runtime dependencies; install `mediapipe==0.10.35` with `--no-deps`) and `all`. `bash install.sh --commercial` performs a commercial-safe install; `python-ofiq` is installed by hand where a wheel exists (Linux x86-64, macOS arm64).
 
+- **The full `16gb` feature set on a 12 GB card, by opt-in (#184).** Auto-detect is unchanged and still picks `8gb` below 14 GB, but a 10-14 GB card can set `"vram_profile": "16gb"` (or `FACET_VRAM_PROFILE=16gb`) and run SigLIP 2, TOPIQ, Qwen3.5-2B tagging, Q-ReAlign and saliency. The pass planner splits them into three passes (Qwen3.5 tagger + Q-ReAlign; SigLIP + saliency + TOPIQ; TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace). Measured on 49 photos under a hard 11.7 GiB cap on PyTorch, ONNX Runtime and the free-VRAM reading (RTX 4070 Ti SUPER): peak VRAM 9.06 GiB for the whole card, desktop included, results identical to an uncapped 16 GiB run (tags 49/49, saliency subject boxes 44 vs 44, faces equal), 226 s against ~240 s. Switching an existing `8gb` library changes the embedding model (CLIP 768-dim to SigLIP 1152-dim), so rescan or run `--recompute-embeddings` afterwards. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#vram-auto-detection).
+
 ### Changed
 
 - **BREAKING: the base install no longer includes `insightface` or `pyiqa`.** `pip install -e .` and `pip install -r requirements.txt` on their own no longer provide the default face and TOPIQ models. To keep the previous behaviour, install `pip install -e .[all]` (or the `faces-insightface` and `iqa` extras, or `pip install -r requirements.txt -r requirements.restricted.txt`). `install.sh` and the default Docker image install both, so they behave as before. Docker gains `ARG FACET_LICENSING` (`default` or `commercial`): `docker build --build-arg FACET_LICENSING=commercial .` skips the restricted lock and bakes `FACET_LICENSING_MODE=commercial` into the image. See [docs/INSTALLATION.md](docs/INSTALLATION.md#commercial-install-and-the-restricted-packages).
@@ -49,6 +51,14 @@ All notable changes to Facet are documented in this file.
 - **Viewer.** The merge-suggestions threshold slider shows immediately, seeded from the new `/api/config` field `face_merge_threshold`, and face markers use the stored `eyes_open_score` (fixes SFace faces that have no 106-point landmarks).
 
 - **`npm run gen:api` works on Windows.** The generator and `npx` now run through node.
+
+- **SigLIP loads straight into fp16 on CUDA (#184).** One shared loader (`utils/siglip.py`) serves the model manager, the single-pass scorer and `scripts/compute_aesthetic_clip.py`, and asks `from_pretrained` for fp16 instead of loading fp32 and halving, which cuts the load transient from 4.78 to 2.14 GiB. Embeddings are unchanged (cosine >= 0.9999999 on 49 photos), so nothing needs re-embedding. The planner's VRAM estimates for saliency (2 to 3 GB) and TOPIQ (2 to 2.5 GB) were raised to the measured figures.
+
+### Fixed
+
+- **A saliency out-of-memory no longer stores fake neutral scores (#184).** BiRefNet ran batches of 8 (about 19.6 GiB reserved) whatever the VRAM, so on a small card every photo was stored with neutral saliency values that looked like a result. On CUDA the batch size is now derived from the free VRAM (about 2.4 GiB per image at 1024 px, 1 to 8) and halved after an out-of-memory error down to one image. A photo whose saliency still fails logs an ERROR and stores nothing: a never-scored photo stays NULL (it scores neutral in the aggregate, like photos scanned before saliency existed, and `--recompute-saliency` selects it again) and an already-scored photo keeps its stored values. See [docs/SCORING.md](docs/SCORING.md#subject-saliency-dimensions).
+
+- **`topiq_nr_face` no longer leaves about 0.2 GiB on the GPU after every unload (#184).** The RAM-cache path moved only `model.model`, so the face-restoration helper modules the wrapper holds stayed on the device; they now move with it, and the residue is 0.008 GiB.
 
 ## [1.19.0] "Chambre noire" — 2026-10-05
 

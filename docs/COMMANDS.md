@@ -58,7 +58,7 @@ lines (phase, current/total, ETA) which the viewer's scan API surfaces in the
 | `composition` | SAMP-Net | `composition_pattern` (8 patterns) + `comp_score` | ~2 GB |
 | `faces` | InsightFace buffalo_l | Face detection, landmarks, blink detection, recognition embeddings | ~2 GB |
 | `embeddings` | CLIP ViT-L-14 or SigLIP 2 NaFlex | `clip_embedding` BLOB for similarity/tagging | 4-5 GB |
-| `saliency` | BiRefNet_dynamic | `subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation` | ~2 GB |
+| `saliency` | BiRefNet_dynamic | `subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation` | ~3 GB |
 
 ## Preview & Export
 
@@ -121,7 +121,7 @@ These commands update specific metrics, derive new data (AI captions, GPS, embed
 | `python facet.py --discover-moments` | Propose a library-specific moment vocabulary by clustering the stored caption embeddings (HDBSCAN) and naming each cluster from its captions. Writes `scoring_config.discovered.json` for review — never rewrites the active config. Run `--detect-moments` first to populate `caption_embedding`; tune granularity with `--discover-min-cluster-size N` |
 | `python facet.py --detect-junk` | Flag non-photo junk (screenshots, documents, receipts, memes, slides) in new/unevaluated photos via zero-shot CLIP over stored embeddings; auto-runs at the end of every scan. Clean photos are marked `not_junk` so re-runs never re-scan them; add `--dry-run --verbose` to preview per-photo scores without writing |
 | `python facet.py --recompute-junk` | Re-evaluate `junk_kind` for the whole library (all photos with a stored embedding) |
-| `python facet.py --recompute-saliency` | `[GPU]` Recompute subject saliency metrics (BiRefNet_dynamic) from stored thumbnails — works with the library volume offline. Skips photos that already have `subject_bbox` (resumable); `--force` redoes all. Saliency is enabled on all profiles (legacy runs it on CPU, slower); GPU strongly recommended |
+| `python facet.py --recompute-saliency` | `[GPU]` Recompute subject saliency metrics (BiRefNet_dynamic) from stored thumbnails — works with the library volume offline. Skips photos that already have `subject_bbox` (resumable); `--force` redoes all. Saliency is enabled on all profiles (legacy runs it on CPU, slower); GPU strongly recommended. A photo whose saliency fails (for example out of memory) is logged as an ERROR and not written: a never-scored row stays NULL and is selected again by the next run, and under `--force` a row that already has saliency keeps its stored values. The batch size is derived from the free VRAM on CUDA. |
 | `python facet.py --recompute-composition-cpu` | Recompute composition, rule-based (CPU, any profile) |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` Recompute composition with SAMP-Net |
 | `python facet.py --recompute-iqa` | `[GPU]` Recompute supplementary IQA metrics (TOPIQ IAA, NR-Face, LIQE) from stored thumbnails. Enabled on all profiles (legacy runs on CPU, slower); GPU strongly recommended |
@@ -178,7 +178,7 @@ Three additional PyIQA models score beyond the primary TOPIQ aesthetic score. Th
 - **Subject Placement**: rule-of-thirds score for the subject centroid.
 - **Background Separation**: edge-gradient difference between subject boundary and background — bokeh quality.
 
-Requires `transformers` (~2 GB VRAM).
+Requires `transformers` (~3 GB VRAM). On CUDA the batch size is derived from the free VRAM (about 2.4 GiB per image at 1024 px, between 1 and 8 images) and is halved after an out-of-memory error, down to one image. A photo whose saliency still fails is logged as an ERROR and stores no values: it stays NULL if it was never scored (and scores neutral in the aggregate, like photos scanned before saliency existed), it keeps its stored values if it already had saliency, and `--recompute-saliency` selects it again. See [Subject Saliency Dimensions](SCORING.md#subject-saliency-dimensions).
 
 ### Tagging Models
 

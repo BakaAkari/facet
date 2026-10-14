@@ -58,7 +58,7 @@ Viewers im `progress`-Feld von `/api/scan/status` und im SSE-Stream bereitstellt
 | `composition` | SAMP-Net | `composition_pattern` (8 Muster) + `comp_score` | ~2 GB |
 | `faces` | InsightFace buffalo_l | Gesichtserkennung, Landmarken, Blinzelerkennung, Erkennungs-Embeddings | ~2 GB |
 | `embeddings` | CLIP ViT-L-14 oder SigLIP 2 NaFlex | `clip_embedding`-BLOB für Ähnlichkeit/Verschlagwortung | 4-5 GB |
-| `saliency` | BiRefNet_dynamic | `subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation` | ~2 GB |
+| `saliency` | BiRefNet_dynamic | `subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation` | ~3 GB |
 
 ## Vorschau & Export
 
@@ -121,7 +121,7 @@ Diese Befehle aktualisieren bestimmte Metriken, leiten neue Daten ab (KI-Bildunt
 | `python facet.py --discover-moments` | Ein bibliotheksspezifisches Moment-Vokabular vorschlagen, indem die gespeicherten Bildunterschrift-Embeddings geclustert (HDBSCAN) und jedes Cluster anhand seiner Bildunterschriften benannt werden. Schreibt `scoring_config.discovered.json` zur Überprüfung — überschreibt niemals die aktive Konfiguration. Führen Sie zuerst `--detect-moments` aus, um `caption_embedding` zu befüllen; passen Sie die Granularität mit `--discover-min-cluster-size N` an |
 | `python facet.py --detect-junk` | Nicht-fotografischen Müll (Screenshots, Dokumente, Belege, Memes, Folien) in neuen/unbewerteten Fotos per Zero-Shot-CLIP über gespeicherte Embeddings kennzeichnen; läuft am Ende jedes Scans automatisch. Saubere Fotos werden als `not_junk` markiert, sodass erneute Läufe sie nie wieder scannen; fügen Sie `--dry-run --verbose` hinzu, um Scores pro Foto ohne Schreiben vorab anzuzeigen |
 | `python facet.py --recompute-junk` | `junk_kind` für die gesamte Bibliothek neu bewerten (alle Fotos mit gespeichertem Embedding) |
-| `python facet.py --recompute-saliency` | `[GPU]` `[16gb/24gb]` Metriken der Motiv-Salienz neu berechnen (BiRefNet_dynamic) |
+| `python facet.py --recompute-saliency` | `[GPU]` `[16gb/24gb]` Metriken der Motiv-Salienz neu berechnen (BiRefNet_dynamic). Ein Foto, dessen Salienz fehlschlägt (z. B. wegen Speichermangels), wird als ERROR protokolliert und nicht geschrieben: Eine nie bewertete Zeile bleibt NULL und wird vom nächsten Lauf erneut ausgewählt, und mit `--force` behält eine Zeile, die bereits Salienzwerte hat, ihre gespeicherten Werte. Auf CUDA wird die Batchgröße aus dem freien VRAM abgeleitet. |
 | `python facet.py --recompute-composition-cpu` | Komposition neu berechnen, regelbasiert (CPU, beliebiges Profil) |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` Komposition mit SAMP-Net neu berechnen |
 | `python facet.py --recompute-iqa` | `[GPU]` `[8gb/16gb/24gb]` Ergänzende IQA-Metriken (TOPIQ IAA, NR-Face, LIQE) aus gespeicherten Thumbnails neu berechnen |
@@ -178,7 +178,7 @@ Drei zusätzliche PyIQA-Modelle bewerten über den primären TOPIQ-Ästhetik-Sco
 - **Motivplatzierung**: Drittelregel-Score für den Schwerpunkt des Motivs.
 - **Hintergrundtrennung**: Kantengradient-Differenz zwischen Motivgrenze und Hintergrund — Bokeh-Qualität.
 
-Erfordert `transformers` (~2 GB VRAM).
+Erfordert `transformers` (~3 GB VRAM). Auf CUDA wird die Batchgröße aus dem freien VRAM abgeleitet (etwa 2,4 GiB pro Bild bei 1024 px, zwischen 1 und 8 Bildern) und nach einem Out-of-Memory-Fehler halbiert, bis hinunter zu einem Bild. Schlägt die Salienz für ein Foto trotzdem fehl, wird ein ERROR protokolliert und es werden keine Werte gespeichert: Das Foto bleibt NULL, wenn es nie bewertet wurde (und zählt im Gesamtwert als neutral, wie Fotos, die vor der Salienz gescannt wurden), behält seine gespeicherten Werte, wenn es bereits Salienzwerte hatte, und `--recompute-saliency` wählt es erneut aus. Siehe [Dimensionen der Motiverkennung](SCORING.md#dimensionen-der-motiverkennung).
 
 ### Verschlagwortungsmodelle
 

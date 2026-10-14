@@ -58,7 +58,7 @@ visor expone en el campo `progress` de `/api/scan/status` y del flujo SSE.
 | `composition` | SAMP-Net | `composition_pattern` (8 patrones) + `comp_score` | ~2 GB |
 | `faces` | InsightFace buffalo_l | Detección facial, puntos de referencia, detección de parpadeo, embeddings de reconocimiento | ~2 GB |
 | `embeddings` | CLIP ViT-L-14 o SigLIP 2 NaFlex | BLOB `clip_embedding` para similitud/etiquetado | 4-5 GB |
-| `saliency` | BiRefNet_dynamic | `subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation` | ~2 GB |
+| `saliency` | BiRefNet_dynamic | `subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation` | ~3 GB |
 
 ## Vista previa y exportación
 
@@ -121,7 +121,7 @@ Estos comandos actualizan métricas específicas, derivan datos nuevos (leyendas
 | `python facet.py --discover-moments` | Propone un vocabulario de momentos específico de la biblioteca agrupando los embeddings de leyenda almacenados (HDBSCAN) y nombrando cada grupo a partir de sus leyendas. Escribe `scoring_config.discovered.json` para revisión — nunca reescribe la configuración activa. Ejecuta `--detect-moments` primero para poblar `caption_embedding`; ajusta la granularidad con `--discover-min-cluster-size N` |
 | `python facet.py --detect-junk` | Marca la basura no fotográfica (capturas de pantalla, documentos, recibos, memes, diapositivas) en fotos nuevas/no evaluadas mediante CLIP zero-shot sobre los embeddings almacenados; se ejecuta automáticamente al final de cada escaneo. Las fotos limpias se marcan como `not_junk` para que las reejecuciones nunca vuelvan a escanearlas; añade `--dry-run --verbose` para previsualizar las puntuaciones por foto sin escribir |
 | `python facet.py --recompute-junk` | Reevalúa `junk_kind` para toda la biblioteca (todas las fotos con un embedding almacenado) |
-| `python facet.py --recompute-saliency` | `[GPU]` `[16gb/24gb]` Recalcula las métricas de saliencia del sujeto (BiRefNet_dynamic) |
+| `python facet.py --recompute-saliency` | `[GPU]` `[16gb/24gb]` Recalcula las métricas de saliencia del sujeto (BiRefNet_dynamic). Una foto cuya saliencia falla (por ejemplo, por memoria agotada) se registra como ERROR y no se escribe: una fila nunca puntuada sigue en NULL y la siguiente ejecución vuelve a seleccionarla, y con `--force` una fila que ya tiene saliencia conserva sus valores guardados. En CUDA, el tamaño de lote se deriva de la VRAM libre. |
 | `python facet.py --recompute-composition-cpu` | Recalcula la composición, basada en reglas (CPU, cualquier perfil) |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` Recalcula la composición con SAMP-Net |
 | `python facet.py --recompute-iqa` | `[GPU]` `[8gb/16gb/24gb]` Recalcula métricas IQA suplementarias (TOPIQ IAA, NR-Face, LIQE) a partir de las miniaturas almacenadas |
@@ -178,7 +178,7 @@ Tres modelos PyIQA adicionales puntúan más allá de la puntuación estética p
 - **Ubicación del sujeto**: puntuación de la regla de los tercios para el centroide del sujeto.
 - **Separación del fondo**: diferencia de gradiente de bordes entre el contorno del sujeto y el fondo — calidad del bokeh.
 
-Requiere `transformers` (~2 GB de VRAM).
+Requiere `transformers` (~3 GB de VRAM). En CUDA, el tamaño de lote se deriva de la VRAM libre (unos 2,4 GiB por imagen a 1024 px, entre 1 y 8 imágenes) y se reduce a la mitad tras un error de memoria agotada, hasta llegar a una sola imagen. Una foto cuya saliencia sigue fallando se registra como ERROR y no guarda ningún valor: sigue en NULL si nunca se puntuó (y puntúa como neutra en el agregado, igual que las fotos escaneadas antes de que existiera la saliencia), conserva sus valores guardados si ya tenía saliencia, y `--recompute-saliency` vuelve a seleccionarla. Consulta [Dimensiones de saliencia del sujeto](SCORING.md#dimensiones-de-saliencia-del-sujeto).
 
 ### Modelos de etiquetado
 
