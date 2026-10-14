@@ -2224,15 +2224,18 @@ class Facet:
 
         start_time = time.time()
 
-        # Count work per column
+        # Count work per column. A column that stays NULL by design for a photo
+        # (face_quality_iqa without a face) is not work, or a library whose only
+        # NULLs are faceless photos would never reach "nothing to do".
         with get_connection(self.db_path) as conn:
             for model_name, column in self._IQA_MODELS:
                 count = conn.execute(
-                    f"SELECT COUNT(*) FROM photos WHERE {column} IS NULL AND thumbnail IS NOT NULL"
+                    f"SELECT COUNT(*) FROM photos WHERE {self._iqa_needs_score_sql(column)} "
+                    "AND thumbnail IS NOT NULL"
                 ).fetchone()[0]
                 logger.info("  %s -> %s: %s NULL", model_name, column, count)
 
-            where_any_null = " OR ".join(f"{c} IS NULL" for c in columns)
+            where_any_null = " OR ".join(self._iqa_needs_score_sql(c) for c in columns)
             total = conn.execute(
                 f"SELECT COUNT(*) FROM photos WHERE ({where_any_null}) AND thumbnail IS NOT NULL"
             ).fetchone()[0]
@@ -2272,6 +2275,18 @@ class Facet:
             logger.error("  %s thumbnail decode errors", counters['errors'])
         logger.info("Run --recompute-average to update aggregate scores with new IQA metrics.")
 
+    @staticmethod
+    def _iqa_needs_score_sql(column):
+        """SQL predicate: this photo still needs ``column`` computed by --recompute-iqa.
+
+        ``face_quality_iqa`` is scored only for photos with a face (a faceless one
+        is left NULL by design), so the same ``face_count`` condition applies to the
+        up-front work count and to the rows each pass selects.
+        """
+        if column == 'face_quality_iqa':
+            return f"({column} IS NULL AND COALESCE(face_count, 0) > 0)"
+        return f"{column} IS NULL"
+
     def _iqa_model_vram_gb(self, model_name):
         """VRAM budget of one recompute-iqa model: pyiqa table, or the native Q-ReAlign size."""
         from models.model_manager import ModelManager
@@ -2307,7 +2322,7 @@ class Facet:
             column = col_map[model_name]
             scorers[column] = self._make_iqa_scorer(model_name)
 
-        where_null = " OR ".join(f"{c} IS NULL" for c in pass_columns)
+        where_null = " OR ".join(self._iqa_needs_score_sql(c) for c in pass_columns)
 
         with get_connection(self.db_path) as conn:
             cursor = conn.execute(
@@ -2335,27 +2350,34 @@ class Facet:
                     batch_imgs = [batched_images[i] for i in indices]
                     batch_pths = [batched_paths[i] for i in indices]
                     scores = scorer.score_batch(batch_imgs)
+                    written = 0
                     for i, score in enumerate(scores):
+                        if score is None:
+                            # The model could not score this photo: leave the column
+                            # NULL (not counted) so the next run selects it again.
+                            continue
                         conn.execute(
                             f"UPDATE photos SET {column} = ? WHERE path = ?",
                             (round(score, 2), batch_pths[i])
                         )
-                    counters['updated'][column] += len(scores)
+                        written += 1
+                    counters['updated'][column] += written
                 conn.commit()
 
             for row in tqdm(rows, desc=f"Scoring {label}"):
-                try:
-                    pil_img = Image.open(BytesIO(row['thumbnail'])).convert('RGB')
-                except Exception:
-                    counters['errors'] += 1
-                    continue
-
-                # Which columns still need scoring for this photo?
+                # Which columns still need scoring for this photo? Decided before the
+                # thumbnail is decoded, so a photo with nothing to score costs no decode.
                 null_cols = [col for col in pass_columns if row[col] is None]
                 # Skip face_quality_iqa for photos without faces
                 if 'face_quality_iqa' in null_cols and not (row['face_count'] or 0):
                     null_cols.remove('face_quality_iqa')
                 if not null_cols:
+                    continue
+
+                try:
+                    pil_img = Image.open(BytesIO(row['thumbnail'])).convert('RGB')
+                except Exception:
+                    counters['errors'] += 1
                     continue
 
                 batched_paths.append(row['path'])

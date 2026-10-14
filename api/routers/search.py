@@ -320,6 +320,12 @@ def _load_text_encoder():
     model_name = clip_config.get('model_name')
 
     if backend == 'transformers':
+        # Deliberately fp32 and NOT routed through utils.siglip.load_siglip_model
+        # (which loads fp16 on CUDA): this is the text-only query encoder, it
+        # lives for the API process outside the scan's VRAM planner, and it
+        # must be re-measured against search ranking before it is ever moved
+        # onto the shared helper. The single-site test in
+        # tests/test_siglip_loader.py allow-lists this file for that reason.
         from transformers import AutoModel
         logger.info(f"Loading SigLIP text encoder: {model_name}")
         model = AutoModel.from_pretrained(model_name, dtype=torch.float32).to(device)

@@ -121,6 +121,16 @@ class ModelManager:
 
     _RAM_RESERVE_GB = 2.0
     _CGROUP_CAPACITY_CEILING_GB = 5.0
+
+    # VRAM held back from the card's TOTAL when ``group_passes_by_vram`` sizes a
+    # CUDA pass (GPU mode only; CPU mode budgets RAM through
+    # ``_cpu_pass_capacity_gb``). ``detect_vram()`` reports the card's total, not
+    # what is free, so this has to cover everything a pass does not declare: the
+    # CUDA context, the ONNX Runtime arena InsightFace keeps, other non-torch
+    # residue that outlives a pass (``_reclaim_freed_memory`` already returns
+    # what torch holds) and the desktop. 1.3 GiB is the non-torch residue
+    # measured between passes on the 12 GB run behind issue #184.
+    _CUDA_PASS_MARGIN_GB = 1.3
     _HOST_OS_RESERVE_GB = 1.0
     _RAM_PER_DECLARED_GB = 1.6
 
@@ -647,6 +657,23 @@ class ModelManager:
             clear_device_cache(self.device)
             return None
 
+    @staticmethod
+    def _report_scorer_skips(model) -> None:
+        """Let a scorer dropped without ``unload()`` report its skip totals.
+
+        ``PyIQAScorer`` counts the images it declined (no face, short side)
+        across the whole pass and reports them once when it leaves the process.
+        A RAM-cached one never reaches ``unload()``, so the cache-dropping
+        paths call this. Parking a model for the next chunk deliberately does
+        not: that would print the total once per chunk.
+        """
+        report = getattr(model, 'report_skips', None)
+        if callable(report):
+            try:
+                report()
+            except Exception as e:
+                logger.debug("report_skips failed: %s", e)
+
     def evict_cpu_cache(self):
         """Evict all models from CPU cache to free RAM.
 
@@ -663,8 +690,14 @@ class ModelManager:
         if not self._cpu_cache:
             return
 
-        evicted = [name for name in list(self._cpu_cache)
-                   if self._cpu_cache.pop(name, None) is not None]
+        dropped = {}
+        for name in list(self._cpu_cache):
+            model = self._cpu_cache.pop(name, None)
+            if model is not None:
+                dropped[name] = model
+        evicted = list(dropped)
+        for model in dropped.values():
+            self._report_scorer_skips(model)
 
         import gc
         gc.collect()
@@ -1021,9 +1054,10 @@ class ModelManager:
             del model
         self.models.clear()
 
-        # Clear CPU cache
+        # Clear CPU cache. A cached scorer never reached ``unload()``, so the
+        # skip totals it accumulated are reported here, once, as it leaves.
         for name in list(self._cpu_cache):
-            self._cpu_cache.pop(name, None)
+            self._report_scorer_skips(self._cpu_cache.pop(name, None))
         self._cpu_cache.clear()
 
         import gc
@@ -1473,9 +1507,9 @@ class ModelManager:
             capacity = self._cpu_pass_capacity_gb(limit_bytes)
             get_requirement = self.get_model_ram
         else:
-            # GPU mode: VRAM-based grouping with 1GB safety margin for CUDA overhead
+            # GPU mode: VRAM-based grouping, less the CUDA overhead margin
             limit_bytes = None
-            capacity = available_vram - 1.0
+            capacity = available_vram - self._CUDA_PASS_MARGIN_GB
             get_requirement = self.get_model_vram
 
         # First-fit decreasing bin-packing: sort largest first, place each

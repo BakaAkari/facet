@@ -118,9 +118,32 @@ PYIQA_MODELS = {
 # Models whose forward pass is per-sample independent in eval mode and accept a
 # stacked same-size batch tensor, so real batching gives results bit-identical to
 # per-image scoring. Resolution-sensitive multi-scale models (musiq*), the
-# variable-output LIQE stay serial (forced fixed-size
-# batching would shift their scores).
-_BATCHABLE_MODELS = {'topiq', 'hyperiqa', 'dbcnn', 'topiq_iaa', 'topiq_nr_face', 'clipiqa+'}
+# variable-output LIQE stay serial (forced fixed-size batching would shift their
+# scores). topiq_nr_face is serial too: pyiqa's face metric asserts a batch size
+# of 1, so a stacked forward could only ever fail and fall back.
+_BATCHABLE_MODELS = {'topiq', 'hyperiqa', 'dbcnn', 'topiq_iaa', 'clipiqa+'}
+
+# Failures that are the model's own, legitimate answer for some photos rather than
+# a fault: topiq_nr_face declines a photo its detector finds no face in, LIQE a
+# photo whose short side is under 224 px. Matched by substring against pyiqa
+# 0.1.x text; a future pyiqa that rewords them is reported as a failure (louder,
+# never silent).
+_EXPECTED_SKIPS = ('No face detected', 'Short side is less than')
+
+# Every out-of-memory error is counted under one key: the raw text embeds
+# allocator sizes that differ per run and would defeat the counting.
+_OOM_SKIP_KEY = 'out of memory'
+
+
+def _is_oom(e: BaseException) -> bool:
+    from utils.device import is_out_of_memory_error
+    return is_out_of_memory_error(e)
+
+
+def _clear_cache(device) -> None:
+    # Imported at call time so a test (or caller) patching utils.device is honoured.
+    from utils.device import clear_device_cache
+    clear_device_cache(device)
 
 
 class PyIQAScorer:
@@ -150,11 +173,19 @@ class PyIQAScorer:
         self.device = device
         self.model = None
         self._loaded = False
-        # Skips are counted for the whole pass and reported once on unload.
-        # Per-batch they are noise: topiq_nr_face legitimately declines every
-        # photo without a face, so a landscape-heavy scan logged a warning per
-        # chunk that said nothing a single total does not.
+        # Skips are counted for the whole pass and reported once by
+        # report_skips() when the scorer leaves the process (unload, or a
+        # ModelManager dropping it from the RAM cache). Per-batch they are
+        # noise: topiq_nr_face legitimately declines every photo without a
+        # face, so a landscape-heavy scan logged a warning per chunk that said
+        # nothing a single total does not. Failures are different: they are
+        # reported at ERROR at the end of every score_batch call.
         self._skipped_totals: dict[str, int] = {}
+        # Images per stacked forward. Starts at the ceiling and is halved by an
+        # out-of-memory error; it stays halved for the rest of this load so a
+        # RAM-cached scorer does not re-OOM (and flush the allocator) on every
+        # slice of every chunk.
+        self.forward_batch = self.MAX_FORWARD_BATCH
 
     def load(self):
         """Load model to GPU/CPU."""
@@ -169,10 +200,24 @@ class PyIQAScorer:
             pyiqa_id,
             device=torch.device(self.device)
         )
+        self.forward_batch = self.MAX_FORWARD_BATCH
         self._loaded = True
+
+    def report_skips(self):
+        """Log the skip totals accumulated so far, once, then clear them.
+
+        Idempotent. Called from :meth:`unload` and by ``ModelManager`` for a
+        cached scorer it drops without unloading: a RAM-cached model never
+        reaches ``unload()``, so its totals would otherwise be lost.
+        """
+        totals, self._skipped_totals = self._skipped_totals, {}
+        for msg, count in totals.items():
+            logger.warning("  %s skipped %d image(s) in total: %s",
+                           self.model_name, count, msg)
 
     def unload(self):
         """Unload model to free VRAM."""
+        self.report_skips()
         if not self._loaded:
             return
 
@@ -184,12 +229,9 @@ class PyIQAScorer:
             self.model = None
 
         self._loaded = False
+        self.forward_batch = self.MAX_FORWARD_BATCH
         from utils.device import clear_device_cache
         clear_device_cache(self.device)
-        for msg, count in self._skipped_totals.items():
-            logger.warning("  %s skipped %d image(s) in total: %s",
-                           self.model_name, count, msg)
-        self._skipped_totals = {}
         logger.info("  %s unloaded", self.model_name)
 
     # Max long edge for inference is utils.image_bounds.MAX_INFERENCE_SIZE
@@ -324,82 +366,140 @@ class PyIQAScorer:
             return [float(x.item()) if hasattr(x, 'item') else float(x) for x in out]
         raise ValueError(f"unbatchable output type: {type(out)}")
 
-    def _score_batch_serial(self, images: list[Image.Image]) -> list[float]:
-        """Per-image scoring with skip-aggregation (the original behavior)."""
-        scores: list[float] = []
-        skipped: dict[str, int] = {}
-        for image in images:
-            try:
-                scores.append(float(self.score_image(image)))
-            except Exception as e:
-                msg = str(e)
-                skipped[msg] = skipped.get(msg, 0) + 1
-                scores.append(5.0)
-        self._record_skips(skipped)
-        return scores
+    def _score_one(self, image: Image.Image, skipped: dict) -> Optional[float]:
+        """Score one image, or ``None`` when it fails (counted into ``skipped``).
 
-    def score_batch(self, images: list[Image.Image]) -> list[float]:
+        An out-of-memory failure clears the device cache AFTER the handler has
+        exited: the live exception's traceback holds the failed activations, so
+        freeing from inside the ``except`` would release nothing.
+        """
+        try:
+            return float(self.score_image(image))
+        except Exception as e:
+            oom = _is_oom(e)
+            msg = _OOM_SKIP_KEY if oom else (str(e) or type(e).__name__)
+        if oom:
+            _clear_cache(self.device)
+        skipped[msg] = skipped.get(msg, 0) + 1
+        return None
+
+    def _score_batch_serial(self, images: list[Image.Image], skipped: dict) -> list[Optional[float]]:
+        """Per-image scoring; an image that fails yields ``None`` in its slot."""
+        return [self._score_one(image, skipped) for image in images]
+
+    def score_batch(self, images: list[Image.Image]) -> list[Optional[float]]:
         """Score a batch of images, normalized to 0-10.
 
         For batchable models, same-size preprocessed images are stacked into a
         single tensor and scored in one forward pass (bit-identical to per-image
         in eval mode). Non-batchable models and any group that errors fall back
         to per-image scoring.
+
+        An image that cannot be scored yields ``None`` in its slot, never a
+        neutral number: a stored 5.0 is indistinguishable from a measurement.
+        A CUDA out-of-memory error halves the forward batch (down to one image)
+        before giving up on an image.
         """
         if not self._loaded:
             self.load()
 
+        skipped: dict[str, int] = {}
+        reduced_to: list[int] = []
         if not self.supports_batching or len(images) <= 1:
-            return self._score_batch_serial(images)
+            scores = self._score_batch_serial(images, skipped)
+        else:
+            scores = self._score_batched(images, skipped, reduced_to)
 
+        self._record_skips(skipped)
+        self._report_failures(skipped)
+        if reduced_to:
+            logger.warning("  %s forward batch reduced to %d after out-of-memory",
+                           self.model_name, min(reduced_to))
+        return scores
+
+    def _score_batched(self, images, skipped: dict, reduced_to: list) -> list[Optional[float]]:
         from collections import defaultdict
 
         # Preprocess once; group by tensor shape so each forward is a clean stack.
         try:
             tensors = [self._preprocess_image(img) for img in images]
-        except Exception:
-            return self._score_batch_serial(images)
+        except Exception as e:
+            tensors = None
+            oom = _is_oom(e)
+        if tensors is None:
+            # Serial fallback runs outside the handler so the partial tensors
+            # are not pinned by the traceback.
+            if oom:
+                _clear_cache(self.device)
+            return self._score_batch_serial(images, skipped)
 
         groups: dict = defaultdict(list)
         for idx, t in enumerate(tensors):
             groups[tuple(t.shape[2:])].append(idx)
 
         scores: list = [None] * len(images)
-        skipped: dict[str, int] = {}
-        for _shape, idxs in groups.items():
+        for idxs in groups.values():
             # Slice each same-shape group into forwards of at most
-            # MAX_FORWARD_BATCH so a chunk-sized group cannot stack the
-            # whole chunk into one forward's activation memory.
-            for start in range(0, len(idxs), self.MAX_FORWARD_BATCH):
-                sub_idxs = idxs[start:start + self.MAX_FORWARD_BATCH]
-                try:
-                    with torch.no_grad():
-                        out = self.model(
-                            torch.cat([tensors[i] for i in sub_idxs], dim=0),
-                            **self._forward_kwargs,
-                        )
-                    raws = self._extract_batch_raw(out, len(sub_idxs))
-                    for k, i in enumerate(sub_idxs):
-                        scores[i] = self._finalize_raw(raws[k])
-                except Exception as e:
-                    # Per-group serial fallback keeps a single bad shape from failing all.
-                    msg = str(e)
-                    for i in sub_idxs:
-                        try:
-                            scores[i] = float(self.score_image(images[i]))
-                        except Exception as e2:
-                            skipped[str(e2)] = skipped.get(str(e2), 0) + 1
-                            scores[i] = 5.0
-                    logger.debug("  %s batch group fell back to serial: %s", self.model_name, msg)
+            # forward_batch so a chunk-sized group cannot stack the whole chunk
+            # into one forward's activation memory. forward_batch is re-read
+            # per slice: an out-of-memory halving applies to the rest of it.
+            pos = 0
+            while pos < len(idxs):
+                sub_idxs = idxs[pos:pos + self.forward_batch]
+                pos += len(sub_idxs)
+                self._forward_group(sub_idxs, tensors, images, scores, skipped, reduced_to)
+        return scores
 
-        self._record_skips(skipped)
-        return [float(s) for s in scores]
+    def _forward_group(self, sub_idxs, tensors, images, scores, skipped, reduced_to):
+        """One stacked forward over ``sub_idxs``; recovers from a failure in place.
+
+        Out-of-memory: halve and retry both halves (a lone image that still does
+        not fit is ``None``). Anything else: score each image on its own. Both
+        recoveries run after the ``except`` block has exited.
+        """
+        try:
+            with torch.no_grad():
+                out = self.model(
+                    torch.cat([tensors[i] for i in sub_idxs], dim=0),
+                    **self._forward_kwargs,
+                )
+            raws = self._extract_batch_raw(out, len(sub_idxs))
+            for k, i in enumerate(sub_idxs):
+                scores[i] = self._finalize_raw(raws[k])
+            return
+        except Exception as e:
+            oom = _is_oom(e)
+            msg = str(e)
+
+        if oom:
+            _clear_cache(self.device)
+            if len(sub_idxs) == 1:
+                scores[sub_idxs[0]] = None
+                skipped[_OOM_SKIP_KEY] = skipped.get(_OOM_SKIP_KEY, 0) + 1
+                return
+            half = len(sub_idxs) // 2
+            self.forward_batch = min(self.forward_batch, half)
+            reduced_to.append(half)
+            self._forward_group(sub_idxs[:half], tensors, images, scores, skipped, reduced_to)
+            self._forward_group(sub_idxs[half:], tensors, images, scores, skipped, reduced_to)
+            return
+
+        # Per-group serial fallback keeps a single bad shape from failing all.
+        for i in sub_idxs:
+            scores[i] = self._score_one(images[i], skipped)
+        logger.debug("  %s batch group fell back to serial: %s", self.model_name, msg)
 
     def _record_skips(self, skipped: dict):
         """Fold this batch's skips into the pass total, logging only at DEBUG."""
         for msg, count in skipped.items():
             self._skipped_totals[msg] = self._skipped_totals.get(msg, 0) + count
             logger.debug("  %s skipped %d image(s): %s", self.model_name, count, msg)
+
+    def _report_failures(self, skipped: dict):
+        """Log every skip that is not an expected one, at ERROR, once per call."""
+        for msg, count in skipped.items():
+            if not any(known in msg for known in _EXPECTED_SKIPS):
+                logger.error("  %s failed for %d image(s) (%s)", self.model_name, count, msg)
 
     @property
     def vram_gb(self) -> float:

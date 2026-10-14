@@ -108,9 +108,9 @@ def build_clip_tagger(config, device=None):
         device = get_device()
 
     if clip_backend == 'transformers':
-        from transformers import AutoModel
-        model = AutoModel.from_pretrained(clip_model_name, trust_remote_code=True)
-        model = model.to(device).eval()
+        # fp16 on CUDA, fp32 elsewhere; the helper also moves to device + eval().
+        from utils.siglip import load_siglip_model
+        model = load_siglip_model(clip_model_name, device)
     else:
         import open_clip
         clip_pretrained = clip_cfg.get('pretrained', 'laion2b_s32b_b82k')

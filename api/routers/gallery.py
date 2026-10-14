@@ -875,14 +875,17 @@ def _resolve_order_by(params: dict) -> str:
     """Build the ORDER BY clause matching the gallery's sort semantics.
 
     ``learned_score`` / ``narrative_moment_confidence`` can be NULL (untrained /
-    unlabelled) and must always sink. In DESC, SQLite already orders NULLs last,
+    unlabelled), and so can the supplementary IQA scores (``aesthetic_iaa``,
+    ``liqe_score``, ``face_quality_iqa``, ``aesthetic_v25``: a photo the model
+    could not score stores NULL, never 5.0); they must always sink. In DESC, SQLite already orders NULLs last,
     so the ``(col IS NULL)`` guard is omitted — that lets a ``(… col DESC, path)``
     index satisfy the sort with no temp B-tree (the default, common direction).
     In ASC the explicit guard stays, since NULLs would otherwise sort first.
     """
     sort_col = params['sort'] if params['sort'] in VALID_SORT_COLS else 'aggregate'
     sort_dir = 'ASC' if params['dir'] == 'ASC' else 'DESC'
-    if sort_col in ('learned_score', 'narrative_moment_confidence'):
+    if sort_col in ('learned_score', 'narrative_moment_confidence', 'aesthetic_iaa',
+                    'liqe_score', 'face_quality_iqa', 'aesthetic_v25'):
         if sort_dir == 'ASC':
             return f"({sort_col} IS NULL) ASC, {sort_col} ASC, path ASC"
         return f"{sort_col} DESC, path ASC"

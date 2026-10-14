@@ -112,6 +112,66 @@ class TestBuildClipTagger:
         assert kwargs["model_name"] == "google/siglip2-so400m-patch16-naflex"
         assert kwargs["backend"] == "transformers"
 
+    def test_transformers_profile_routes_through_shared_loader(self, monkeypatch):
+        """CUDA retagging must load via utils.siglip.load_siglip_model (fp16).
+
+        The helper is replaced, so no torch / transformers / real weights are
+        touched: this proves the call contract only.
+        """
+        import tag_existing
+        import utils.siglip
+
+        cfg = _FakeConfig({"model_name": "google/siglip2-so400m-patch16-naflex",
+                           "backend": "transformers"})
+        sentinel = object()
+        calls = []
+
+        def fake_loader(name, device):
+            calls.append((name, device))
+            return sentinel
+
+        monkeypatch.setattr(utils.siglip, "load_siglip_model", fake_loader)
+        # A direct AutoModel use would hit this and fail loudly.
+        boom = types.ModuleType("transformers")
+        boom.AutoModel = mock.MagicMock(side_effect=AssertionError("direct AutoModel use"))
+        boom.AutoModel.from_pretrained.side_effect = AssertionError("direct AutoModel use")
+        monkeypatch.setitem(sys.modules, "transformers", boom)
+
+        with mock.patch.object(tag_existing, "CLIPTagger") as CLIPTaggerMock:
+            tag_existing.build_clip_tagger(cfg, device="cuda")
+
+        assert calls == [("google/siglip2-so400m-patch16-naflex", "cuda")]
+        args, kwargs = CLIPTaggerMock.call_args
+        assert args[0] is sentinel
+        assert args[1] == "cuda"
+        assert kwargs["model_name"] == "google/siglip2-so400m-patch16-naflex"
+        assert kwargs["backend"] == "transformers"
+
+    def test_transformers_profile_cuda_requests_fp16_via_fake_transformers(self):
+        """End to end through the real helper with a fake `transformers` (A12)."""
+        torch = pytest.importorskip("torch")
+        import tag_existing
+
+        cfg = _FakeConfig({"model_name": "google/siglip2-so400m-patch16-naflex",
+                           "backend": "transformers"})
+        fake_model = mock.MagicMock(name="siglip_model")
+        fake_model.to.return_value = fake_model
+        fake_model.eval.return_value = fake_model
+        fake_transformers = types.ModuleType("transformers")
+        fake_transformers.AutoModel = mock.MagicMock()
+        fake_transformers.AutoModel.from_pretrained.return_value = fake_model
+
+        with (
+            mock.patch.dict(sys.modules, {"transformers": fake_transformers}),
+            mock.patch.object(tag_existing, "CLIPTagger") as CLIPTaggerMock,
+        ):
+            tag_existing.build_clip_tagger(cfg, device="cuda")
+
+        kwargs = fake_transformers.AutoModel.from_pretrained.call_args.kwargs
+        assert kwargs["dtype"] is torch.float16
+        fake_model.half.assert_not_called()
+        assert CLIPTaggerMock.call_args.args[0] is fake_model
+
     def test_open_clip_profile_loads_vit(self):
         import tag_existing
 
