@@ -335,6 +335,24 @@ describe('App', () => {
     });
   });
 
+  describe('activeFilterChips with unavailable metrics', () => {
+    it('shows a LIQE chip in default mode', () => {
+      const { app, filtersSignal } = createApp('/');
+      filtersSignal.set({ ...DEFAULT_FILTERS, min_liqe: '4' });
+      expect((app as any).activeFilterChips().some((c: any) => c.id === 'min_liqe')).toBe(true);
+    });
+
+    it('skips chips for metrics the licensing policy hides', () => {
+      const { app, filtersSignal, mockStore } = createApp('/');
+      (mockStore.config as any).set({ unavailable_metrics: ['liqe_score', 'aesthetic_iaa'] });
+      filtersSignal.set({ ...DEFAULT_FILTERS, min_liqe: '4', min_aesthetic_iaa: '5', min_score: '6' });
+      const ids = (app as any).activeFilterChips().map((c: any) => c.id);
+      expect(ids).toContain('min_score');
+      expect(ids).not.toContain('min_liqe');
+      expect(ids).not.toContain('min_aesthetic_iaa');
+    });
+  });
+
   describe('onCompareCategoryChange', () => {
     it('sets selectedCategory on compareFilters service', () => {
       const { app, compareCategorySig } = createApp('/');

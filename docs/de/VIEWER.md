@@ -181,6 +181,10 @@ Eine vollwertige Sortieroption, gestützt auf den `learned_score` des persönlic
 
 Gesteuert über `viewer.features.show_my_taste` (Standard: `true`). Der Ranker-Status wird über `GET /api/ranker/status` bereitgestellt.
 
+### Im kommerziellen Modus ausgeblendete Metriken
+
+Ist `licensing.mode` auf `commercial` gesetzt, blendet der Viewer die Metriken aus, deren Modelle nicht kommerziell genutzt werden dürfen: die Bereichsfilter für LIQE, Aesthetic IAA und (sofern OFIQ nicht installiert ist) Face Quality IQA, deren Filter-Chips und Sortieroptionen. `/api/config` listet sie in `unavailable_metrics`. In der Gewichtungsseite bleiben ihre Regler sichtbar, sind aber deaktiviert und mit einem Tooltip versehen; die Gewichte bleiben erhalten, da die Bewertung sie auslässt und neu normalisiert. Den Viewer nach einer Änderung des Lizenzmodus neu starten.
+
 ## Galeriefunktionen
 
 ### Fotokarten

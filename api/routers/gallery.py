@@ -1728,8 +1728,9 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
     from api.auth import is_edition_enabled, is_edition_authenticated
     from api.raw_processing import get_cull_styles
     from api.routers.search import search_threshold_default
-    from api.types import SORT_OPTIONS, SORT_OPTIONS_GROUPED, QUALITY_LEVELS, TYPE_LABELS
+    from api.types import QUALITY_LEVELS, TYPE_LABELS, available_sort_options, unavailable_columns
 
+    sort_options, sort_options_grouped = available_sort_options()
     features = dict(VIEWER_CONFIG.get('features', {}))
     with get_db() as conn:
         has_embeddings = conn.execute(
@@ -1756,8 +1757,9 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
             features['show_albums'] = False
 
     return {
-        'sort_options': SORT_OPTIONS,
-        'sort_options_grouped': SORT_OPTIONS_GROUPED,
+        'sort_options': sort_options,
+        'sort_options_grouped': sort_options_grouped,
+        'unavailable_metrics': unavailable_columns(),
         'quality_levels': QUALITY_LEVELS,
         'type_labels': TYPE_LABELS,
         'defaults': VIEWER_CONFIG['defaults'],

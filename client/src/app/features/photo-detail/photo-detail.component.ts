@@ -37,7 +37,7 @@ import { GalleryStore } from '../gallery/gallery.store';
 import { GalleryFilters } from '../gallery/gallery-filters.util';
 import * as L from 'leaflet';
 import { createLeafletMap } from '../../shared/leaflet';
-import { I18N, I18N_KEYS } from '../../core/i18n/keys';
+import { I18N, i18nKeys } from '../../core/i18n/keys';
 import { isTypingContext } from '../../shared/utils/keyboard';
 import type { CategoryOverrideResult } from './category-override-dialog.component';
 
@@ -620,7 +620,7 @@ const SOCIAL_SOURCE_KEYS: Record<string, string> = {
   host: { class: 'block h-full overflow-y-auto lg:overflow-y-hidden' },
 })
 export class PhotoDetailComponent extends PhotoDetailBase implements OnInit {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly location = inject(Location);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);

@@ -181,6 +181,10 @@ Un'opzione di ordinamento di prima classe, basata sul `learned_score` del ranker
 
 Controllato da `viewer.features.show_my_taste` (predefinito: `true`). Lo stato del ranker è esposto tramite `GET /api/ranker/status`.
 
+### Metriche nascoste in modalità commerciale
+
+Con `licensing.mode` impostato su `commercial`, il visualizzatore nasconde le metriche i cui modelli non sono utilizzabili commercialmente: i filtri di intervallo LIQE, Aesthetic IAA e (salvo che OFIQ sia installato) Face Quality IQA, i relativi chip di filtro e le opzioni di ordinamento. `/api/config` le elenca in `unavailable_metrics`. Nella pagina di regolazione dei pesi i cursori restano visibili ma disattivati, con un tooltip; i pesi vengono conservati, perché il punteggio li scarta e rinormalizza. Riavviare il visualizzatore dopo aver cambiato la modalità di licenza.
+
 ## Funzionalità della galleria
 
 ### Schede foto

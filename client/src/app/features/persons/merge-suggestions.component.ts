@@ -19,7 +19,7 @@ import { PersonThumbnailUrlPipe } from '../../shared/pipes/thumbnail-url.pipe';
 import { FixedPipe } from '../../shared/pipes/fixed.pipe';
 import { ConfirmDialogComponent } from '../../shared/components/confirm-dialog/confirm-dialog.component';
 import { HeaderSlotService } from '../../core/services/header-slot.service';
-import { I18N, I18N_KEYS } from '../../core/i18n/keys';
+import { I18N, i18nKeys } from '../../core/i18n/keys';
 
 interface SuggestionPerson {
   id: number;
@@ -190,7 +190,7 @@ interface MergeSuggestionsResponse {
   `,
 })
 export class MergeSuggestionsComponent implements OnInit, OnDestroy {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly api = inject(ApiService);
   /** Merge, reject and accept-all call edition-only routes. */
   protected readonly canEdit = inject(AuthService).isEdition;

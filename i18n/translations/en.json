@@ -1297,6 +1297,7 @@
   },
   "comparison": {
     "title": "Weight Tuning",
+    "unavailable_commercial": "Not available in commercial mode (this metric is skipped when scoring; the weight is kept).",
     "category": "Category",
     "weights": "Weights",
     "weight_sliders": "Weight Sliders",

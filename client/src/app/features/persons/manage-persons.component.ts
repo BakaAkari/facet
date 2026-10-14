@@ -28,7 +28,7 @@ import { ConfirmDialogComponent } from '../../shared/components/confirm-dialog/c
 import { InfiniteScrollDirective } from '../../shared/directives/infinite-scroll.directive';
 import { PersonsFiltersService } from './persons-filters.service';
 import { GalleryStore } from '../gallery/gallery.store';
-import { I18N, I18N_KEYS } from '../../core/i18n/keys';
+import { I18N, i18nKeys } from '../../core/i18n/keys';
 
 interface PersonsResponse {
   persons: Person[];
@@ -89,7 +89,7 @@ export interface SplitPersonResult {
   `,
 })
 export class MergeTargetDialogComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   data: { persons: Person[] } = inject(MAT_DIALOG_DATA);
   dialogRef = inject(MatDialogRef<MergeTargetDialogComponent>);
   selectedTarget: number | null = null;
@@ -118,7 +118,7 @@ export class MergeTargetDialogComponent {
   `,
 })
 export class NewPersonDialogComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   dialogRef = inject(MatDialogRef<NewPersonDialogComponent>);
   name = '';
 
@@ -189,7 +189,7 @@ export class NewPersonDialogComponent {
   `,
 })
 export class PersonFacesDialogComponent implements OnInit {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly api = inject(ApiService);
   readonly data: PersonFacesDialogData = inject(MAT_DIALOG_DATA);
   readonly dialogRef = inject(MatDialogRef<PersonFacesDialogComponent, SplitPersonResult>);
@@ -395,7 +395,7 @@ export class PersonFacesDialogComponent implements OnInit {
   `,
 })
 export class ManagePersonsComponent implements OnInit {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   readonly auth = inject(AuthService);
   protected readonly store = inject(GalleryStore);
   private readonly api = inject(ApiService);

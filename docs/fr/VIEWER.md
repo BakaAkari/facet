@@ -181,6 +181,10 @@ Une option de tri de premier ordre adossée au `learned_score` du classeur perso
 
 Contrôlé par `viewer.features.show_my_taste` (par défaut : `true`). L'état du classeur est exposé via `GET /api/ranker/status`.
 
+### Métriques masquées en mode commercial
+
+Avec `licensing.mode` réglé sur `commercial`, la visionneuse masque les métriques dont les modèles ne sont pas utilisables commercialement : les filtres de plage LIQE, Aesthetic IAA et (sauf si OFIQ est installé) Face Quality IQA, leurs puces de filtre et leurs options de tri. `/api/config` les liste dans `unavailable_metrics`. Sur la page de réglage des poids, leurs curseurs restent visibles mais désactivés, avec une infobulle ; les poids sont conservés, car le calcul du score les écarte et renormalise. Redémarrez la visionneuse après avoir changé le mode de licence.
+
 ## Fonctionnalités de la galerie
 
 ### Cartes de photo

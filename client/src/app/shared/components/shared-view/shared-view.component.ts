@@ -38,7 +38,7 @@ import { PhotoCardComponent } from '../photo-card/photo-card.component';
 import { SlideshowComponent } from '../../../features/gallery/slideshow.component';
 import { InfiniteScrollDirective } from '../../directives/infinite-scroll.directive';
 import { PluralKeyPipe } from '../../pipes/plural-key.pipe';
-import { I18N, I18N_KEYS } from '../../../core/i18n/keys';
+import { I18N, i18nKeys } from '../../../core/i18n/keys';
 import type { ViewerConfig, SortOption } from '../../../features/gallery/gallery.store';
 
 interface FilterOption {
@@ -534,7 +534,7 @@ const HIDE_TOGGLE_KEYS = ['hide_blinks', 'hide_bursts', 'hide_duplicates'] as co
   `,
 })
 export class SharedViewComponent implements OnInit {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly api = inject(ApiService);

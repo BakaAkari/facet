@@ -8,7 +8,7 @@ import { ApiService } from '../../../core/services/api.service';
 import { HistogramPreferencesService, HistogramSurface } from '../../../core/services/histogram-preferences.service';
 import { I18nService } from '../../../core/services/i18n.service';
 import { TranslatePipe } from '../../pipes/translate.pipe';
-import { I18N_KEYS } from '../../../core/i18n/keys';
+import { I18N, i18nKeys } from '../../../core/i18n/keys';
 import {
   ClipChannel, ClipPercents, HistogramChannels, HistogramMode, clippedChannels,
   computeRgbHistogram, histogramLinePoints, histogramPolygonPoints, toInteriorChannels,
@@ -43,10 +43,10 @@ const MARKER_COLOR_CLASS: Record<ClipChannel, string> = {
  *  a channel differently than the button that selects it (e.g. French "V"
  *  for vert vs. a hardcoded "G"). */
 const CHANNEL_LABEL_KEY: Record<ClipChannel, string> = {
-  luma: I18N_KEYS.histogram.mode.luminance,
-  r: I18N_KEYS.histogram.mode.red,
-  g: I18N_KEYS.histogram.mode.green,
-  b: I18N_KEYS.histogram.mode.blue,
+  luma: I18N.histogram.mode.luminance,
+  r: I18N.histogram.mode.red,
+  g: I18N.histogram.mode.green,
+  b: I18N.histogram.mode.blue,
 };
 
 const CHANNEL_FILL_CLASS: Record<SingleChannel, string> = {
@@ -197,7 +197,7 @@ export class HistogramComponent {
    *  detail panel and the tooltip remember their channel mode independently. */
   readonly surface = input<HistogramSurface>('detail');
 
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
 
   // Two independent sources, never mixed within a single rendered curve (the
   // widget only ever draws one mode at a time, so there is no view where

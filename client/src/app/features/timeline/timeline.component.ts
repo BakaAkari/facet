@@ -11,7 +11,7 @@ import { TimelineYearsComponent } from './timeline-years.component';
 import { TimelineMonthsComponent } from './timeline-months.component';
 import { TimelineDaysComponent } from './timeline-days.component';
 import { TimelineDatePipe } from './timeline-date.pipe';
-import { I18N, I18N_KEYS } from '../../core/i18n/keys';
+import { I18N, i18nKeys } from '../../core/i18n/keys';
 import { PageHelpService } from '../../core/services/page-help.service';
 import { HeaderSlotService } from '../../core/services/header-slot.service';
 import { DateRangeFilterComponent } from '../../shared/components/date-range-filter/date-range-filter.component';
@@ -101,7 +101,7 @@ import { GalleryStore, anyHideToggleActive } from '../gallery/gallery.store';
   `,
 })
 export class TimelineComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   protected readonly filters = inject(TimelineFiltersService);

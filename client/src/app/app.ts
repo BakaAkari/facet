@@ -40,9 +40,10 @@ import { PersonThumbnailUrlPipe, ThumbnailUrlPipe } from './shared/pipes/thumbna
 import { SlideshowComponent } from './features/gallery/slideshow.component';
 import { Photo, normalisePhotoFlagsAll } from './shared/models/photo.model';
 import { DateRangeFilterComponent } from './shared/components/date-range-filter/date-range-filter.component';
-import { I18N, I18N_KEYS } from './core/i18n/keys';
+import { I18N, i18nKeys } from './core/i18n/keys';
 import { folderDisplayName } from './features/folders/folders.util';
 import { useDesktopSignal, DETAILS_RAIL_MIN_WIDTH_PX } from './shared/utils/media-query';
+import { isUnavailableKey, unavailableSet } from './shared/utils/unavailable-metrics';
 
 /** When the "a newer Facet is out" notice was last shown, so it stays weekly. */
 const RELEASE_NOTICE_KEY = 'facet_release_notice_shown';
@@ -83,7 +84,7 @@ interface ReleaseCheck {
   `,
 })
 export class EditionDialogComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private dialogRef = inject(MatDialogRef<EditionDialogComponent>);
   private auth = inject(AuthService);
   protected password = '';
@@ -102,9 +103,9 @@ export class EditionDialogComponent {
       return;
     }
     this.error.set(
-      outcome === 'unavailable' ? I18N_KEYS.auth.config_unreadable
-        : outcome === 'rate_limited' ? I18N_KEYS.errors.rate_limited
-          : I18N_KEYS.edition.invalid_password,
+      outcome === 'unavailable' ? I18N.auth.config_unreadable
+        : outcome === 'rate_limited' ? I18N.errors.rate_limited
+          : I18N.edition.invalid_password,
     );
   }
 }
@@ -144,7 +145,7 @@ export class EditionDialogComponent {
   },
 })
 export class App implements OnInit {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly router = inject(Router);
   private readonly dialog = inject(MatDialog);
   private readonly api = inject(ApiService);
@@ -330,8 +331,10 @@ export class App implements OnInit {
     if (f.favorites_only) chips.push({ id: 'favorites_only', labelKey: 'gallery.favorites_only', value: '', clearKeys: ['favorites_only'] });
     if (f.is_monochrome) chips.push({ id: 'is_monochrome', labelKey: 'gallery.monochrome_only', value: '', clearKeys: ['is_monochrome'] });
 
-    // Range/date filter pairs
+    // Range/date filter pairs (metrics hidden by the licensing policy get no chip)
+    const hiddenMetrics = unavailableSet(this.store.config()?.unavailable_metrics);
     for (const { minKey, maxKey, labelKey } of App.RANGE_CHIPS) {
+      if (isUnavailableKey(minKey, hiddenMetrics)) continue;
       const min = (f as unknown as Record<string, string>)[minKey];
       const max = (f as unknown as Record<string, string>)[maxKey];
       if (min || max) {

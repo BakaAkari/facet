@@ -8,7 +8,7 @@ import { ApiService } from '../../core/services/api.service';
 import { FaceThumbnailUrlPipe } from '../../shared/pipes/thumbnail-url.pipe';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { TranslatePipe } from '../../shared/pipes/translate.pipe';
-import { I18N_KEYS } from '../../core/i18n/keys';
+import { i18nKeys } from '../../core/i18n/keys';
 
 interface PhotoFace {
   id: number;
@@ -55,7 +55,7 @@ interface PhotoFace {
   `,
 })
 export class FaceSelectorDialogComponent implements OnInit {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private api = inject(ApiService);
   readonly data: { photoPath: string } = inject(MAT_DIALOG_DATA);
   readonly dialogRef = inject(MatDialogRef<FaceSelectorDialogComponent>);

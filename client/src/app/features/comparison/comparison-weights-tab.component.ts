@@ -23,13 +23,15 @@ import { ThemeService } from '../../core/services/theme.service';
 import { TranslatePipe } from '../../shared/pipes/translate.pipe';
 import { FixedPipe } from '../../shared/pipes/fixed.pipe';
 import { ThumbnailUrlPipe } from '../../shared/pipes/thumbnail-url.pipe';
+import { GalleryStore } from '../gallery/gallery.store';
+import { isUnavailableKey, unavailableSet } from '../../shared/utils/unavailable-metrics';
 import { CompareFiltersService } from './compare-filters.service';
 import { CategoryRecomputeService } from './category-recompute.service';
 import {
   WeightIconPipe, WeightLabelKeyPipe, FilterValueFormatPipe, ModifierValueFormatPipe,
   RecordValuePipe, FilterTagsPipe, FilterBoolValuePipe,
 } from './comparison.pipes';
-import { I18N, I18N_KEYS } from '../../core/i18n/keys';
+import { I18N, i18nKeys } from '../../core/i18n/keys';
 
 interface CategoryWeights {
   weights: Record<string, number>;
@@ -165,12 +167,14 @@ class SignalErrorMatcher {
           } @else {
             <div class="flex flex-col gap-4">
               @for (key of weightKeys(); track key) {
-                <div class="flex items-center gap-3">
+                <div class="flex items-center gap-3" [class.opacity-50]="unavailableWeights()[key]"
+                  [matTooltip]="unavailableWeights()[key] ? (I18N.comparison.unavailable_commercial | translate) : ''"
+                  [matTooltipDisabled]="!unavailableWeights()[key]">
                   <mat-icon class="text-gray-400 shrink-0">{{ key | weightIcon }}</mat-icon>
                   <span class="w-40 shrink-0 text-sm">
                     {{ key | weightLabelKey | translate }}
                   </span>
-                  <mat-slider class="grow" [min]="0" [max]="100" [step]="1" [discrete]="true" [showTickMarks]="false">
+                  <mat-slider class="grow" [disabled]="!!unavailableWeights()[key]" [min]="0" [max]="100" [step]="1" [discrete]="true" [showTickMarks]="false">
                     <input matSliderThumb [value]="weights()[key]" (valueChange)="setWeight(key, $event)" [attr.aria-label]="key | weightLabelKey | translate" />
                   </mat-slider>
                   <span class="w-12 text-right text-sm font-mono tabular-nums">{{ weights()[key] }}%</span>
@@ -377,13 +381,14 @@ class SignalErrorMatcher {
   `,
 })
 export class ComparisonWeightsTabComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   protected readonly auth = inject(AuthService);
   private api = inject(ApiService);
   private i18n = inject(I18nService);
   private snackBar = inject(MatSnackBar);
   private destroyRef = inject(DestroyRef);
   private themeService = inject(ThemeService);
+  private galleryStore = inject(GalleryStore);
   readonly compareFilters = inject(CompareFiltersService);
   private recomputeService = inject(CategoryRecomputeService);
 
@@ -412,6 +417,14 @@ export class ComparisonWeightsTabComponent {
 
   /** Save/reset/recalculate actions, projected into the global header by the parent on lg. */
   readonly weightsActionsTpl = viewChild<TemplateRef<unknown>>('weightsActions');
+
+  /** Weight keys of metrics the licensing policy cannot compute (commercial mode); kept, shown disabled. */
+  readonly unavailableWeights = computed((): Record<string, true> => {
+    const hidden = unavailableSet(this.galleryStore.config()?.unavailable_metrics);
+    const out: Record<string, true> = {};
+    for (const k of this.weightKeys()) if (isUnavailableKey(k, hidden)) out[k] = true;
+    return out;
+  });
 
   weightKeys = computed(() => Object.keys(this.weights()).filter(k => k.endsWith('_percent')));
 

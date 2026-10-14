@@ -178,6 +178,8 @@ export interface ViewerConfig {
     };
   };
   sort_options_grouped: Record<string, SortOption[]> | null;
+  /** Photos-column names of metrics hidden by the licensing policy (commercial mode). */
+  unavailable_metrics?: string[];
   features: {
     show_similar_button: boolean;
     show_merge_suggestions: boolean;

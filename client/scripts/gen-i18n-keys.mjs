@@ -36,21 +36,19 @@ const header =
   '// Do not edit by hand -- run `node scripts/gen-i18n-keys.mjs` to regenerate.\n' +
   '// Leaf values are the dot-path translation keys used by the `translate` pipe and I18nService.t().\n' +
   '//\n' +
-  '// I18N_KEYS re-exports the same table under a second name, for class-field initializers\n' +
-  "// only: `protected readonly I18N = I18N;` looks harmless, but Vitest's unit-test builder\n" +
-  '// runs specs through Vite\'s SSR transform, which rewrites references to imported bindings\n' +
-  "// into namespace-property accesses. That transform's scope walker registers a class field's\n" +
-  "// own *name* as a local binding, so in `protected readonly I18N = I18N` the initializer's\n" +
-  '// right-hand `I18N` looks locally shadowed and the rewrite is skipped -- it then resolves to\n' +
-  "// whatever raw `I18N` is in scope, which under an unlucky chunk layout is a *different* chunk's\n" +
-  '// own uninitialised copy of this module (`undefined`), not the real table. Every template\n' +
-  '// binding then dereferences `undefined` on first change detection. Initializing the field from\n' +
-  '// `I18N_KEYS` instead uses a name the field does not shadow, so the rewrite fires correctly.\n' +
-  '// Always initialize the `I18N` field from `I18N_KEYS`, never from `I18N` itself.\n\n';
+  '// i18nKeys() returns the same table, for class-field initializers: always write\n' +
+  '// `protected readonly I18N = i18nKeys();`, never `= I18N` or any other bare imported binding.\n' +
+  "// Vitest's unit-test builder runs specs through Vite's SSR transform, which turns a class\n" +
+  '// field whose initializer is a bare imported identifier into a `const X = ns.X` snapshot\n' +
+  '// hoisted above the enclosing top-level statement. With the zone.js test polyfill the builder\n' +
+  '// lowers async arrows to `__async(this, ...)`; that top-level `this` makes esbuild wrap the\n' +
+  '// spec as CommonJS and initialize this module lazily inside `init_keys()`, so the snapshot\n' +
+  '// is taken before the table exists and every template binding dereferences `undefined`.\n' +
+  '// A call is rewritten to a live namespace access and runs at construction, after init.\n\n';
 const body =
   `export const I18N = {\n${emit(en, '', 1)}\n} as const;\n\n` +
-  '/** Same table as {@link I18N}, exported under a distinct name for class-field initializers -- see header comment above. */\n' +
-  'export const I18N_KEYS = I18N;\n';
+  '/** Returns {@link I18N}; use it to initialize class fields -- see the header comment above. */\n' +
+  'export function i18nKeys(): typeof I18N {\n  return I18N;\n}\n';
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 fs.writeFileSync(outPath, header + body);

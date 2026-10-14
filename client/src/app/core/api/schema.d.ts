@@ -7560,6 +7560,11 @@ export interface components {
             type_labels: {
                 [key: string]: string;
             };
+            /**
+             * Unavailable Metrics
+             * @default []
+             */
+            unavailable_metrics?: string[];
         };
         /** WeightSnapshotItem */
         WeightSnapshotItem: {

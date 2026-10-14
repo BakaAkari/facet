@@ -1297,6 +1297,7 @@
   },
   "comparison": {
     "title": "Ajuste de Pesos",
+    "unavailable_commercial": "Indisponível no modo comercial (esta métrica é ignorada na pontuação; o peso é mantido).",
     "category": "Categoria",
     "weights": "Pesos",
     "weight_sliders": "Controles de Peso",

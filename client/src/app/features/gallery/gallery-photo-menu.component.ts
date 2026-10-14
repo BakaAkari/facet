@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, input, output, viewChild 
 import { MatDividerModule } from '@angular/material/divider';
 import { MatIconModule } from '@angular/material/icon';
 import { MatMenu, MatMenuModule } from '@angular/material/menu';
-import { I18N_KEYS } from '../../core/i18n/keys';
+import { i18nKeys } from '../../core/i18n/keys';
 import { Album } from '../../core/services/album.service';
 import { Photo } from '../../shared/models/photo.model';
 import { SequenceKindIconPipe } from '../../shared/pipes/sequence-kind.pipe';
@@ -276,7 +276,7 @@ const RATINGS = [1, 2, 3, 4, 5].map(value => ({ value, label: '★'.repeat(value
   `,
 })
 export class GalleryPhotoMenuComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   protected readonly ratings = RATINGS;
 
   readonly isEdition = input.required<boolean>();

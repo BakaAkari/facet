@@ -95,6 +95,11 @@ class ViewerConfigResponse(BaseModel):
 
     sort_options: list[tuple[str, str]]
     sort_options_grouped: Optional[dict[str, Any]] = None
+    # Photos-column names of metrics the active licensing policy cannot compute
+    # (commercial mode: ``liqe_score``, ``aesthetic_iaa``, and ``face_quality_iqa``
+    # unless OFIQ is installed). Empty in default mode. ``sort_options`` already
+    # excludes them; the client hides the matching filters and disables their weights.
+    unavailable_metrics: list[str] = []
     quality_levels: list[tuple[str, str]]
     type_labels: dict[str, str]
     defaults: dict[str, Any]

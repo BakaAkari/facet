@@ -184,6 +184,10 @@ A first-class sort option backed by the personal ranker's `learned_score` (renam
 
 Controlled by `viewer.features.show_my_taste` (default: `true`). Ranker status is exposed via `GET /api/ranker/status`.
 
+### Metrics hidden in commercial mode
+
+With `licensing.mode` set to `commercial`, the viewer hides the metrics whose models cannot be used commercially: the LIQE, Aesthetic IAA and (unless OFIQ is installed) Face Quality IQA range filters, their filter chips and their sort options. `/api/config` lists them in `unavailable_metrics`. On the Weight Tuning page their sliders stay visible but disabled, with a tooltip; the weights are kept, because scoring drops and renormalises them. Restart the viewer after changing the licensing mode.
+
 ## Gallery Features
 
 ### Photo Cards

@@ -15,7 +15,7 @@ import { IsLensNamePipe } from '../../pipes/is-lens-name.pipe';
 import { DownloadIconPipe } from '../../pipes/download-icon.pipe';
 import { DownloadOption } from '../../../core/api/types';
 import { PhotoDetailBase } from '../../directives/photo-detail-base.directive';
-import { I18N_KEYS } from '../../../core/i18n/keys';
+import { i18nKeys } from '../../../core/i18n/keys';
 
 @Component({
   selector: 'app-shared-photo-detail',
@@ -270,7 +270,7 @@ import { I18N_KEYS } from '../../../core/i18n/keys';
   `,
 })
 export class SharedPhotoDetailComponent extends PhotoDetailBase implements OnInit {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
 
