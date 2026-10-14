@@ -152,7 +152,14 @@ class TestModelRegistry:
     def test_get_model_vram_known(self, manager):
         assert manager.get_model_vram('clip') == 5
         assert manager.get_model_vram('vlm_tagger') == 18
-        assert manager.get_model_vram('topiq') == 2
+        assert manager.get_model_vram('topiq') == 2.5
+
+    def test_saliency_and_topiq_planner_entries_are_the_measured_figures(self, manager):
+        """Issue #184: BiRefNet peaks ~3 GB and TOPIQ 2.41 GB NVML; the old 2/2 under-booked both."""
+        from models.model_manager import ModelManager
+        assert ModelManager.MODEL_VRAM_REQUIREMENTS['saliency'] == 3
+        assert ModelManager.MODEL_VRAM_REQUIREMENTS['topiq'] == 2.5
+        assert manager.get_model_vram('saliency') == 3
 
     def test_get_model_vram_unknown_returns_default_4(self, manager):
         assert manager.get_model_vram('does_not_exist') == 4

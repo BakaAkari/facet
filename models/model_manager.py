@@ -1116,7 +1116,7 @@ class ModelManager:
         'qwen3_5_tagger': 7,     # Qwen3.5-2B: ~4GB weights + 3GB inference
         'qwen3_5_4b_tagger': 10, # Qwen3.5-4B: ~8GB weights + 2GB inference
         # PyIQA models (lightweight, high accuracy)
-        'topiq': 2,
+        'topiq': 2.5,         # measured 2.41 GiB NVML / 2.19 reserved (issue #184)
         'hyperiqa': 2,
         'dbcnn': 2,
         'musiq': 2,
@@ -1129,7 +1129,7 @@ class ModelManager:
         'faces_permissive': 1,  # YuNet + SFace + MediaPipe (small ONNX/CPU models)
         'aesthetic_v25': 2,   # Aesthetic Predictor V2.5 (SigLIP head)
         'deqa': 16,           # DeQA-Score VLM (very heavy)
-        'saliency': 2,        # BiRefNet saliency detection
+        'saliency': 3,        # BiRefNet saliency detection (weights + one image's activations, issue #184)
     }
 
     # RAM requirements for CPU-only execution (in GB)
@@ -1156,7 +1156,7 @@ class ModelManager:
         'qwen3_5_4b_tagger': 8.0,
     }
 
-    def get_model_vram(self, model_name: str) -> int:
+    def get_model_vram(self, model_name: str) -> float:
         """Get VRAM requirement for a model in GB."""
         if model_name in ('qrealign', 'qrealign_quality') and self._qrealign_is_lite():
             return self.QREALIGN_LITE_VRAM_GB

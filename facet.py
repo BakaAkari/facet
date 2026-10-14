@@ -248,6 +248,33 @@ def _commit_in_chunks(conn, sql, rows, size=RECOMPUTE_COMMIT_BATCH):
         conn.commit()
 
 
+def _flush_saliency_batch(conn, scorer_model, batch_paths, batch_pil, batch_cv):
+    """Score one batch and UPDATE its photos; returns how many rows were written.
+
+    A photo whose saliency failed (all-None result) is not written and not counted:
+    an existing value survives ``--force``, and a photo that never had saliency keeps
+    ``subject_bbox IS NULL`` so the next run selects it again.
+    """
+    scores = scorer_model.score_batch(batch_pil, batch_cv)
+    written = 0
+    for path, s in zip(batch_paths, scores):
+        if all(s.get(k) is None for k in (
+                'subject_sharpness', 'subject_prominence', 'subject_placement', 'bg_separation')):
+            logger.error("Saliency failed for %s; leaving its saliency columns unchanged", path)
+            continue
+        conn.execute(
+            "UPDATE photos SET subject_sharpness = ?, subject_prominence = ?, "
+            "subject_placement = ?, bg_separation = ?, subject_bbox = ? "
+            "WHERE path = ?",
+            (s['subject_sharpness'], s['subject_prominence'],
+             s['subject_placement'], s['bg_separation'],
+             json.dumps(s['subject_bbox']) if s.get('subject_bbox') else None,
+             path),
+        )
+        written += 1
+    return written
+
+
 def _report_dry_run(results, sample_count):
     """Print the dry-run results table and return the process exit code.
 
@@ -2805,21 +2832,6 @@ def main():
         batch_size = config.get_processing_settings().get('gpu_batch_size', 16)
         updated = 0
 
-        def _flush_saliency_batch(conn, batch_paths, batch_pil, batch_cv):
-            scores = scorer_model.score_batch(batch_pil, batch_cv)
-            for i, path in enumerate(batch_paths):
-                s = scores[i]
-                conn.execute(
-                    "UPDATE photos SET subject_sharpness = ?, subject_prominence = ?, "
-                    "subject_placement = ?, bg_separation = ?, subject_bbox = ? "
-                    "WHERE path = ?",
-                    (s.get('subject_sharpness', 5.0), s.get('subject_prominence', 0.0),
-                     s.get('subject_placement', 5.0), s.get('bg_separation', 5.0),
-                     json.dumps(s['subject_bbox']) if s.get('subject_bbox') else None,
-                     path),
-                )
-            return len(batch_paths)
-
         # Fetch each thumbnail BLOB on demand (a fetchall would hold the whole
         # library's thumbnails in RAM) and commit in RECOMPUTE_COMMIT_BATCH steps.
         with get_connection(args.db) as read_conn, get_connection(args.db) as conn:
@@ -2840,14 +2852,14 @@ def main():
                 batch_pil.append(pil_img)
                 batch_cv.append(cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR))
                 if len(batch_paths) >= batch_size:
-                    updated += _flush_saliency_batch(conn, batch_paths, batch_pil, batch_cv)
+                    updated += _flush_saliency_batch(conn, scorer_model, batch_paths, batch_pil, batch_cv)
                     pending += len(batch_paths)
                     batch_paths, batch_pil, batch_cv = [], [], []
                     if pending >= RECOMPUTE_COMMIT_BATCH:
                         conn.commit()
                         pending = 0
             if batch_paths:
-                updated += _flush_saliency_batch(conn, batch_paths, batch_pil, batch_cv)
+                updated += _flush_saliency_batch(conn, scorer_model, batch_paths, batch_pil, batch_cv)
             conn.commit()
 
         scorer_model.unload()

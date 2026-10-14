@@ -42,6 +42,14 @@ SCAN_FAILED_KEY = '_scan_failed'
 # written are unknown, so a restricted (partial) save leaves them out and keeps the stored
 # values instead of overwriting them with NULL.
 FACE_FAILED_KEY = '_face_failed'
+# Set by the saliency pass for a photo whose BiRefNet run failed (e.g. out of memory). The five
+# saliency columns are left unset for it, so a restricted save keeps any stored values and a
+# photo that never had saliency stays NULL instead of carrying a neutral number.
+SALIENCY_FAILED_KEY = '_saliency_failed'
+SALIENCY_PASS_COLUMNS = frozenset({
+    'subject_sharpness', 'subject_prominence', 'subject_placement', 'bg_separation',
+    'subject_bbox',
+})
 # Every column the face pass produces for the photo row (not the ``faces`` table).
 FACE_PASS_COLUMNS = frozenset({
     'face_count', 'face_quality', 'eye_sharpness', 'face_sharpness', 'face_ratio', 'is_blink',
@@ -878,9 +886,12 @@ class ChunkedMultiPassProcessor:
             scores = scorer.score_batch(pil_imgs, cv_imgs)
 
             for i, path in enumerate(paths):
+                if all(scores[i].get(key) is None for key in SALIENCY_PASS_COLUMNS - {'subject_bbox'}):
+                    results[path][SALIENCY_FAILED_KEY] = True
+                    continue
                 for key in ('subject_sharpness', 'subject_prominence',
                            'subject_placement', 'bg_separation'):
-                    results[path][key] = scores[i].get(key, 5.0)
+                    results[path][key] = scores[i][key]
                 results[path]['subject_bbox'] = scores[i].get('subject_bbox')
         except Exception as e:
             licensing.reraise_if_refused()
@@ -1248,10 +1259,13 @@ class ChunkedMultiPassProcessor:
             computed = {}
             face_details = []
             face_failed = bool(data.get(FACE_FAILED_KEY))
+            saliency_failed = bool(data.get(SALIENCY_FAILED_KEY))
             for key, value in data.items():
-                if key in (SCAN_FAILED_KEY, FACE_FAILED_KEY):
+                if key in (SCAN_FAILED_KEY, FACE_FAILED_KEY, SALIENCY_FAILED_KEY):
                     continue
                 if face_failed and key in FACE_PASS_COLUMNS:
+                    continue
+                if saliency_failed and key in SALIENCY_PASS_COLUMNS:
                     continue
                 if key == 'face_details':
                     face_details = value
