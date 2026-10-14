@@ -1348,3 +1348,60 @@ class TestBareMetalBudgetUsesAvailableRam:
         monkeypatch.setattr(system_memory, 'memory_limit_bytes', lambda: None)
         monkeypatch.setattr(system_memory, 'effective_memory', lambda: UNKNOWN_MEMORY)
         assert ModelManager.detect_available_ram_gb() == float('inf')
+
+
+class TestWrapperHelperModulesFollowTheCache:
+    """``topiq_nr_face`` kept ~0.19 GiB on the card after a cached unload.
+
+    pyiqa's CGFIQA net holds a facexlib ``FaceRestoreHelper`` as a plain
+    attribute, so its RetinaFace / ParseNet are not children of ``model.model``
+    and ``model.model.cpu()`` never reached them. The cache path has to move
+    them too, and bring them back.
+    """
+
+    class _Mod:
+        def __init__(self):
+            self.where = 'cuda'
+
+        def parameters(self):
+            return iter(())
+
+        def cpu(self):
+            self.where = 'cpu'
+            return self
+
+        def to(self, device):
+            self.where = device
+            return self
+
+    def _wrapper(self):
+        det, parse = self._Mod(), self._Mod()
+        helper = types.SimpleNamespace(face_det=det, face_parse=parse, device='cuda')
+        net = types.SimpleNamespace(face_helper=helper, crop_size=512)
+        inner = self._Mod()
+        inner.net = net
+        return types.SimpleNamespace(model=inner), inner, det, parse
+
+    def test_cached_unload_moves_helper_modules_off_the_device(self, manager):
+        wrapper, inner, det, parse = self._wrapper()
+
+        manager._move_to_cpu(wrapper, 'topiq_nr_face')
+
+        assert (inner.where, det.where, parse.where) == ('cpu', 'cpu', 'cpu')
+
+    def test_restore_moves_them_back(self, manager):
+        wrapper, inner, det, parse = self._wrapper()
+        manager._move_to_cpu(wrapper, 'topiq_nr_face')
+        manager.device = 'cuda'
+
+        manager._move_to_device(wrapper, 'topiq_nr_face')
+
+        assert (inner.where, det.where, parse.where) == ('cuda', 'cuda', 'cuda')
+
+    def test_wrapper_without_a_net_is_unaffected(self, manager):
+        inner = self._Mod()
+        wrapper = types.SimpleNamespace(model=inner)
+
+        manager._move_to_cpu(wrapper, 'topiq')
+
+        assert inner.where == 'cpu'

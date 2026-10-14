@@ -270,14 +270,13 @@ class ModelManager:
         """Load SigLIP 2 NaFlex via transformers (16gb/24gb profiles)."""
         logger.info("Loading SigLIP 2 NaFlex model (transformers)...")
         try:
-            from transformers import AutoModel, AutoProcessor
+            from transformers import AutoProcessor
+
+            from utils.siglip import load_siglip_model
 
             model_name = clip_config.get('model_name', 'google/siglip2-so400m-patch16-naflex')
 
-            model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-            model = model.to(self.device).eval()
-            if self.device == 'cuda':
-                model = model.half()
+            model = load_siglip_model(model_name, self.device)
             processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
             self.models['clip'] = {
@@ -524,6 +523,22 @@ class ModelManager:
         model_ram = self.MODEL_RAM_REQUIREMENTS.get(model_name, 2.0)
         return available_gb > model_ram + self._RAM_HEADROOM_GB
 
+    @staticmethod
+    def _unregistered_modules(model):
+        """Modules a wrapper's ``model.model`` holds outside its module tree.
+
+        pyiqa's face-quality net keeps a facexlib ``FaceRestoreHelper`` as a
+        plain attribute, so its detector and parser (~0.19 GiB) are not
+        children of ``model.model`` and ``.cpu()`` / ``.to()`` on it skip them.
+        Looks one holder deep into ``model.model.net``; a wrapper without a
+        net yields nothing.
+        """
+        net = getattr(getattr(model, 'model', None), 'net', None)
+        for holder in list(getattr(net, '__dict__', {}).values()):
+            for attr in list(getattr(holder, '__dict__', {}).values()):
+                if hasattr(attr, 'parameters') and hasattr(attr, 'cpu') and hasattr(attr, 'to'):
+                    yield attr
+
     def _move_to_cpu(self, model, model_name: str):
         """Move a model's tensors to CPU for RAM caching.
 
@@ -544,6 +559,8 @@ class ModelManager:
         elif hasattr(model, 'model') and hasattr(model.model, 'cpu'):
             # Wrapper objects: PyIQAScorer, RAMTagger
             model.model.cpu()
+            for helper in self._unregistered_modules(model):
+                helper.cpu()
         elif isinstance(model, dict):
             # Dict-style: clip, clip_aesthetic
             for v in model.values():
@@ -568,6 +585,8 @@ class ModelManager:
                     model.saliency_detector.model.to(device)
         elif hasattr(model, 'model') and hasattr(model.model, 'to'):
             model.model.to(device)
+            for helper in self._unregistered_modules(model):
+                helper.to(device)
         elif isinstance(model, dict):
             for v in model.values():
                 if hasattr(v, 'to'):
