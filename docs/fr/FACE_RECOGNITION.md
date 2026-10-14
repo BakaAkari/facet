@@ -80,7 +80,7 @@ Voir [Intégration à la galerie](#intégration-à-la-galerie) pour la référen
 | Paramètre | Défaut | Description |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Confiance de détection minimale |
-| `min_face_size` | `20` | Taille de visage minimale en pixels |
+| `min_face_size` | `20` | Taille de visage minimale en pixels — InsightFace uniquement : le détecteur YuNet du mode commercial utilise des valeurs fixes mesurées (confiance 0,7, 30 px) et ignore `min_confidence_percent` ainsi que ce réglage. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio pour la détection des clignements |
 
 ### Regroupement des visages
@@ -194,7 +194,7 @@ Le regroupement CPU avec un `algorithm` fixe est déterministe pour une même en
 
 Tous les modes sauf `--cluster-faces-force` conservent les enregistrements de personnes, mais tous effacent les affectations visage→personne et les reconstruisent. Un groupe reconstruit est rendu à une personne lorsque :
 
-1. son embedding moyen se situe à moins de `merge_threshold` (0,6 cosinus par défaut pour ArcFace, 0,45 pour SFace) du centroïde stocké de cette personne, **ou**
+1. son embedding moyen se situe à moins de `merge_threshold` (0,6 cosinus par défaut pour ArcFace, 0,65 pour SFace) du centroïde stocké de cette personne, **ou**
 2. au moins la moitié de ses visages appartenaient à cette personne avant l'exécution.
 
 La seconde règle compte plus qu'il n'y paraît. Le centroïde d'une personne est un unique vecteur moyen : quelqu'un photographié pendant des années couvre une région large, et HDBSCAN le découpe correctement en sous-groupes serrés qui se retrouvent loin de cette moyenne et échouent à la règle 1. Sur la bibliothèque ci-dessus, la règle 1 seule rendait 38 % des visages rattachés aux personnes nommées ; avec la règle 2, on atteint 96 %.

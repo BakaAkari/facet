@@ -23,10 +23,10 @@ from typing import Callable
 
 import numpy as np
 
+from db.person_carry_over import match_boxes
 from optimization.eval_common import (
     append_partial,
     bootstrap_ci,
-    bound_to_inference_size,
     done_keys,
     load_original,
     load_partial_records,
@@ -36,10 +36,10 @@ from optimization.eval_common import (
     ro_connection,
     size_bucket,
     stratified_sample_rows,
-    match_boxes,
     SIZE_BUCKETS,
     pairwise_f1_grid,
 )
+from utils.image_bounds import bound_to_inference_size
 
 logger = logging.getLogger("facet.model_eval")
 
@@ -555,25 +555,12 @@ def _load_bgr(path):
 
 
 def _yunet_detector_factory(device, conf):
-    from analyzers.face_permissive import _SCORE_COL, PermissiveFaceAnalyzer
+    from analyzers.face_permissive import PermissiveFaceAnalyzer
     an = PermissiveFaceAnalyzer(min_confidence=DEFAULT_YUNET_CONFIDENCE if conf is None else conf)
-    if not an.available or not an._ensure_models():
+    an.detect_boxes(np.zeros((64, 64, 3), dtype=np.uint8))  # loads the weights; flips `available` on failure
+    if not an.available:
         raise RuntimeError("YuNet is unavailable (OpenCV lacks FaceDetectorYN or the weights failed to load)")
-
-    def detect(img):
-        h, w = img.shape[:2]
-        out = []
-        for row in an._detect(img):
-            c = float(row[_SCORE_COL])
-            if c < an.min_confidence:
-                continue
-            x1, y1 = max(0.0, float(row[0])), max(0.0, float(row[1]))
-            x2, y2 = min(float(w), float(row[0] + row[2])), min(float(h), float(row[1] + row[3]))
-            if x2 - x1 < an.min_face_size or y2 - y1 < an.min_face_size:
-                continue
-            out.append((x1, y1, x2, y2, c))
-        return out
-    return detect
+    return an.detect_boxes
 
 
 def _blazeface_detector_factory(device, conf):

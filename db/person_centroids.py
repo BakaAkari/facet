@@ -24,8 +24,6 @@ def person_centroid_model(conn, person_id, active=None):
         "WHERE person_id = ? AND embedding IS NOT NULL GROUP BY embedding_model",
         (person_id,),
     ).fetchall()
-    if not rows:
-        return None
     counts = {}
     for tag, count in rows:
         model = tag or ARCFACE_MODEL

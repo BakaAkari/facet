@@ -228,3 +228,58 @@ class TestLicensingModeEnv:
         monkeypatch.setenv('FACET_LICENSING_MODE', value)
         with pytest.raises(ValueError, match='FACET_LICENSING_MODE'):
             licensing.resolve_policy({})
+
+
+class TestAllowUnclearIsABoolean:
+    """06-1: a truthy non-bool must never grant the unclear-licence components."""
+
+    @pytest.mark.parametrize('value', ['false', 'no', '0', 'true', '', 0, 1, 1.0, [], {}, None])
+    def test_non_bool_in_config_raises(self, value):
+        with pytest.raises(ValueError, match='allow_unclear'):
+            licensing.resolve_policy({'licensing': {'mode': 'commercial', 'allow_unclear': value}})
+
+    @pytest.mark.parametrize('value', ['false', 'no', 0, 1])
+    def test_non_bool_raises_in_default_mode_too(self, value):
+        with pytest.raises(ValueError, match='allow_unclear'):
+            licensing.resolve_policy({'licensing': {'mode': 'default', 'allow_unclear': value}})
+
+    @pytest.mark.parametrize('value', ['false', 'no', 0, 1])
+    def test_set_policy_rejects_non_bool(self, value):
+        with pytest.raises(ValueError, match='allow_unclear'):
+            licensing.set_policy('commercial', value)
+
+    @pytest.mark.parametrize('value', [True, False])
+    def test_real_booleans_pass(self, value):
+        pol = licensing.resolve_policy({'licensing': {'mode': 'commercial', 'allow_unclear': value}})
+        assert pol.allow_unclear is value
+
+
+class TestLicensingAllowUnclearEnv:
+    """06-2: $FACET_LICENSING_ALLOW_UNCLEAR can only tighten, never grant."""
+
+    CFG_TRUE = {'licensing': {'mode': 'commercial', 'allow_unclear': True}}
+    CFG_FALSE = {'licensing': {'mode': 'commercial', 'allow_unclear': False}}
+
+    @pytest.mark.parametrize('value', ['0', 'false', 'No', ' OFF '])
+    def test_false_value_forces_unclear_off(self, monkeypatch, value):
+        monkeypatch.setenv('FACET_LICENSING_ALLOW_UNCLEAR', value)
+        assert licensing.resolve_policy(self.CFG_TRUE).allow_unclear is False
+
+    @pytest.mark.parametrize('value', ['', '1', 'true', 'yes', 'on'])
+    def test_true_or_empty_never_grants(self, monkeypatch, value):
+        monkeypatch.setenv('FACET_LICENSING_ALLOW_UNCLEAR', value)
+        assert licensing.resolve_policy(self.CFG_FALSE).allow_unclear is False
+        assert licensing.resolve_policy(self.CFG_TRUE).allow_unclear is True
+
+    @pytest.mark.parametrize('value', ['maybe', '2', 'flase'])
+    def test_invalid_value_raises(self, monkeypatch, value):
+        monkeypatch.setenv('FACET_LICENSING_ALLOW_UNCLEAR', value)
+        with pytest.raises(ValueError, match='FACET_LICENSING_ALLOW_UNCLEAR'):
+            licensing.resolve_policy(self.CFG_TRUE)
+
+    def test_lazy_policy_sees_env(self, monkeypatch):
+        import config_resolve
+        monkeypatch.setattr(config_resolve, 'load_resolved', lambda *a, **k: self.CFG_TRUE)
+        monkeypatch.setenv('FACET_LICENSING_ALLOW_UNCLEAR', '0')
+        licensing.reset_policy()
+        assert licensing.policy() == licensing.Policy('commercial', False)

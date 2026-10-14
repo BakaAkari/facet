@@ -80,7 +80,7 @@ Consulte [Integração com o visualizador](#integração-com-o-visualizador) par
 | Configuração | Padrão | Descrição |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Confiança mínima de detecção |
-| `min_face_size` | `20` | Tamanho mínimo do rosto em pixels |
+| `min_face_size` | `20` | Tamanho mínimo do rosto em pixels — Apenas InsightFace: o detetor YuNet do modo comercial usa valores fixos medidos (confiança 0,7, 30 px) e ignora `min_confidence_percent` e esta definição. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio para detecção de piscadas |
 
 ### Agrupamento de rostos
@@ -194,7 +194,7 @@ O agrupamento em CPU com um `algorithm` fixo é determinístico para a mesma ent
 
 Todos os modos exceto `--cluster-faces-force` preservam os registos de pessoas, mas todos limpam as atribuições rosto→pessoa e reconstroem-nas. Um grupo reconstruído é devolvido a uma pessoa quando:
 
-1. o seu embedding médio está dentro de `merge_threshold` (0,6 de cosseno por omissão para ArcFace, 0,45 para SFace) do centroide armazenado dessa pessoa, **ou**
+1. o seu embedding médio está dentro de `merge_threshold` (0,6 de cosseno por omissão para ArcFace, 0,65 para SFace) do centroide armazenado dessa pessoa, **ou**
 2. pelo menos metade dos seus rostos pertencia a essa pessoa antes da execução.
 
 A segunda regra pesa mais do que parece. O centroide de uma pessoa é um único vetor médio: quem foi fotografado ao longo de anos cobre uma região ampla, e o HDBSCAN divide-o corretamente em subgrupos compactos que ficam longe dessa média e falham a regra 1. Na biblioteca acima, a regra 1 sozinha devolvia 38% dos rostos ligados a pessoas nomeadas; com a regra 2 chega-se a 96%.

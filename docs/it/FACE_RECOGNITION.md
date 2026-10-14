@@ -80,7 +80,7 @@ Vedi [Integrazione nel visualizzatore](#integrazione-nel-visualizzatore) per il 
 | Impostazione | Predefinito | Descrizione |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Confidenza minima di rilevamento |
-| `min_face_size` | `20` | Dimensione minima del volto in pixel |
+| `min_face_size` | `20` | Dimensione minima del volto in pixel — Solo InsightFace: il rilevatore YuNet della modalità commerciale usa valori fissi misurati (confidenza 0,7, 30 px) e ignora `min_confidence_percent` e questa impostazione. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio per il rilevamento degli occhi chiusi |
 
 ### Raggruppamento dei volti
@@ -194,7 +194,7 @@ Il raggruppamento su CPU con un `algorithm` fisso è deterministico a parità di
 
 Tutte le modalità tranne `--cluster-faces-force` conservano i record delle persone, ma tutte cancellano le assegnazioni volto→persona e le ricostruiscono. Un gruppo ricostruito viene restituito a una persona quando:
 
-1. il suo embedding medio rientra in `merge_threshold` (0,6 coseno per impostazione predefinita per ArcFace, 0,45 per SFace) rispetto al centroide memorizzato di quella persona, **oppure**
+1. il suo embedding medio rientra in `merge_threshold` (0,6 coseno per impostazione predefinita per ArcFace, 0,65 per SFace) rispetto al centroide memorizzato di quella persona, **oppure**
 2. almeno metà dei suoi volti apparteneva a quella persona prima dell'esecuzione.
 
 La seconda regola pesa più di quanto sembri. Il centroide di una persona è un singolo vettore medio: chi è stato fotografato per anni copre una regione ampia, e HDBSCAN lo divide correttamente in sottogruppi compatti che finiscono lontano da quella media e falliscono la regola 1. Nella libreria sopra, la sola regola 1 restituiva il 38% dei volti collegati a persone nominate; con la regola 2 si arriva al 96%.

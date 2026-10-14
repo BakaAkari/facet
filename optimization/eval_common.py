@@ -2,7 +2,7 @@
 
 Used by ``optimization/model_eval.py`` (``--evaluate-models``) and
 ``scripts/qrealign_ab.py``: stratified sampling, resume bookkeeping for slow GPU
-runs, the production input bound, and the pairwise-agreement statistics.
+runs, and the pairwise-agreement statistics.
 Nothing here writes to the library DB.
 """
 
@@ -116,33 +116,6 @@ def ro_connection(db_path):
     conn = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def bounded_size(w, h, max_side):
-    """Target (w, h) after the production long-edge bound; unchanged if within it."""
-    long_edge = max(w, h)
-    if long_edge <= max_side:
-        return w, h
-    scale = max_side / long_edge
-    return int(w * scale), int(h * scale)
-
-
-def bound_to_inference_size(img):
-    """Mirror the production input contract before scoring.
-
-    PyIQAScorer bounds every image to _MAX_INFERENCE_SIZE on the long edge
-    before any pyiqa metric sees it (models/pyiqa_scorer.py). Feeding this
-    harness native-resolution originals instead measured qrealign encoding
-    24MP frames whole — 23s/img and ~13GB of activations for a 0.8B model —
-    a regime no shipped code path ever enters. Both arms get the same bound
-    so the latency half of the ship gate compares what production runs.
-    """
-    from models.pyiqa_scorer import PyIQAScorer
-    from PIL import Image
-    w, h = bounded_size(*img.size, PyIQAScorer._MAX_INFERENCE_SIZE)
-    if (w, h) == img.size:
-        return img
-    return img.resize((w, h), Image.LANCZOS)
 
 
 def load_original(db_path_str):
@@ -259,38 +232,6 @@ def size_bucket(bbox, frame_w, frame_h):
     if share < 0.05:
         return SIZE_BUCKETS[1]
     return SIZE_BUCKETS[2]
-
-
-def iou(a, b):
-    """Intersection over union of two ``(x1, y1, x2, y2)`` boxes."""
-    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
-    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    inter = ix * iy
-    union = ((a[2] - a[0]) * (a[3] - a[1])) + ((b[2] - b[0]) * (b[3] - b[1])) - inter
-    return inter / union if union > 0 else 0.0
-
-
-def match_boxes(reference, detected, threshold=0.5):
-    """One-to-one greedy IoU matching; returns ``[(ref_idx, det_idx, iou)]``.
-
-    Candidate pairs are taken in descending IoU (ties broken by lower indices, so
-    the result is deterministic), each reference and each detection used once.
-    """
-    cands = []
-    for i, r in enumerate(reference):
-        for j, d in enumerate(detected):
-            v = iou(r, d)
-            if v >= threshold:
-                cands.append((-v, i, j))
-    cands.sort()
-    used_r, used_d, out = set(), set(), []
-    for neg, i, j in cands:
-        if i in used_r or j in used_d:
-            continue
-        used_r.add(i)
-        used_d.add(j)
-        out.append((i, j, -neg))
-    return out
 
 
 def pairwise_f1_grid(sim, labels, grid):

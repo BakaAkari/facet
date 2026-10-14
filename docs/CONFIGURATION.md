@@ -1292,7 +1292,7 @@ Heavy/experimental quality scorers that add supplementary columns; **never a rep
 | `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (SigLIP head, ~2GB). Requires the `aesthetic-predictor-v2-5` package. **Deprecated:** AGPL-3.0-licensed and unmaintained upstream since 2024-12-18 — prefer `qrealign`. |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score VLM IQA (16GB+ GPU; skipped & left NULL otherwise). |
 
-**Install the optional dependencies** for whatever you enable: `pip install -e .[iqa-extended]` (adds `aesthetic-predictor-v2-5`), or uncomment the matching line in `requirements.txt`. Q-ReAlign ships with `pyiqa`; DeQA-Score downloads via `transformers`.
+**Install the optional dependencies** for whatever you enable: `pip install -e .[iqa-extended]` (adds `aesthetic-predictor-v2-5`), or uncomment the matching line in `requirements.txt`. DeQA-Score downloads via `transformers`.
 
 When enabled, each metric is exposed to the weighted aggregate but defaults to weight 0, so `--recompute-average` is byte-identical until you give it a weight. Run `python facet.py --eval-iqa-srcc` to measure how well each metric ranks your library against your own star ratings.
 
@@ -1318,11 +1318,13 @@ Controls which model components Facet may load. See [THIRD_PARTY_MODELS.md](THIR
 | Setting | Default | Accepted values | Description |
 |---------|---------|-----------------|-------------|
 | `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` loads every model (shipped behaviour). `"commercial"` never imports, queues or downloads components whose licence is not commercial-safe: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) and InsightFace are refused at every layer. Aesthetic and quality come from the native Q-ReAlign scorer, composition from the rule-based analyser, and faces from the permissive face pipeline (YuNet detection, SFace 128-d embeddings, optional MediaPipe eyes/smile and OFIQ face quality). `liqe` and `aesthetic_iaa` have no replacement and stay `NULL`. |
-| `allow_unclear` | `false` | `true` / `false` | In commercial mode, also allow components whose licence is *unclear* (SAMP-Net, U2-Net-P, the LAION CLIP-MLP aesthetic head). Components with a non-commercial licence stay refused. |
+| `allow_unclear` | `false` | `true` / `false` | In commercial mode, also allow components whose licence is *unclear* (SAMP-Net, U2-Net-P, the LAION CLIP-MLP aesthetic head). Components with a non-commercial licence stay refused. It must be a JSON boolean; any other value is an error that stops startup. |
 
 A refused component raises a `LicenceError` that names the component and its replacement; every handler that could absorb it re-raises it (a test enforces this), so a refusal stops the scan at startup instead of turning into per-photo failures or a silent fallback. Commands that depend only on a refused component (`--score-topiq`, `--recompute-iqa` for pyiqa models, `--recompute-composition-gpu`) exit with that message in commercial mode. The mode is read from the resolved config at startup. The viewer passes `FACET_LICENSING_MODE=commercial` in the environment of every `facet.py` process it spawns (scans, recomputes), so a child never re-resolves to default mode from a different working directory. Nothing here is legal advice.
 
-The `FACET_LICENSING_MODE` environment variable overrides the file: `commercial` forces commercial mode, `default` or empty means no override (it can never relax a file that says `commercial`), and any other value is ignored with a warning.
+The `FACET_LICENSING_MODE` environment variable overrides the file: `commercial` forces commercial mode, `default` or empty means no override (it can never relax a file that says `commercial`), and any other value is an error that stops startup (so a typo cannot silently leave a commercial install running in default mode).
+
+The `FACET_LICENSING_ALLOW_UNCLEAR` environment variable can only tighten as well: `0`, `false`, `no` or `off` forces `licensing.allow_unclear` off even when the file says `true`, while `1`, `true`, `yes`, `on` or empty is no override and never grants it. Any other value is an error. The viewer sets `FACET_LICENSING_ALLOW_UNCLEAR=0` in the environment of every `facet.py` process it spawns whenever its own policy forbids the unclear components, so a spawned scan cannot relax the server's policy from a working-directory config. `licensing.allow_unclear` itself must be a JSON boolean: a string such as `"false"` or a number is rejected with an error at startup instead of being read as true.
 
 ---
 
@@ -1351,7 +1353,7 @@ InsightFace face detection settings.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Minimum detection confidence |
-| `min_face_size` | `20` | Minimum face size in pixels |
+| `min_face_size` | `20` | Minimum face size in pixels — InsightFace only: the commercial-mode YuNet detector uses fixed measured values (0.7 confidence, 30 px) and ignores `min_confidence_percent` and this setting. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio for blink detection |
 | `min_faces_for_group` | `4` | Minimum faces to classify as group portrait (recomputed on `--recompute-average`) |
 | `enable_3d_landmarks` | `false` | Optional override (absent from the shipped file; code default `false`). Load InsightFace `landmark_3d_68` module for head-pose extraction (yaw/pitch/roll). Costs ~5MB extra ONNX weights. Currently informational; future profile/silhouette refinements will read this. |

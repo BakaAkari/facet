@@ -1318,7 +1318,7 @@ Pontuadores de qualidade pesados/experimentais que adicionam colunas suplementar
 | `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (cabeça SigLIP, ~2GB). Requer o pacote `aesthetic-predictor-v2-5`. **Descontinuado:** licenciado sob AGPL-3.0 e sem manutenção desde 2024-12-18 — prefira `qrealign`. |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | IQA VLM DeQA-Score (GPU 16GB+; ignorado e deixado NULL caso contrário). |
 
-**Instale as dependências opcionais** para o que você habilitar: `pip install -e .[iqa-extended]` (adiciona `aesthetic-predictor-v2-5`), ou descomente a linha correspondente em `requirements.txt`. O Q-ReAlign acompanha o `pyiqa`; o DeQA-Score é baixado via `transformers`.
+**Instale as dependências opcionais** para o que você habilitar: `pip install -e .[iqa-extended]` (adiciona `aesthetic-predictor-v2-5`), ou descomente a linha correspondente em `requirements.txt`. O DeQA-Score é baixado via `transformers`.
 
 Quando habilitada, cada métrica é exposta ao agregado ponderado, mas tem peso 0 por padrão, de modo que `--recompute-average` é idêntico byte a byte até você atribuir um peso. Execute `python facet.py --eval-iqa-srcc` para medir o quão bem cada métrica ordena sua biblioteca em relação às suas próprias avaliações por estrelas.
 
@@ -1344,11 +1344,13 @@ Controla quais componentes de modelos o Facet pode carregar. Veja [THIRD_PARTY_M
 | Configuração | Padrão | Valores aceitos | Descrição |
 |---------|---------|-------------------|-------------|
 | `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` carrega todos os modelos (comportamento entregue). `"commercial"` nunca importa, enfileira nem baixa componentes cuja licença não seja adequada ao uso comercial: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) e InsightFace são recusados em todas as camadas. Estética e qualidade vêm do avaliador nativo Q-ReAlign, a composição do analisador baseado em regras e os rostos do pipeline facial permissivo (deteção YuNet, embeddings SFace de 128 dimensões, e opcionalmente MediaPipe para olhos/sorriso e a qualidade facial OFIQ). `liqe` e `aesthetic_iaa` não têm substituto e ficam `NULL`. |
-| `allow_unclear` | `false` | `true` / `false` | No modo comercial, permite também componentes com licença *incerta* (SAMP-Net, U2-Net-P, a cabeça estética CLIP-MLP da LAION). Componentes com licença não comercial continuam recusados. |
+| `allow_unclear` | `false` | `true` / `false` | No modo comercial, permite também componentes com licença *incerta* (SAMP-Net, U2-Net-P, a cabeça estética CLIP-MLP da LAION). Componentes com licença não comercial continuam recusados. Tem de ser um booleano JSON; qualquer outro valor é um erro que interrompe o arranque. |
 
 Um componente recusado lança um `LicenceError` que nomeia o componente e o seu substituto; todo manipulador que pudesse absorvê-lo volta a lançá-lo (um teste exige isso), de modo que uma recusa para a varredura no arranque em vez de virar falhas por foto ou um recurso silencioso. Os comandos que dependem apenas de um componente recusado (`--score-topiq`, `--recompute-iqa` para modelos pyiqa, `--recompute-composition-gpu`) terminam com essa mensagem no modo comercial. O modo é lido da configuração resolvida no arranque. O visualizador passa `FACET_LICENSING_MODE=commercial` no ambiente de cada processo `facet.py` que inicia (varreduras, recálculos), de modo que um filho nunca volte ao modo padrão a partir de outro diretório de trabalho. Nada disto é aconselhamento jurídico.
 
-A variável de ambiente `FACET_LICENSING_MODE` prevalece sobre o ficheiro: `commercial` força o modo comercial, `default` ou vazia significa sem substituição (nunca relaxa um ficheiro que diga `commercial`) e qualquer outro valor é ignorado com um aviso.
+A variável de ambiente `FACET_LICENSING_MODE` prevalece sobre o ficheiro: `commercial` força o modo comercial, `default` ou vazia significa sem substituição (nunca relaxa um ficheiro que diga `commercial`) e qualquer outro valor é um erro que interrompe o arranque (assim um erro de digitação não deixa silenciosamente uma instalação comercial a funcionar no modo padrão).
+
+A variável de ambiente `FACET_LICENSING_ALLOW_UNCLEAR` também só pode restringir: `0`, `false`, `no` ou `off` força `licensing.allow_unclear` a desligado mesmo que o ficheiro diga `true`, enquanto `1`, `true`, `yes`, `on` ou vazia não substitui nada e nunca o concede. Qualquer outro valor é um erro. O visualizador define `FACET_LICENSING_ALLOW_UNCLEAR=0` no ambiente de cada processo `facet.py` que inicia sempre que a sua própria política proíbe os componentes incertos, de modo que uma varredura iniciada não consiga relaxar a política do servidor a partir de uma configuração do diretório de trabalho. `licensing.allow_unclear` tem de ser um booleano JSON: uma cadeia como `"false"` ou um número é rejeitado com um erro no arranque em vez de ser lido como verdadeiro.
 
 ---
 
@@ -1377,7 +1379,7 @@ Configurações de detecção de faces do InsightFace.
 | Configuração | Padrão | Descrição |
 |--------------|--------|-----------|
 | `min_confidence_percent` | `65` | Confiança mínima de detecção |
-| `min_face_size` | `20` | Tamanho mínimo da face em pixels |
+| `min_face_size` | `20` | Tamanho mínimo da face em pixels — Apenas InsightFace: o detetor YuNet do modo comercial usa valores fixos medidos (confiança 0,7, 30 px) e ignora `min_confidence_percent` e esta definição. |
 | `blink_ear_threshold` | `0.28` | Razão de Aspecto do Olho (EAR) para detecção de piscar |
 | `min_faces_for_group` | `4` | Mínimo de faces para classificar como retrato de grupo (recalculado em `--recompute-average`) |
 | `enable_3d_landmarks` | `false` | Override opcional (ausente no arquivo distribuído; padrão `false` no código). Carrega o módulo `landmark_3d_68` do InsightFace para extração da pose da cabeça (yaw/pitch/roll). Custa ~5MB extras de pesos ONNX. Atualmente informativo; futuros refinamentos de perfil/silhueta vão ler isto. |

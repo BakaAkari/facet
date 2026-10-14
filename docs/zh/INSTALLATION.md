@@ -629,7 +629,7 @@ SAMP-Net 权重来自本项目的
 | `rawpy` | RAW 解码（CR2/CR3/NEF/ARW/……） | 跳过 RAW 文件（已包含在基础的 `requirements.txt` 中） |
 | `cuml`、`cupy` | GPU 加速的人脸聚类（conda + CUDA） | 聚类通过 `hdbscan` 在 CPU 上运行（默认） |
 | `onnxruntime-gpu` | GPU 加速的人脸检测 | 使用 CPU 版 `onnxruntime`（较慢） |
-| `aesthetic-predictor-v2-5` | 扩展 IQA 层 —— `aesthetic_v25` 评分器（`pip install -e .[iqa-extended]`；对应 `scoring_config.json` 中的 `iqa_extended.aesthetic_v25`，默认关闭）。**已弃用** —— AGPL-3.0，上游自 2024-12-18 起无人维护；建议改用 `qrealign`，它不需要额外软件包（随基础依赖 `pyiqa` 一同提供） | `aesthetic_v25` 不可用 |
+| `aesthetic-predictor-v2-5` | 扩展 IQA 层 —— `aesthetic_v25` 评分器（`pip install -e .[iqa-extended]`；对应 `scoring_config.json` 中的 `iqa_extended.aesthetic_v25`，默认关闭）。**已弃用** —— AGPL-3.0，上游自 2024-12-18 起无人维护；建议改用 `qrealign`，它不需要额外软件包（通过 `transformers` 原生加载） | `aesthetic_v25` 不可用 |
 | `darktable-cli`（系统） | 从照片库导出 RAW/darktable 配置文件 | 只提供原图/内嵌图下载 |
 | `exiftool`（系统） | 最佳的 EXIF/GPS 提取 | 回退到 `exifread`，再回退到 PIL |
 

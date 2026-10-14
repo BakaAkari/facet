@@ -77,8 +77,10 @@ def build_permissive_face_analyzer(config):
     """Build the permissive (commercial-safe) face analyzer, the commercial twin of
     :func:`build_face_analyzer` (YuNet + SFace + optional MediaPipe).
 
-    The detection thresholds come from the same ``face_detection`` settings, so
-    both analyzers agree on what counts as a face. It reports
+    YuNet's confidence and minimum face size are NOT read from the
+    ``face_detection`` settings: those are tuned for InsightFace (65 / 20),
+    whereas the permissive analyzer's own defaults (0.7 / 30) are the values
+    measured for YuNet (D31). It reports
     ``available = False`` rather than raising when OpenCV lacks the YuNet/SFace
     classes.
     """
@@ -90,8 +92,6 @@ def build_permissive_face_analyzer(config):
     blendshape_settings = face_settings.get('blendshapes', {})
     return PermissiveFaceAnalyzer(
         'cpu',
-        min_confidence=face_settings.get('min_confidence_percent', 70) / 100,
-        min_face_size=face_settings.get('min_face_size', 30),
         thumbnail_size=face_proc_settings.get('face_thumbnail_size', 128),
         thumbnail_quality=face_proc_settings.get('face_thumbnail_quality', 85),
         min_faces_for_group=face_settings.get('min_faces_for_group', 4),
@@ -764,6 +764,19 @@ class ModelManager:
         logger.info("Loading permissive face analyzer...")
         try:
             analyzer = build_permissive_face_analyzer(self.config)
+            # Force the YuNet/SFace weights now: the multi-pass path has no
+            # preflight, and an analyzer that cannot load them would otherwise
+            # answer every photo with "faces unknown". Returning None makes this
+            # a required-model failure (photos recorded as retryable), and the
+            # analyzer is not cached so the next chunk retries the load.
+            ensure_models = getattr(analyzer, 'ensure_models', None)
+            if ensure_models is not None and not ensure_models():
+                logger.error(
+                    "The permissive face models (YuNet, SFace) could not be loaded; "
+                    "check the network connection (first run downloads them into "
+                    "pretrained_models/) or that this OpenCV build has "
+                    "FaceDetectorYN/FaceRecognizerSF.")
+                return None
             self.models['faces_permissive'] = analyzer
             return analyzer
         except LicenceError:

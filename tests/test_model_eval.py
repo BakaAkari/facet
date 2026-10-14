@@ -15,6 +15,7 @@ import pytest
 from PIL import Image
 
 from cli_args import build_parser
+from db.person_carry_over import box_iou, match_boxes
 from db.schema import init_database
 from optimization import eval_common as ec
 from optimization import model_eval as me
@@ -144,21 +145,21 @@ def test_face_slots_have_registered_candidates():
 
 
 def test_iou_and_one_to_one_matching_exact_counts():
-    assert ec.iou((0, 0, 10, 10), (0, 0, 10, 10)) == 1.0
-    assert ec.iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0.0
-    assert ec.iou((0, 0, 10, 10), (5, 0, 15, 10)) == pytest.approx(1 / 3)
+    assert box_iou((0, 0, 10, 10), (0, 0, 10, 10)) == 1.0
+    assert box_iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0.0
+    assert box_iou((0, 0, 10, 10), (5, 0, 15, 10)) == pytest.approx(1 / 3)
     ref = [(0, 0, 10, 10), (100, 100, 110, 110), (200, 200, 210, 210)]
     # two detections hug ref 0 (one exact), one is ref 1 shifted below IoU 0.5, none for ref 2
     det = [(0, 0, 10, 10), (1, 0, 11, 10), (110, 100, 120, 110)]
-    m = ec.match_boxes(ref, det, 0.5)
+    m = match_boxes(ref, det, 0.5)
     assert [(i, j) for i, j, _ in m] == [(0, 0)]   # the second det cannot reuse ref 0
     det2 = [(1, 0, 11, 10), (0, 0, 10, 10), (100, 100, 110, 110)]
-    assert sorted((i, j) for i, j, _ in ec.match_boxes(ref, det2, 0.5)) == [(0, 1), (1, 2)]
+    assert sorted((i, j) for i, j, _ in match_boxes(ref, det2, 0.5)) == [(0, 1), (1, 2)]
 
 
 def test_two_references_cannot_share_one_detection():
     ref = [(0, 0, 10, 10), (2, 0, 12, 10)]
-    assert len(ec.match_boxes(ref, [(1, 0, 11, 10)], 0.5)) == 1
+    assert len(match_boxes(ref, [(1, 0, 11, 10)], 0.5)) == 1
 
 
 def test_size_buckets_edges():
@@ -325,7 +326,6 @@ def test_live_candidate_scores_cached_and_resumed(eval_db, tmp_path, monkeypatch
 
     monkeypatch.setattr(ec, 'load_original', lambda path: Image.open(path).convert('RGB'))
     monkeypatch.setattr(me, 'load_original', ec.load_original)
-    monkeypatch.setattr(ec, 'bound_to_inference_size', lambda img: img)
     monkeypatch.setattr(me, 'bound_to_inference_size', lambda img: img)
     calls = []
 

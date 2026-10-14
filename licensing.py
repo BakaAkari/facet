@@ -26,6 +26,7 @@ from typing import Mapping, Optional
 logger = logging.getLogger(__name__)
 
 LICENSING_MODE_ENV = 'FACET_LICENSING_MODE'
+LICENSING_ALLOW_UNCLEAR_ENV = 'FACET_LICENSING_ALLOW_UNCLEAR'
 
 MODE_DEFAULT = 'default'
 MODE_COMMERCIAL = 'commercial'
@@ -171,10 +172,17 @@ class Policy:
 _policy: Optional[Policy] = None
 
 
+def _require_bool(allow_unclear) -> bool:
+    if not isinstance(allow_unclear, bool):
+        raise ValueError(
+            f"licensing.allow_unclear must be a JSON boolean (true or false), got {allow_unclear!r}")
+    return allow_unclear
+
+
 def _validated(mode: str, allow_unclear: bool) -> Policy:
     if mode not in MODES:
         raise ValueError(f"licensing.mode must be one of {MODES}, got {mode!r}")
-    return Policy(mode, bool(allow_unclear))
+    return Policy(mode, _require_bool(allow_unclear))
 
 
 def env_forces_commercial() -> bool:
@@ -195,11 +203,41 @@ def env_forces_commercial() -> bool:
         f"{MODE_COMMERCIAL!r}, {MODE_DEFAULT!r} or empty")
 
 
+_ENV_FALSE = ('0', 'false', 'no', 'off')
+_ENV_TRUE = ('1', 'true', 'yes', 'on')
+
+
+def env_forbids_unclear() -> bool:
+    """Whether ``$FACET_LICENSING_ALLOW_UNCLEAR`` forces ``allow_unclear`` off.
+
+    Tighten-only, like :func:`env_forces_commercial`: a false value (``0``,
+    ``false``, ``no``, ``off``) overrides a file that says true; a true value or
+    an empty one is no override and can never grant what the file withholds.
+    Anything else raises ``ValueError``.
+    """
+    value = os.environ.get(LICENSING_ALLOW_UNCLEAR_ENV, '').strip().lower()
+    if not value or value in _ENV_TRUE:
+        return False
+    if value in _ENV_FALSE:
+        return True
+    raise ValueError(
+        f"{LICENSING_ALLOW_UNCLEAR_ENV}={value!r} is invalid; allowed values: "
+        f"{', '.join(_ENV_FALSE + _ENV_TRUE)} or empty")
+
+
 def licensing_block(cfg: Optional[Mapping]) -> dict:
-    """The effective ``{'mode', 'allow_unclear'}`` of a config dict, env override applied."""
+    """The effective ``{'mode', 'allow_unclear'}`` of a config dict, env overrides applied.
+
+    ``allow_unclear`` must be a real boolean: a hand-edited ``"false"`` string
+    is truthy, so coercing it would silently grant the unclear-licence
+    components in commercial mode.
+    """
     block = (cfg or {}).get('licensing') or {}
     mode = MODE_COMMERCIAL if env_forces_commercial() else block.get('mode', MODE_DEFAULT)
-    return {'mode': mode, 'allow_unclear': bool(block.get('allow_unclear', False))}
+    allow_unclear = _require_bool(block.get('allow_unclear', False))
+    if env_forbids_unclear():
+        allow_unclear = False
+    return {'mode': mode, 'allow_unclear': allow_unclear}
 
 
 def resolve_policy(cfg: Optional[Mapping]) -> Policy:

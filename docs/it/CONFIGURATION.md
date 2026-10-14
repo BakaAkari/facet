@@ -1321,7 +1321,7 @@ Scorer di qualità pesanti/sperimentali che aggiungono colonne supplementari; **
 | `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (testa SigLIP, ~2GB). Richiede il pacchetto `aesthetic-predictor-v2-5`. **Deprecato:** licenza AGPL-3.0 e non mantenuto dal 2024-12-18 — preferisci `qrealign`. |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | IQA VLM DeQA-Score (GPU 16GB+; altrimenti saltata e lasciata a NULL). |
 
-**Installa le dipendenze facoltative** per ciò che abiliti: `pip install -e .[iqa-extended]` (aggiunge `aesthetic-predictor-v2-5`), oppure decommenta la riga corrispondente in `requirements.txt`. Q-ReAlign è incluso in `pyiqa`; DeQA-Score viene scaricato tramite `transformers`.
+**Installa le dipendenze facoltative** per ciò che abiliti: `pip install -e .[iqa-extended]` (aggiunge `aesthetic-predictor-v2-5`), oppure decommenta la riga corrispondente in `requirements.txt`. DeQA-Score viene scaricato tramite `transformers`.
 
 Quando è abilitata, ogni metrica è esposta all'aggregato pesato ma per impostazione predefinita ha peso 0, quindi `--recompute-average` è identico byte per byte finché non le assegni un peso. Esegui `python facet.py --eval-iqa-srcc` per misurare quanto bene ciascuna metrica classifica la tua libreria rispetto alle tue valutazioni a stelle.
 
@@ -1347,11 +1347,13 @@ Controlla quali componenti di modelli Facet può caricare. Vedi [THIRD_PARTY_MOD
 | Impostazione | Predefinito | Valori accettati | Descrizione |
 |---------|---------|-------------------|-------------|
 | `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` carica tutti i modelli (comportamento fornito). `"commercial"` non importa, non mette in coda e non scarica mai componenti la cui licenza non è adatta all'uso commerciale: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) e InsightFace sono rifiutati a ogni livello. Estetica e qualità provengono dal valutatore nativo Q-ReAlign, la composizione dall'analizzatore basato su regole e i volti dalla pipeline facciale permissiva (rilevamento YuNet, embedding SFace a 128 dimensioni, e in opzione MediaPipe per occhi/sorriso e la qualità del volto OFIQ). `liqe` e `aesthetic_iaa` non hanno sostituti e restano `NULL`. |
-| `allow_unclear` | `false` | `true` / `false` | In modalità commerciale, consente anche i componenti con licenza *incerta* (SAMP-Net, U2-Net-P, la testa estetica CLIP-MLP di LAION). I componenti con licenza non commerciale restano rifiutati. |
+| `allow_unclear` | `false` | `true` / `false` | In modalità commerciale, consente anche i componenti con licenza *incerta* (SAMP-Net, U2-Net-P, la testa estetica CLIP-MLP di LAION). I componenti con licenza non commerciale restano rifiutati. Deve essere un booleano JSON; qualsiasi altro valore è un errore che interrompe l'avvio. |
 
 Un componente rifiutato solleva un `LicenceError` che nomina il componente e il suo sostituto; ogni gestore che potrebbe assorbirlo lo rilancia (un test lo impone), così un rifiuto ferma la scansione all'avvio invece di diventare errori per foto o un ripiego silenzioso. I comandi che dipendono solo da un componente rifiutato (`--score-topiq`, `--recompute-iqa` per i modelli pyiqa, `--recompute-composition-gpu`) terminano con quel messaggio in modalità commerciale. La modalità è letta dalla configurazione risolta all'avvio. Il viewer passa `FACET_LICENSING_MODE=commercial` nell'ambiente di ogni processo `facet.py` che avvia (scansioni, ricalcoli), così un figlio non ricade mai nella modalità predefinita da un'altra directory di lavoro. Niente di tutto ciò è consulenza legale.
 
-La variabile d'ambiente `FACET_LICENSING_MODE` prevale sul file: `commercial` forza la modalità commerciale, `default` o vuota significa nessuna sovrascrittura (non può mai allentare un file che dice `commercial`) e qualsiasi altro valore viene ignorato con un avviso.
+La variabile d'ambiente `FACET_LICENSING_MODE` prevale sul file: `commercial` forza la modalità commerciale, `default` o vuota significa nessuna sovrascrittura (non può mai allentare un file che dice `commercial`) e qualsiasi altro valore è un errore che interrompe l'avvio (così un errore di battitura non lascia in silenzio un'installazione commerciale in modalità predefinita).
+
+Anche la variabile d'ambiente `FACET_LICENSING_ALLOW_UNCLEAR` può solo restringere: `0`, `false`, `no` o `off` forza `licensing.allow_unclear` a disattivato anche se il file dice `true`, mentre `1`, `true`, `yes`, `on` o vuota non sovrascrive nulla e non lo concede mai. Qualsiasi altro valore è un errore. Il viewer imposta `FACET_LICENSING_ALLOW_UNCLEAR=0` nell'ambiente di ogni processo `facet.py` che avvia quando la sua politica vieta i componenti incerti, così una scansione avviata non può allentare la politica del server da una configurazione della directory di lavoro. `licensing.allow_unclear` deve essere un booleano JSON: una stringa come `"false"` o un numero viene rifiutato con un errore all'avvio invece di essere letto come vero.
 
 ---
 
@@ -1380,7 +1382,7 @@ Impostazioni di rilevamento dei volti InsightFace.
 | Impostazione | Predefinito | Descrizione |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Confidenza minima di rilevamento |
-| `min_face_size` | `20` | Dimensione minima del volto in pixel |
+| `min_face_size` | `20` | Dimensione minima del volto in pixel — Solo InsightFace: il rilevatore YuNet della modalità commerciale usa valori fissi misurati (confidenza 0,7, 30 px) e ignora `min_confidence_percent` e questa impostazione. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio per il rilevamento del battito di palpebre |
 | `min_faces_for_group` | `4` | Volti minimi per classificare come ritratto di gruppo (ricalcolato con `--recompute-average`) |
 | `enable_3d_landmarks` | `false` | Override facoltativo (assente dal file fornito; valore predefinito del codice `false`). Carica il modulo InsightFace `landmark_3d_68` per l'estrazione della posa della testa (yaw/pitch/roll). Costa ~5MB di pesi ONNX aggiuntivi. Attualmente informativo; futuri perfezionamenti di profilo/silhouette lo leggeranno. |

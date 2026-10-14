@@ -80,7 +80,7 @@ See [Viewer Integration](#viewer-integration) for the full UI reference.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Minimum detection confidence |
-| `min_face_size` | `20` | Minimum face size in pixels |
+| `min_face_size` | `20` | Minimum face size in pixels — InsightFace only: the commercial-mode YuNet detector uses fixed measured values (0.7 confidence, 30 px) and ignores `min_confidence_percent` and this setting. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio for blink detection |
 
 ### Face Clustering

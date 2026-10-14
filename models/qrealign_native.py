@@ -77,7 +77,7 @@ class QReAlignNativeScorer:
         return self
 
     def _prepare(self, pil):
-        from optimization.eval_common import bound_to_inference_size
+        from utils.image_bounds import bound_to_inference_size
         return bound_to_inference_size(pil.convert('RGB'))
 
     def _score_one(self, img, task):

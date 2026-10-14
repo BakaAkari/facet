@@ -80,7 +80,7 @@ python facet.py --suggest-person-merges --merge-threshold 0.7  # 更严格
 | 设置项 | 默认值 | 说明 |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | 最低检测置信度 |
-| `min_face_size` | `20` | 最小人脸尺寸（像素） |
+| `min_face_size` | `20` | 最小人脸尺寸（像素） — 仅适用于 InsightFace：商业模式的 YuNet 检测器使用固定的实测值（置信度 0.7、30 像素），忽略 `min_confidence_percent` 和此设置。 |
 | `blink_ear_threshold` | `0.28` | 用于闭眼检测的 Eye Aspect Ratio |
 
 ### 人脸聚类

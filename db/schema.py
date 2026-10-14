@@ -297,12 +297,15 @@ PERSONS_COLUMNS = [
     ('representative_face_id', 'INTEGER'),
     ('face_count', 'INTEGER DEFAULT 0'),
     ('centroid', 'BLOB'),
-    # Which embedding model the centroid was averaged from; NULL = legacy ArcFace.
-    # A centroid is only comparable with embeddings of the same model.
-    ('centroid_model', 'TEXT'),
     ('auto_clustered', 'INTEGER DEFAULT 1'),
     ('face_thumbnail', 'BLOB'),
     ('is_hidden', 'INTEGER DEFAULT 0'),
+    # Which embedding model the centroid was averaged from; NULL = legacy ArcFace.
+    # A centroid is only comparable with embeddings of the same model. Kept LAST:
+    # an upgrade appends a column (ALTER TABLE ADD COLUMN), so declaring it anywhere
+    # else gives a fresh DB and an upgraded one different column orders, and the
+    # positional INSERT ... SELECT * between them would shift every value.
+    ('centroid_model', 'TEXT'),
 ]
 
 

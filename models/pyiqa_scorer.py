@@ -12,6 +12,7 @@ from PIL import Image
 from typing import Optional
 
 import licensing
+from utils.image_bounds import MAX_INFERENCE_SIZE
 
 logger = logging.getLogger("facet.pyiqa")
 
@@ -191,11 +192,8 @@ class PyIQAScorer:
         self._skipped_totals = {}
         logger.info("  %s unloaded", self.model_name)
 
-    # Max long edge for inference (prevents OOM on CPU with high-res images).
-    # PyIQA models are trained on <=1024px images; larger adds no benefit
-    # but explodes intermediate activation memory (ResNet50 at 5496x3670
-    # uses ~10GB per image in FP32).
-    _MAX_INFERENCE_SIZE = 1024
+    # Max long edge for inference is utils.image_bounds.MAX_INFERENCE_SIZE
+    # (ResNet50 at 5496x3670 uses ~10GB per image in FP32).
 
     # Max images stacked into a single forward pass, even when a same-shape
     # group spans the whole chunk (up to ram_chunk_size, commonly 128). A
@@ -224,8 +222,8 @@ class PyIQAScorer:
         # Resize if larger than max inference size to prevent OOM
         w, h = image.size
         long_edge = max(w, h)
-        if long_edge > self._MAX_INFERENCE_SIZE:
-            scale = self._MAX_INFERENCE_SIZE / long_edge
+        if long_edge > MAX_INFERENCE_SIZE:
+            scale = MAX_INFERENCE_SIZE / long_edge
             image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
         # Convert to tensor: (H, W, C) -> (C, H, W)

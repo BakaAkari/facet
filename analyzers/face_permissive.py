@@ -69,6 +69,14 @@ _KPS_LEFT_EYE = slice(6, 8)
 _SCORE_COL = 14
 
 
+# Measured on a real library against the stored InsightFace results (D31: YuNet
+# 0.7 -- false-positive rate .089 vs .133 at 0.6). The single source of truth:
+# model_manager builds the production analyzer from these, never from the
+# InsightFace-tuned face_detection.min_confidence_percent / min_face_size.
+DEFAULT_MIN_CONFIDENCE = 0.7
+DEFAULT_MIN_FACE_SIZE = 30
+
+
 def _zero_result(max_confidence=0):
     return {
         'face_count': 0, 'face_quality': 0, 'eye_sharpness': 0,
@@ -77,6 +85,22 @@ def _zero_result(max_confidence=0):
         'is_group_portrait': 0, 'max_face_confidence': max_confidence,
         'face_details': [], 'face_quality_iqa': None,
     }
+
+
+def _unknown_result():
+    """Faces UNKNOWN (not absent): the metrics are NULL, never a measured zero.
+
+    ``face_details`` None tells the save to keep the stored faces (an empty list
+    would delete them and write ``face_count=0``); the per-face metrics are None
+    so the scorer reads them as neutral instead of "no face quality / not blinking".
+    """
+    result = _zero_result()
+    result.update({
+        'face_quality': None, 'eye_sharpness': None, 'face_sharpness': None,
+        'raw_eye_sharpness': None, 'is_blink': None, 'max_face_confidence': None,
+        'face_details': None,
+    })
+    return result
 
 
 def _create_detector(model_path, input_size, score_threshold, nms, top_k):
@@ -127,7 +151,8 @@ class PermissiveFaceAnalyzer:
     embedding_model = EMBEDDING_MODEL
     embedding_dim = EMBEDDING_DIM
 
-    def __init__(self, device='cpu', min_confidence=0.7, min_face_size=30,
+    def __init__(self, device='cpu', min_confidence=DEFAULT_MIN_CONFIDENCE,
+                 min_face_size=DEFAULT_MIN_FACE_SIZE,
                  thumbnail_size=128, thumbnail_quality=85,
                  blink_threshold=DEFAULT_BLINK_THRESHOLD, min_faces_for_group=4,
                  enable_blendshapes=True, blendshape_min_crop=192, enable_ofiq=True):
@@ -284,17 +309,8 @@ class PermissiveFaceAnalyzer:
         norm = float(np.linalg.norm(feat))
         return feat / norm if norm > 0 else feat
 
-    def analyze_faces(self, img_cv):
-        """Same return contract as :meth:`FaceAnalyzer.analyze_faces`."""
-        if img_cv is None:
-            return _zero_result()
-        if not self.available or not self._ensure_models():
-            # Faces UNKNOWN, not absent: face_details None keeps the stored faces
-            # (an empty list would delete them and write face_count=0).
-            result = _zero_result()
-            result['face_details'] = None
-            return result
-
+    def _filtered_detections(self, img_cv):
+        """``([(row, bbox, confidence)], max_confidence)`` after the confidence, clip and size filters."""
         h, w = img_cv.shape[:2]
         max_confidence = 0
         faces = []
@@ -309,6 +325,27 @@ class PermissiveFaceAnalyzer:
             if (bbox[2] - bbox[0]) < self.min_face_size or (bbox[3] - bbox[1]) < self.min_face_size:
                 continue
             faces.append((row, bbox, confidence))
+        return faces, max_confidence
+
+    def detect_boxes(self, img_cv):
+        """Public detection: ``[(x1, y1, x2, y2, conf)]`` (int pixels, clipped, size-filtered).
+
+        Empty when the detector is unavailable or the image is None.
+        """
+        if img_cv is None or not self.available or not self._ensure_models():
+            return []
+        faces, _ = self._filtered_detections(img_cv)
+        return [(int(b[0]), int(b[1]), int(b[2]), int(b[3]), conf) for _, b, conf in faces]
+
+    def analyze_faces(self, img_cv):
+        """Same return contract as :meth:`FaceAnalyzer.analyze_faces`."""
+        if img_cv is None:
+            return _zero_result()
+        if not self.available or not self._ensure_models():
+            return _unknown_result()
+
+        h, w = img_cv.shape[:2]
+        faces, max_confidence = self._filtered_detections(img_cv)
 
         if not faces:
             return _zero_result(max_confidence)

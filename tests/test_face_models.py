@@ -616,13 +616,27 @@ class TestExplicitModelWrite:
 class TestCommercialFacesPopulated:
     @pytest.fixture()
     def poisoned(self, commercial, monkeypatch):
-        from tests.test_licensing_gate import _PoisonFinder
-        monkeypatch.setitem(__import__('sys').modules, 'pyiqa', None)
-        monkeypatch.setitem(__import__('sys').modules, 'insightface', None)
+        # The recording finder alone, as the `poison` fixture of test_licensing_gate
+        # builds it: a `sys.modules[name] = None` guard would make Python refuse the
+        # import WITHOUT consulting meta_path, so an import swallowed by an
+        # `except Exception` would leave `attempts` empty.
+        import sys
+
+        from tests.test_licensing_gate import RESTRICTED_PACKAGES, _PoisonFinder
+        for name in [m for m in sys.modules if m.split('.')[0] in RESTRICTED_PACKAGES]:
+            monkeypatch.delitem(sys.modules, name)
         finder = _PoisonFinder()
-        monkeypatch.setattr(__import__('sys'), 'meta_path',
-                            [finder, *__import__('sys').meta_path])
+        monkeypatch.setattr(sys, 'meta_path', [finder, *sys.meta_path])
         return finder
+
+    def test_a_swallowed_import_is_still_recorded(self, poisoned):
+        """Positive control: the tripwire sees an import its caller then swallows."""
+        for package in ('insightface', 'pyiqa'):
+            try:
+                __import__(package)
+            except Exception:
+                pass
+        assert poisoned.attempts == ['insightface', 'pyiqa']
 
     @pytest.fixture()
     def stubbed(self, monkeypatch):
@@ -830,6 +844,64 @@ class TestPersistedSnapshot:
             assert conn.execute("SELECT person_id FROM faces").fetchall() == [(alice,)]
             assert conn.execute("SELECT COUNT(*) FROM face_reextract_snapshot").fetchone()[0] == 0
             assert conn.execute("SELECT face_count FROM persons").fetchone()[0] == 1
+
+    def test_a_skipped_photo_keeps_its_snapshot_for_the_next_run(self, tmp_path):
+        """A photo the extraction produced nothing for must stay re-attachable."""
+        from faces import clusterer
+        db, alice, scorer = self._library(tmp_path)
+        with sqlite3.connect(db) as conn:
+            _add_face(conn, "skipped.jpg", 0, _vec(512, 1), ARCFACE_MODEL, alice, (0, 0, 50, 50))
+
+        class ReadsOnlyOne:
+            def __init__(self, *a, **k):
+                pass
+
+            def run(self, items, desc=""):
+                with sqlite3.connect(db) as conn:
+                    _add_face(conn, "g.jpg", 0, _vec(128, 0), SFACE_MODEL, None, (3, 3, 103, 103))
+
+        with mock.patch.object(clusterer, 'FaceProcessor', ReadsOnlyOne):
+            clusterer.extract_faces_from_existing(scorer, force=True)
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT photo_path FROM face_reextract_snapshot").fetchall()                 == [("skipped.jpg",)]
+            assert conn.execute("SELECT person_id FROM faces WHERE photo_path = 'g.jpg'")                 .fetchall() == [(alice,)]
+
+        # The next run reads the photo; the kept row finds its detection.
+        class ReadsTheRest:
+            def __init__(self, *a, **k):
+                pass
+
+            def run(self, items, desc=""):
+                with sqlite3.connect(db) as conn:
+                    _add_face(conn, "skipped.jpg", 0, _vec(128, 1), SFACE_MODEL, None, (2, 2, 52, 52))
+
+        with mock.patch.object(clusterer, 'FaceProcessor', ReadsTheRest):
+            clusterer.extract_faces_from_existing(scorer, force=False)
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT person_id FROM faces WHERE photo_path = 'skipped.jpg'")                 .fetchall() == [(alice,)]
+            assert conn.execute("SELECT COUNT(*) FROM face_reextract_snapshot").fetchone()[0] == 0
+
+    def test_an_unmatched_row_of_a_re_extracted_photo_is_cleared(self, tmp_path):
+        """Re-extracted but no overlapping detection: nothing left to wait for."""
+        db = _db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            alice = _add_person(conn, "Alice")
+            _add_face(conn, "g.jpg", 0, _vec(512, 0), ARCFACE_MODEL, alice, (0, 0, 100, 100))
+            persist_named_snapshot(conn)
+            conn.execute("DELETE FROM faces")
+            _add_face(conn, "g.jpg", 0, _vec(128, 0), SFACE_MODEL, None, (500, 500, 600, 600))
+            assert replay_persisted_snapshot(conn) == {'reattached': 0, 'unmatched': 1}
+            assert conn.execute("SELECT COUNT(*) FROM face_reextract_snapshot").fetchone()[0] == 0
+
+    def test_a_force_run_whose_models_cannot_load_deletes_nothing(self, tmp_path):
+        from faces import clusterer
+        db, alice, scorer = self._library(tmp_path)
+        scorer.face_analyzer = SimpleNamespace(ensure_models=lambda: False)
+        with pytest.raises(RuntimeError, match="nothing was deleted"):
+            clusterer.extract_faces_from_existing(scorer, force=True)
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT person_id FROM faces").fetchall() == [(alice,)]
+            assert conn.execute("SELECT COUNT(*) FROM face_reextract_snapshot").fetchone()[0] == 0
 
     def test_replay_without_a_snapshot_is_a_noop(self, tmp_path):
         db = _db(tmp_path)

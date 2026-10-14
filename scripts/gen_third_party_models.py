@@ -29,16 +29,14 @@ TEXT = {
             'Facet itself is MIT-licensed, but several of the models it downloads and runs carry their own '
             'licences, and some of them forbid commercial use. This page lists every component, generated '
             'from the registry in `licensing.py`.',
-            '**Commercial mode** (`licensing.mode: commercial` in `scoring_config.json`, coming in this '
-            'release) makes Facet load only components marked "yes" (and "unclear" ones if '
+            '**Commercial mode** (`licensing.mode: commercial` in `scoring_config.json`) makes Facet load only components marked "yes" (and "unclear" ones if '
             '`licensing.allow_unclear` is set). Restricted components are never imported, queued or '
             'downloaded; each slot is routed to a permissive replacement or the metric is reported as '
             'unavailable.',
         ],
         restricted='What is restricted by default',
         bullets=[
-            '**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ, CLIP-IQA+ and the '
-            'current Q-ReAlign wrapper): the 0.1.16 code is PolyForm Noncommercial 1.0.0 (earlier releases '
+            '**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ and CLIP-IQA+): the 0.1.16 code is PolyForm Noncommercial 1.0.0 (earlier releases '
             'CC BY-NC-SA) and the weights are CC BY-NC-SA 4.0. The "Apache" classifier on PyPI is an error '
             '(upstream issue #294).',
             '**InsightFace buffalo_l**: the package is MIT, but the pretrained weights are for '
@@ -60,16 +58,14 @@ TEXT = {
             "Facet est sous licence MIT, mais plusieurs des modèles qu'il télécharge et exécute ont leur "
             "propre licence, et certains interdisent l'usage commercial. Cette page liste chaque composant "
             'et est générée à partir du registre de `licensing.py`.',
-            'Le **mode commercial** (`licensing.mode: commercial` dans `scoring_config.json`, à venir dans '
-            'cette version) ne charge que les composants marqués « oui » (et « incertain » si '
+            'Le **mode commercial** (`licensing.mode: commercial` dans `scoring_config.json`) ne charge que les composants marqués « oui » (et « incertain » si '
             '`licensing.allow_unclear` est activé). Les composants restreints ne sont jamais importés, mis '
             'en file ni téléchargés ; chaque emplacement est redirigé vers un remplaçant permissif, ou la '
             'métrique est signalée comme indisponible.',
         ],
         restricted='Ce qui est restreint par défaut',
         bullets=[
-            "**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ, CLIP-IQA+ et "
-            "l'actuel wrapper Q-ReAlign) : le code 0.1.16 est sous PolyForm Noncommercial 1.0.0 (les "
+            "**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ et CLIP-IQA+) : le code 0.1.16 est sous PolyForm Noncommercial 1.0.0 (les "
             'versions antérieures sous CC BY-NC-SA) et les poids sous CC BY-NC-SA 4.0. Le classificateur '
             '« Apache » sur PyPI est une erreur (ticket amont n°294).',
             '**InsightFace buffalo_l** : le paquet est MIT, mais les poids pré-entraînés sont réservés à la '
@@ -92,16 +88,14 @@ TEXT = {
             'Facet selbst steht unter der MIT-Lizenz, doch mehrere der heruntergeladenen und ausgeführten '
             'Modelle haben eigene Lizenzen, und einige verbieten die kommerzielle Nutzung. Diese Seite '
             'listet alle Komponenten und wird aus der Registry in `licensing.py` erzeugt.',
-            'Der **kommerzielle Modus** (`licensing.mode: commercial` in `scoring_config.json`, in diesem '
-            'Release geplant) lädt nur Komponenten mit „ja“ (und „unklar“, wenn '
+            'Der **kommerzielle Modus** (`licensing.mode: commercial` in `scoring_config.json`) lädt nur Komponenten mit „ja“ (und „unklar“, wenn '
             '`licensing.allow_unclear` gesetzt ist). Eingeschränkte Komponenten werden nie importiert, '
             'eingeplant oder heruntergeladen; jeder Slot wird auf einen freizügigen Ersatz umgeleitet, '
             'oder die Metrik wird als nicht verfügbar gemeldet.',
         ],
         restricted='Was standardmäßig eingeschränkt ist',
         bullets=[
-            '**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ, CLIP-IQA+ und der '
-            'aktuelle Q-ReAlign-Wrapper): Der Code 0.1.16 steht unter PolyForm Noncommercial 1.0.0 (frühere '
+            '**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ und CLIP-IQA+): Der Code 0.1.16 steht unter PolyForm Noncommercial 1.0.0 (frühere '
             'Versionen unter CC BY-NC-SA), die Gewichte unter CC BY-NC-SA 4.0. Die Klassifizierung '
             '„Apache“ auf PyPI ist ein Fehler (Upstream-Issue #294).',
             '**InsightFace buffalo_l**: Das Paket ist MIT, die vortrainierten Gewichte sind jedoch nur für '
@@ -124,16 +118,14 @@ TEXT = {
             'Facet tiene licencia MIT, pero varios de los modelos que descarga y ejecuta tienen sus propias '
             'licencias, y algunos prohíben el uso comercial. Esta página lista cada componente y se genera '
             'a partir del registro de `licensing.py`.',
-            'El **modo comercial** (`licensing.mode: commercial` en `scoring_config.json`, que llega en '
-            'esta versión) solo carga los componentes marcados como «sí» (y los «poco claro» si se activa '
+            'El **modo comercial** (`licensing.mode: commercial` en `scoring_config.json`) solo carga los componentes marcados como «sí» (y los «poco claro» si se activa '
             '`licensing.allow_unclear`). Los componentes restringidos nunca se importan, se encolan ni se '
             'descargan; cada ranura se redirige a un reemplazo permisivo o la métrica se declara no '
             'disponible.',
         ],
         restricted='Qué está restringido por defecto',
         bullets=[
-            '**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ, CLIP-IQA+ y el '
-            'wrapper actual de Q-ReAlign): el código 0.1.16 es PolyForm Noncommercial 1.0.0 (las versiones '
+            '**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ y CLIP-IQA+): el código 0.1.16 es PolyForm Noncommercial 1.0.0 (las versiones '
             'anteriores, CC BY-NC-SA) y los pesos son CC BY-NC-SA 4.0. El clasificador «Apache» de PyPI es '
             'un error (incidencia upstream n.º 294).',
             '**InsightFace buffalo_l**: el paquete es MIT, pero los pesos preentrenados son solo para '
@@ -155,16 +147,14 @@ TEXT = {
             "Facet è distribuito con licenza MIT, ma diversi dei modelli che scarica ed esegue hanno licenze "
             "proprie, e alcuni vietano l'uso commerciale. Questa pagina elenca ogni componente ed è "
             'generata dal registro in `licensing.py`.',
-            'La **modalità commerciale** (`licensing.mode: commercial` in `scoring_config.json`, in arrivo '
-            'in questa versione) carica solo i componenti contrassegnati «sì» (e «incerto» se è attivo '
+            'La **modalità commerciale** (`licensing.mode: commercial` in `scoring_config.json`) carica solo i componenti contrassegnati «sì» (e «incerto» se è attivo '
             '`licensing.allow_unclear`). I componenti con restrizioni non vengono mai importati, messi in '
             'coda o scaricati; ogni slot è indirizzato a un sostituto permissivo oppure la metrica è '
             'segnalata come non disponibile.',
         ],
         restricted='Cosa è limitato per impostazione predefinita',
         bullets=[
-            "**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ, CLIP-IQA+ e "
-            "l'attuale wrapper di Q-ReAlign): il codice 0.1.16 è PolyForm Noncommercial 1.0.0 (le "
+            "**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ e CLIP-IQA+): il codice 0.1.16 è PolyForm Noncommercial 1.0.0 (le "
             'versioni precedenti CC BY-NC-SA) e i pesi sono CC BY-NC-SA 4.0. Il classificatore «Apache» su '
             'PyPI è un errore (issue upstream n. 294).',
             '**InsightFace buffalo_l**: il pacchetto è MIT, ma i pesi preaddestrati sono solo per ricerca '
@@ -186,16 +176,14 @@ TEXT = {
             'O Facet tem licença MIT, mas vários dos modelos que baixa e executa têm licenças próprias, e '
             'alguns proíbem o uso comercial. Esta página lista cada componente e é gerada a partir do '
             'registro em `licensing.py`.',
-            'O **modo comercial** (`licensing.mode: commercial` em `scoring_config.json`, previsto para '
-            'esta versão) carrega apenas componentes marcados como «sim» (e «incerto» se '
+            'O **modo comercial** (`licensing.mode: commercial` em `scoring_config.json`) carrega apenas componentes marcados como «sim» (e «incerto» se '
             '`licensing.allow_unclear` estiver ativo). Componentes restritos nunca são importados, '
             'enfileirados nem baixados; cada slot é redirecionado a um substituto permissivo ou a métrica '
             'é informada como indisponível.',
         ],
         restricted='O que é restrito por padrão',
         bullets=[
-            '**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ, CLIP-IQA+ e o '
-            'wrapper atual do Q-ReAlign): o código 0.1.16 é PolyForm Noncommercial 1.0.0 (versões '
+            '**pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ e CLIP-IQA+): o código 0.1.16 é PolyForm Noncommercial 1.0.0 (versões '
             'anteriores CC BY-NC-SA) e os pesos são CC BY-NC-SA 4.0. O classificador «Apache» no PyPI é um '
             'erro (issue upstream n.º 294).',
             '**InsightFace buffalo_l**: o pacote é MIT, mas os pesos pré-treinados são apenas para pesquisa '
@@ -216,14 +204,13 @@ TEXT = {
         intro=[
             'Facet 本身采用 MIT 许可证，但它下载并运行的若干模型有各自的许可证，其中一些禁止商业使用。'
             '本页列出所有组件，内容由 `licensing.py` 中的注册表生成。',
-            '**商业模式**（`scoring_config.json` 中的 `licensing.mode: commercial`，将随本版本推出）只加载'
+            '**商业模式**（`scoring_config.json` 中的 `licensing.mode: commercial`）只加载'
             '标记为“是”的组件（若设置了 `licensing.allow_unclear`，则包括“不明确”的组件）。受限组件绝不会被'
             '导入、排队或下载；每个环节都会改用宽松许可的替代品，或将该指标报告为不可用。',
         ],
         restricted='默认受限的内容',
         bullets=[
-            '**pyiqa**（TOPIQ、TOPIQ-IAA、TOPIQ-NR-Face、LIQE、HyperIQA、DBCNN、MUSIQ、CLIP-IQA+ 以及当前的 '
-            'Q-ReAlign 封装）：0.1.16 版代码采用 PolyForm Noncommercial 1.0.0（更早版本为 CC BY-NC-SA），'
+            '**pyiqa**（TOPIQ、TOPIQ-IAA、TOPIQ-NR-Face、LIQE、HyperIQA、DBCNN、MUSIQ、CLIP-IQA+）：0.1.16 版代码采用 PolyForm Noncommercial 1.0.0（更早版本为 CC BY-NC-SA），'
             '权重为 CC BY-NC-SA 4.0。PyPI 上的“Apache”分类标签有误（上游 issue #294）。',
             '**InsightFace buffalo_l**：软件包为 MIT，但预训练权重仅限非商业研究使用。可通过 '
             'recognition-oss-pack@insightface.ai 获取商业许可。',

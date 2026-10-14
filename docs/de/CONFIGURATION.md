@@ -1327,7 +1327,7 @@ Schwere/experimentelle Qualitätsbewerter, die ergänzende Spalten hinzufügen; 
 | `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (SigLIP-Head, ~2GB). Erfordert das Paket `aesthetic-predictor-v2-5`. **Veraltet:** AGPL-3.0-lizenziert und seit dem 2024-12-18 unmaintained — bevorzugen Sie `qrealign`. |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score VLM IQA (16GB+ GPU; andernfalls übersprungen & NULL belassen). |
 
-**Installieren Sie die optionalen Abhängigkeiten** für das, was Sie aktivieren: `pip install -e .[iqa-extended]` (fügt `aesthetic-predictor-v2-5` hinzu) oder kommentieren Sie die entsprechende Zeile in `requirements.txt` aus. Q-ReAlign wird mit `pyiqa` ausgeliefert; DeQA-Score wird über `transformers` heruntergeladen.
+**Installieren Sie die optionalen Abhängigkeiten** für das, was Sie aktivieren: `pip install -e .[iqa-extended]` (fügt `aesthetic-predictor-v2-5` hinzu) oder kommentieren Sie die entsprechende Zeile in `requirements.txt` aus. DeQA-Score wird über `transformers` heruntergeladen.
 
 Wenn aktiviert, fließt jede Metrik in das gewichtete Aggregate ein, hat jedoch standardmäßig das Gewicht 0, sodass `--recompute-average` byte-identisch bleibt, bis Sie ihr ein Gewicht zuweisen. Führen Sie `python facet.py --eval-iqa-srcc` aus, um zu messen, wie gut jede Metrik Ihre Bibliothek gegenüber Ihren eigenen Sternebewertungen einordnet.
 
@@ -1353,11 +1353,13 @@ Steuert, welche Modellkomponenten Facet laden darf. Die Lizenztabelle pro Kompon
 | Einstellung | Standard | Zulässige Werte | Beschreibung |
 |---------|---------|-----------------|-------------|
 | `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` lädt alle Modelle (ausgelieferte Funktion). `"commercial"` importiert, plant oder lädt niemals Komponenten herunter, deren Lizenz nicht für kommerzielle Nutzung geeignet ist: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) und InsightFace werden auf jeder Ebene abgelehnt. Ästhetik und Qualität kommen vom nativen Q-ReAlign-Bewerter, die Komposition vom regelbasierten Analysator und die Gesichter von der permissiven Gesichts-Pipeline (YuNet-Erkennung, SFace-Embeddings mit 128 Dimensionen, optional MediaPipe für Augen/Lächeln und OFIQ-Gesichtsqualität). `liqe` und `aesthetic_iaa` haben keinen Ersatz und bleiben `NULL`. |
-| `allow_unclear` | `false` | `true` / `false` | Im kommerziellen Modus werden zusätzlich Komponenten mit *unklarer* Lizenz erlaubt (SAMP-Net, U2-Net-P, der LAION-CLIP-MLP-Ästhetik-Head). Komponenten mit nichtkommerzieller Lizenz bleiben abgelehnt. |
+| `allow_unclear` | `false` | `true` / `false` | Im kommerziellen Modus werden zusätzlich Komponenten mit *unklarer* Lizenz erlaubt (SAMP-Net, U2-Net-P, der LAION-CLIP-MLP-Ästhetik-Head). Komponenten mit nichtkommerzieller Lizenz bleiben abgelehnt. Muss ein JSON-Boolean sein; jeder andere Wert ist ein Fehler, der den Start abbricht. |
 
 Eine abgelehnte Komponente löst einen `LicenceError` aus, der die Komponente und ihren Ersatz nennt; jeder Handler, der ihn aufnehmen könnte, wirft ihn erneut (ein Test erzwingt das), sodass eine Ablehnung den Scan beim Start stoppt, statt zu Fehlern pro Foto oder einem stillen Fallback zu werden. Befehle, die nur von einer abgelehnten Komponente abhängen (`--score-topiq`, `--recompute-iqa` für pyiqa-Modelle, `--recompute-composition-gpu`), beenden sich im kommerziellen Modus mit dieser Meldung. Der Modus wird beim Start aus der aufgelösten Konfiguration gelesen. Der Viewer übergibt `FACET_LICENSING_MODE=commercial` in der Umgebung jedes von ihm gestarteten `facet.py`-Prozesses (Scans, Neuberechnungen), sodass ein Kindprozess aus einem anderen Arbeitsverzeichnis nie im Standardmodus landet. Nichts davon ist Rechtsberatung.
 
-Die Umgebungsvariable `FACET_LICENSING_MODE` überschreibt die Datei: `commercial` erzwingt den kommerziellen Modus, `default` oder leer bedeutet keine Überschreibung (sie kann eine Datei mit `commercial` nie lockern), jeder andere Wert wird mit einer Warnung ignoriert.
+Die Umgebungsvariable `FACET_LICENSING_MODE` überschreibt die Datei: `commercial` erzwingt den kommerziellen Modus, `default` oder leer bedeutet keine Überschreibung (sie kann eine Datei mit `commercial` nie lockern), jeder andere Wert ist ein Fehler, der den Start abbricht (ein Tippfehler lässt eine kommerzielle Installation also nicht stillschweigend im Standardmodus laufen).
+
+Auch die Umgebungsvariable `FACET_LICENSING_ALLOW_UNCLEAR` kann nur verschärfen: `0`, `false`, `no` oder `off` erzwingt `licensing.allow_unclear` auf aus, selbst wenn die Datei `true` sagt; `1`, `true`, `yes`, `on` oder leer ist keine Überschreibung und gewährt es nie. Jeder andere Wert ist ein Fehler. Der Viewer setzt `FACET_LICENSING_ALLOW_UNCLEAR=0` in der Umgebung jedes von ihm gestarteten `facet.py`-Prozesses, sobald seine eigene Richtlinie die unklaren Komponenten verbietet, sodass ein gestarteter Scan die Richtlinie des Servers nicht über eine Konfiguration im Arbeitsverzeichnis lockern kann. `licensing.allow_unclear` selbst muss ein JSON-Boolean sein: ein String wie `"false"` oder eine Zahl wird beim Start mit einem Fehler abgelehnt, statt als wahr gelesen zu werden.
 
 ---
 
@@ -1386,7 +1388,7 @@ InsightFace-Einstellungen zur Gesichtserkennung.
 | Einstellung | Standard | Beschreibung |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Minimale Erkennungskonfidenz |
-| `min_face_size` | `20` | Minimale Gesichtsgröße in Pixeln |
+| `min_face_size` | `20` | Minimale Gesichtsgröße in Pixeln — Nur InsightFace: der YuNet-Detektor im kommerziellen Modus verwendet feste, gemessene Werte (0,7 Konfidenz, 30 px) und ignoriert `min_confidence_percent` sowie diese Einstellung. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio für die Blinzelerkennung |
 | `min_faces_for_group` | `4` | Mindestanzahl an Gesichtern für die Klassifizierung als Gruppenporträt (bei `--recompute-average` neu berechnet) |
 | `enable_3d_landmarks` | `false` | Optionale Überschreibung (in der ausgelieferten Datei nicht vorhanden; Code-Standard `false`). Lädt das InsightFace-Modul `landmark_3d_68` für die Extraktion der Kopfhaltung (yaw/pitch/roll). Kostet ~5MB zusätzliche ONNX-Gewichte. Derzeit nur informativ; künftige Profil-/Silhouetten-Verfeinerungen werden dies auslesen. |

@@ -26,7 +26,7 @@ from int_affinity import storable_int
 from licensing import LicenceError
 from db import init_database, get_connection
 from db.render_version import DISPLAY_RENDER_VERSION
-from db.embedding_space import active_embedding_model
+from db.embedding_space import SFACE_MODEL, active_embedding_model
 from db.person_carry_over import replace_photo_faces
 from db.schema import FACES_UPSERT_SQL, face_upsert_row
 from db.scoring_overrides import get_photo_scoring_overrides
@@ -1944,14 +1944,17 @@ class Facet:
 
         logger.info("Saving results to database...")
         with get_connection(self.db_path) as conn:
-            # Reset to non-blink only the photos this pass can re-derive, i.e. those
-            # with at least one stored 106-point landmark. A photo whose faces have
-            # none (SFace rows in commercial mode) keeps the blink value the scan
-            # measured -- possibly NULL (unknown) -- instead of being zeroed.
+            # Master's reset, kept for every default-mode / ArcFace row: all photos
+            # with a face go back to non-blink, then the re-derived values are
+            # written. The one exemption is a photo whose faces are ALL SFace rows
+            # (commercial mode): they carry no 106-point landmarks to re-derive
+            # from, so zeroing would overwrite the scan's measured (possibly NULL =
+            # unknown) blink with a false "not a blink".
             conn.execute(
-                "UPDATE photos SET is_blink = 0 WHERE face_count >= 1 AND EXISTS ("
-                "SELECT 1 FROM faces f WHERE f.photo_path = photos.path "
-                "AND f.landmark_2d_106 IS NOT NULL)")
+                "UPDATE photos SET is_blink = 0 WHERE face_count >= 1 AND NOT ("
+                "EXISTS (SELECT 1 FROM faces f WHERE f.photo_path = photos.path) "
+                "AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.photo_path = photos.path "
+                "AND COALESCE(f.embedding_model, '') <> ?))", (SFACE_MODEL,))
             update_data = [(status, path) for path, status in photo_blink_status.items()]
             conn.executemany("UPDATE photos SET is_blink = ? WHERE path = ?", update_data)
             conn.commit()

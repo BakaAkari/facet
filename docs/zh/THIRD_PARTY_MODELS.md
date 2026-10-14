@@ -4,11 +4,11 @@
 
 Facet 本身采用 MIT 许可证，但它下载并运行的若干模型有各自的许可证，其中一些禁止商业使用。本页列出所有组件，内容由 `licensing.py` 中的注册表生成。
 
-**商业模式**（`scoring_config.json` 中的 `licensing.mode: commercial`，将随本版本推出）只加载标记为“是”的组件（若设置了 `licensing.allow_unclear`，则包括“不明确”的组件）。受限组件绝不会被导入、排队或下载；每个环节都会改用宽松许可的替代品，或将该指标报告为不可用。
+**商业模式**（`scoring_config.json` 中的 `licensing.mode: commercial`）只加载标记为“是”的组件（若设置了 `licensing.allow_unclear`，则包括“不明确”的组件）。受限组件绝不会被导入、排队或下载；每个环节都会改用宽松许可的替代品，或将该指标报告为不可用。
 
 ## 默认受限的内容
 
-- **pyiqa**（TOPIQ、TOPIQ-IAA、TOPIQ-NR-Face、LIQE、HyperIQA、DBCNN、MUSIQ、CLIP-IQA+ 以及当前的 Q-ReAlign 封装）：0.1.16 版代码采用 PolyForm Noncommercial 1.0.0（更早版本为 CC BY-NC-SA），权重为 CC BY-NC-SA 4.0。PyPI 上的“Apache”分类标签有误（上游 issue #294）。
+- **pyiqa**（TOPIQ、TOPIQ-IAA、TOPIQ-NR-Face、LIQE、HyperIQA、DBCNN、MUSIQ、CLIP-IQA+）：0.1.16 版代码采用 PolyForm Noncommercial 1.0.0（更早版本为 CC BY-NC-SA），权重为 CC BY-NC-SA 4.0。PyPI 上的“Apache”分类标签有误（上游 issue #294）。
 - **InsightFace buffalo_l**：软件包为 MIT，但预训练权重仅限非商业研究使用。可通过 recognition-oss-pack@insightface.ai 获取商业许可。
 
 ## 组件

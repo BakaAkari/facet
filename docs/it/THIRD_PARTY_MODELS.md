@@ -4,11 +4,11 @@
 
 Facet è distribuito con licenza MIT, ma diversi dei modelli che scarica ed esegue hanno licenze proprie, e alcuni vietano l'uso commerciale. Questa pagina elenca ogni componente ed è generata dal registro in `licensing.py`.
 
-La **modalità commerciale** (`licensing.mode: commercial` in `scoring_config.json`, in arrivo in questa versione) carica solo i componenti contrassegnati «sì» (e «incerto» se è attivo `licensing.allow_unclear`). I componenti con restrizioni non vengono mai importati, messi in coda o scaricati; ogni slot è indirizzato a un sostituto permissivo oppure la metrica è segnalata come non disponibile.
+La **modalità commerciale** (`licensing.mode: commercial` in `scoring_config.json`) carica solo i componenti contrassegnati «sì» (e «incerto» se è attivo `licensing.allow_unclear`). I componenti con restrizioni non vengono mai importati, messi in coda o scaricati; ogni slot è indirizzato a un sostituto permissivo oppure la metrica è segnalata come non disponibile.
 
 ## Cosa è limitato per impostazione predefinita
 
-- **pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ, CLIP-IQA+ e l'attuale wrapper di Q-ReAlign): il codice 0.1.16 è PolyForm Noncommercial 1.0.0 (le versioni precedenti CC BY-NC-SA) e i pesi sono CC BY-NC-SA 4.0. Il classificatore «Apache» su PyPI è un errore (issue upstream n. 294).
+- **pyiqa** (TOPIQ, TOPIQ-IAA, TOPIQ-NR-Face, LIQE, HyperIQA, DBCNN, MUSIQ e CLIP-IQA+): il codice 0.1.16 è PolyForm Noncommercial 1.0.0 (le versioni precedenti CC BY-NC-SA) e i pesi sono CC BY-NC-SA 4.0. Il classificatore «Apache» su PyPI è un errore (issue upstream n. 294).
 - **InsightFace buffalo_l**: il pacchetto è MIT, ma i pesi preaddestrati sono solo per ricerca non commerciale. Le licenze commerciali si ottengono da recognition-oss-pack@insightface.ai.
 
 ## Componenti

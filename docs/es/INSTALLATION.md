@@ -674,7 +674,7 @@ alternativa.
 | `rawpy` | Decodificación RAW (CR2/CR3/NEF/ARW/…) | Los archivos RAW se omiten (ya incluido en `requirements.txt` base) |
 | `cuml`, `cupy` | Agrupación de rostros acelerada por GPU (conda + CUDA) | La agrupación se ejecuta en CPU mediante `hdbscan` (predeterminado) |
 | `onnxruntime-gpu` | Detección de rostros acelerada por GPU | `onnxruntime` en CPU (más lento) |
-| `aesthetic-predictor-v2-5` | Nivel de IQA extendido — puntuador `aesthetic_v25` (`pip install -e .[iqa-extended]`; `iqa_extended.aesthetic_v25` en `scoring_config.json`, desactivado de forma predeterminada). **Obsoleto** — AGPL-3.0, sin mantenimiento desde el 2024-12-18; prefiere `qrealign`, que no necesita ningún paquete adicional (viene con la dependencia base `pyiqa`) | `aesthetic_v25` no disponible |
+| `aesthetic-predictor-v2-5` | Nivel de IQA extendido — puntuador `aesthetic_v25` (`pip install -e .[iqa-extended]`; `iqa_extended.aesthetic_v25` en `scoring_config.json`, desactivado de forma predeterminada). **Obsoleto** — AGPL-3.0, sin mantenimiento desde el 2024-12-18; prefiere `qrealign`, que no necesita ningún paquete adicional (se carga de forma nativa a través de `transformers`) | `aesthetic_v25` no disponible |
 | `darktable-cli` (sistema) | Exportación de perfiles RAW/darktable desde el visor | Solo se ofrece descarga original/incrustada |
 | `exiftool` (sistema) | Mejor extracción de EXIF/GPS | Recurre a `exifread` y luego a PIL |
 

@@ -363,14 +363,25 @@ class ChunkedMultiPassProcessor:
     def _selected_quality(self) -> str:
         """The primary aesthetic/quality model this run uses, licensing applied.
 
-        The single decision both the model queue and ``_pass_qrealign`` read, so
-        "which model owns ``aesthetic``" can never be answered two ways.
+        The single decision the model queue, ``_pass_qrealign`` and (in
+        commercial mode) :func:`run_single_pass` all read, so "which model owns
+        ``aesthetic``" can never be answered two ways.
         """
-        quality_config = self.config.get('quality', {})
+        return self._resolve_selected_quality(self.config, self.model_manager)
+
+    @staticmethod
+    def _resolve_selected_quality(config: dict, model_manager) -> str:
+        """:meth:`_selected_quality` without a processor instance.
+
+        Args:
+            config: The scoring config dict (``scorer.config.config``)
+            model_manager: Source of the active profile's ``aesthetic_model``
+        """
+        quality_config = config.get('quality', {})
         quality_model = quality_config.get('model', 'auto')
 
         if quality_model == 'auto':
-            profile_cfg = self.model_manager.get_active_profile()
+            profile_cfg = model_manager.get_active_profile()
             profile_aesthetic = profile_cfg.get('aesthetic_model', 'clip-mlp')
             # Map profile aesthetic_model to quality model name used in passes
             selected_quality = 'topiq' if profile_aesthetic == 'topiq' else 'clip_aesthetic'
@@ -378,7 +389,8 @@ class ChunkedMultiPassProcessor:
             selected_quality = quality_model
 
         if licensing.is_commercial():
-            selected_quality = self._commercial_primary_quality(selected_quality)
+            selected_quality = ChunkedMultiPassProcessor._commercial_primary_quality(
+                selected_quality)
         return selected_quality
 
     def _qrealign_is_primary(self) -> bool:
@@ -1453,21 +1465,25 @@ def run_single_pass(paths: List[str], pass_name: str, scorer, model_manager) -> 
 
     # For quality/aesthetic, determine model from config
     if pass_name in ('quality', 'aesthetic'):
-        quality_config = scorer.config.config.get('quality', {})
-        quality_model = quality_config.get('model', 'auto')
-
-        if quality_model == 'auto':
-            available_vram = model_manager.detect_vram()
-            model_name = model_manager.select_quality_model(available_vram)
-        elif quality_model in pyiqa_models:
-            model_name = quality_model
-        else:
-            model_name = 'topiq'  # Default to best pyiqa model
         if licensing.is_commercial():
-            model_name = ChunkedMultiPassProcessor._commercial_primary_quality(
-                'clip_aesthetic' if model_name == 'clip_aesthetic' else model_name)
+            # The processor decides who owns aesthetic/quality (its Q-ReAlign pass
+            # derives primacy from the same helper), so pick the pass from that
+            # one decision rather than re-deriving it from detected VRAM.
+            model_name = ChunkedMultiPassProcessor._resolve_selected_quality(
+                scorer.config.config, model_manager)
             if model_name == 'clip_aesthetic':
                 model_name = 'clip'
+        else:
+            quality_config = scorer.config.config.get('quality', {})
+            quality_model = quality_config.get('model', 'auto')
+
+            if quality_model == 'auto':
+                available_vram = model_manager.detect_vram()
+                model_name = model_manager.select_quality_model(available_vram)
+            elif quality_model in pyiqa_models:
+                model_name = quality_model
+            else:
+                model_name = 'topiq'  # Default to best pyiqa model
 
     # For tags, determine model from profile. A CLIP-similarity profile has no
     # VLM tagger to run as a pass — routing it to the 'clip' embedding pass would

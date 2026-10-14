@@ -1279,7 +1279,7 @@ IEC 61966-2-1。NCLX 传递特征值 16：ISO/IEC 23001-8 / ITU-T H.273。
 | `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5（SigLIP 头，约 2GB）。需要 `aesthetic-predictor-v2-5` 包。**已弃用：** 采用 AGPL-3.0 许可，且上游自 2024-12-18 起无人维护 — 请优先使用 `qrealign`。 |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score 视觉语言模型 IQA（需 16GB 以上 GPU；否则跳过并留作 NULL）。 |
 
-**请为你启用的功能安装可选依赖**：`pip install -e .[iqa-extended]`（会装上 `aesthetic-predictor-v2-5`），或者取消 `requirements.txt` 中对应那一行的注释。Q-ReAlign 随 `pyiqa` 一同提供；DeQA-Score 通过 `transformers` 下载。
+**请为你启用的功能安装可选依赖**：`pip install -e .[iqa-extended]`（会装上 `aesthetic-predictor-v2-5`），或者取消 `requirements.txt` 中对应那一行的注释。DeQA-Score 通过 `transformers` 下载。
 
 启用之后，每项指标都会被纳入加权聚合，但默认权重为 0，因此在你给它赋权之前，`--recompute-average` 的结果逐字节不变。运行 `python facet.py --eval-iqa-srcc` 可以衡量每项指标对照你自己的星级评分在图库上的排序表现如何。
 
@@ -1305,11 +1305,13 @@ IEC 61966-2-1。NCLX 传递特征值 16：ISO/IEC 23001-8 / ITU-T H.273。
 | 设置 | 默认值 | 可接受的值 | 说明 |
 |---------|---------|-----------------|-------------|
 | `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` 加载所有模型（发布时的行为）。`"commercial"` 绝不导入、排队或下载许可证不适合商业使用的组件：`pyiqa`（TOPIQ、HyperIQA、LIQE 等）和 InsightFace 在每一层都会被拒绝。美学与质量由原生 Q-ReAlign 评分器提供，构图由基于规则的分析器提供，人脸由宽松许可的人脸流水线提供（YuNet 检测、128 维 SFace 特征向量，可选 MediaPipe 的眼睛/微笑和 OFIQ 人脸质量）。`liqe` 和 `aesthetic_iaa` 没有替代方案，保持为 `NULL`。 |
-| `allow_unclear` | `false` | `true` / `false` | 在商业模式下，同时允许许可证*不明确*的组件（SAMP-Net、U2-Net-P、LAION CLIP-MLP 美学头）。非商业许可的组件仍被拒绝。 |
+| `allow_unclear` | `false` | `true` / `false` | 在商业模式下，同时允许许可证*不明确*的组件（SAMP-Net、U2-Net-P、LAION CLIP-MLP 美学头）。非商业许可的组件仍被拒绝。必须是 JSON 布尔值；其他任何值都是会中止启动的错误。 |
 
 被拒绝的组件会抛出 `LicenceError`，其中指明该组件及其替代项；所有可能吞掉它的处理器都会重新抛出它（有测试强制保证），因此拒绝会在启动时终止扫描，而不是变成逐张照片的失败或静默回退。仅依赖被拒绝组件的命令（`--score-topiq`、针对 pyiqa 模型的 `--recompute-iqa`、`--recompute-composition-gpu`）在商业模式下会带着该消息退出。该模式在启动时从解析后的配置中读取。查看器会在其启动的每个 `facet.py` 进程（扫描、重新计算）的环境中传入 `FACET_LICENSING_MODE=commercial`，因此子进程不会因工作目录不同而回落到默认模式。以上内容不构成法律建议。
 
-环境变量 `FACET_LICENSING_MODE` 优先于文件：`commercial` 强制使用商业模式，`default` 或为空表示不覆盖（它永远不会放宽写有 `commercial` 的文件），其他任何值都会被忽略并给出警告。
+环境变量 `FACET_LICENSING_MODE` 优先于文件：`commercial` 强制使用商业模式，`default` 或为空表示不覆盖（它永远不会放宽写有 `commercial` 的文件），其他任何值都是会中止启动的错误（这样拼写错误就不会悄悄让商业安装以默认模式运行）。
+
+环境变量 `FACET_LICENSING_ALLOW_UNCLEAR` 同样只能收紧：`0`、`false`、`no` 或 `off` 会把 `licensing.allow_unclear` 强制设为关闭，即使文件中写的是 `true`；`1`、`true`、`yes`、`on` 或为空则不覆盖，也永远不会放开它。其他任何值都是错误。只要查看器自身的策略禁止“不明确”组件，它就会在其启动的每个 `facet.py` 进程的环境中设置 `FACET_LICENSING_ALLOW_UNCLEAR=0`，因此被启动的扫描无法借助工作目录中的配置放宽服务器的策略。`licensing.allow_unclear` 本身必须是 JSON 布尔值：像 `"false"` 这样的字符串或数字会在启动时被报错拒绝，而不是被当作 true。
 
 ---
 
@@ -1338,7 +1340,7 @@ InsightFace 人脸检测设置。
 | 设置 | 默认值 | 说明 |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | 最低检测置信度 |
-| `min_face_size` | `20` | 最小人脸尺寸（像素） |
+| `min_face_size` | `20` | 最小人脸尺寸（像素） — 仅适用于 InsightFace：商业模式的 YuNet 检测器使用固定的实测值（置信度 0.7、30 像素），忽略 `min_confidence_percent` 和此设置。 |
 | `blink_ear_threshold` | `0.28` | 用于闭眼检测的眼睛纵横比 |
 | `min_faces_for_group` | `4` | 判定为合影所需的最少人脸数（在 `--recompute-average` 时重新计算） |
 | `enable_3d_landmarks` | `false` | 可选覆盖项（随附文件中没有；代码默认 `false`）。加载 InsightFace 的 `landmark_3d_68` 模块以提取头部姿态（偏航/俯仰/翻滚）。额外占用约 5MB 的 ONNX 权重。目前仅供参考；日后的侧脸/剪影优化会读取它。 |

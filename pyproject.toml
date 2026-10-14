@@ -109,8 +109,9 @@ gpu-clustering = [
 ]
 iqa-extended = [
     # Optional extended-IQA tier (scoring_config.json "iqa_extended"). Only
-    # aesthetic_v25 needs a package of its own; Q-ReAlign ships with pyiqa and
-    # runs unquantised (~3GB), and DeQA-Score loads via transformers.
+    # aesthetic_v25 needs a package of its own; Q-ReAlign loads natively via
+    # transformers (no pyiqa needed) and runs unquantised (~3GB), as does
+    # DeQA-Score.
     "aesthetic-predictor-v2-5",
 ]
 ocr = [
@@ -149,7 +150,7 @@ faces-insightface = [
     "onnxruntime>=1.15.0",
 ]
 iqa = [
-    # RESTRICTED: pyiqa model weights (TOPIQ, LIQE, Q-ReAlign, ...) carry
+    # RESTRICTED: pyiqa model weights (TOPIQ, LIQE, ...) carry
     # non-commercial terms. setuptools<81 is here, not in the base set, because
     # pyiqa's PyPI openai-clip imports pkg_resources (removed in setuptools 81).
     "pyiqa>=0.1.16",

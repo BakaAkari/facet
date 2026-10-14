@@ -1438,8 +1438,6 @@ def _upgrade_iqa_step(args):
     """
     if not licensing.is_commercial():
         return "--recompute-iqa", "TOPIQ IAA + NR-Face + LIQE"
-    if any(licensing.loader_allowed(m) for m in ('topiq_iaa', 'topiq_nr_face', 'liqe')):
-        return "--recompute-iqa", "Image-quality metrics (permitted models only)"
     try:
         enabled = ScoringConfig(args.config, validate=False).get_extended_iqa_settings().get('qrealign')
     except (OSError, ValueError):
@@ -1775,10 +1773,14 @@ def _run_scan(args, resumed_run):
             todo_paths = [str(f) for f in todo_list]
             processed = run_single_pass(todo_paths, args.single_pass_name, scorer, model_manager)
             if processed == 0:
-                # A refused or unknown pass did nothing: say so in the exit code.
-                logger.error("Pass '%s' processed no photos.", args.single_pass_name)
-                scan_run.finish('failed')
-                exit(1)
+                # A pass the commercial policy refuses did nothing: say so in the
+                # exit code. Default mode keeps its shipped behaviour (the pass logs
+                # its own error, e.g. `--pass tags` on a CLIP-similarity profile,
+                # and the scan still finishes as completed with exit 0).
+                if licensing.is_commercial():
+                    logger.error("Pass '%s' processed no photos.", args.single_pass_name)
+                    scan_run.finish('failed')
+                    exit(1)
             logger.info("Processed %d photos with %s pass", processed, args.single_pass_name)
 
         elif args.single_pass:
@@ -2701,10 +2703,14 @@ def main():
         else:
             logger.info("  Schema already up to date")
 
-        steps = [
+        iqa_step = _upgrade_iqa_step(args)
+        if iqa_step is None:
+            logger.info("--- IQA metrics: skipped (no IQA model is permitted under the active "
+                        "licensing policy) ---")
+        steps = [step for step in (
             ("--extract-gps", "GPS coordinates from EXIF"),
             ("--detect-duplicates", "Duplicate detection (pHash)"),
-            _upgrade_iqa_step(args),
+            iqa_step,
             ("--recompute-saliency", "Subject saliency (BiRefNet)"),
             ("--recompute-composition-cpu", "Rule-based composition"),
             ("--recompute-burst", "Burst detection grouping"),
@@ -2713,11 +2719,7 @@ def main():
             ("--recompute-eyes-expression", "Eyes-open + expression from landmarks"),
             ("--recompute-face-signals", "Per-face eyes/smile signals from landmarks"),
             ("--recompute-average", "Aggregate scores"),
-        ]
-        if steps[2] is None:
-            logger.info("--- IQA metrics: skipped (no IQA model is permitted under the active "
-                        "licensing policy) ---")
-            steps = [step for step in steps if step is not None]
+        ) if step is not None]
         cmd_base = [sys.executable, os.path.abspath(__file__)]
         if args.db:
             cmd_base += ["--db", args.db]

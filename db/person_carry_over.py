@@ -220,9 +220,17 @@ def persist_named_snapshot(conn):
 
 
 def replay_persisted_snapshot(conn, min_iou=CARRY_OVER_MIN_IOU):
-    """Re-attach from ``face_reextract_snapshot`` and clear it, in one commit.
+    """Re-attach from ``face_reextract_snapshot`` and clear what it answered, in one commit.
 
-    Returns the re-attach stats, or None when there is nothing to replay.
+    A row is answered once its photo holds faces again (the photo was re-extracted,
+    so its old box either found a partner or never will) or its person is gone.
+    Rows of a photo that still holds NO faces stay: that photo was skipped this run
+    (unreadable file, NAS offline, no detection written), so a later run can still
+    re-attach them. Forgetting those would be the one way this safeguard loses a
+    named assignment for good.
+
+    Returns the re-attach stats (``unmatched`` includes the rows kept), or None
+    when there is nothing to replay.
     """
     rows = conn.execute(
         "SELECT photo_path, bbox_x1, bbox_y1, bbox_x2, bbox_y2, person_id "
@@ -235,6 +243,9 @@ def replay_persisted_snapshot(conn, min_iou=CARRY_OVER_MIN_IOU):
     live = {r[0] for r in conn.execute("SELECT id FROM persons").fetchall()}
     snapshot = [s for s in snapshot if s[2] in live]
     stats = reattach_named_persons(conn, snapshot, min_iou)
-    conn.execute("DELETE FROM face_reextract_snapshot")
+    conn.execute(
+        "DELETE FROM face_reextract_snapshot "
+        "WHERE photo_path IN (SELECT photo_path FROM faces) "
+        "OR person_id NOT IN (SELECT id FROM persons)")
     conn.commit()
     return stats

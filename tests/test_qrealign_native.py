@@ -124,3 +124,28 @@ def test_parity_with_pyiqa():
             worst = max(worst, abs(ref - native.score(img, task)))
     print('PARITY max abs diff (0-10 scale):', worst)
     assert worst < 1e-2  # 1e-3 on the 0-1 scale
+
+
+def test_scorer_does_not_import_the_eval_harness_or_pyiqa_wrapper():
+    """Production scoring must not depend on optimization/ or models.pyiqa_scorer.
+
+    Runs in a fresh interpreter: this process has long since imported both.
+    """
+    import subprocess
+    import sys
+    code = (
+        "import sys\n"
+        "from PIL import Image\n"
+        "from models import qrealign_native as qn\n"
+        "out = qn.QReAlignNativeScorer('mini')._prepare(Image.new('RGB', (4000, 2000)))\n"
+        "assert max(out.size) == 1024, out.size\n"
+        "bad = sorted(m for m in sys.modules if m.split('.')[0] in ('optimization', 'pyiqa')"
+        " or m == 'models.pyiqa_scorer')\n"
+        "print('BAD', bad)\n"
+    )
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    proc = subprocess.run([sys.executable, '-c', code], cwd=repo, capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr
+    assert 'BAD []' in proc.stdout, proc.stdout
+

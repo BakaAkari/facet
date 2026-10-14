@@ -680,7 +680,7 @@ solution de repli est utilisée.
 | `rawpy` | Décodage RAW (CR2/CR3/NEF/ARW/…) | Les fichiers RAW sont ignorés (déjà dans le `requirements.txt` de base) |
 | `cuml`, `cupy` | Clustering de visages accéléré sur GPU (conda + CUDA) | Le clustering s'exécute sur CPU via `hdbscan` (par défaut) |
 | `onnxruntime-gpu` | Détection de visages accélérée sur GPU | `onnxruntime` sur CPU (plus lent) |
-| `aesthetic-predictor-v2-5` | Palier IQA étendu — évaluateur `aesthetic_v25` (`pip install -e .[iqa-extended]` ; `iqa_extended.aesthetic_v25` dans `scoring_config.json`, désactivé par défaut). **Déprécié** — AGPL-3.0, sans maintenance depuis le 2024-12-18 ; préférez `qrealign`, qui ne nécessite aucun paquet supplémentaire (livré avec la dépendance de base `pyiqa`) | `aesthetic_v25` indisponible |
+| `aesthetic-predictor-v2-5` | Palier IQA étendu — évaluateur `aesthetic_v25` (`pip install -e .[iqa-extended]` ; `iqa_extended.aesthetic_v25` dans `scoring_config.json`, désactivé par défaut). **Déprécié** — AGPL-3.0, sans maintenance depuis le 2024-12-18 ; préférez `qrealign`, qui ne nécessite aucun paquet supplémentaire (il se charge nativement via `transformers`) | `aesthetic_v25` indisponible |
 | `darktable-cli` (système) | Export RAW/profil darktable depuis la galerie | Seul le téléchargement original/intégré est proposé |
 | `exiftool` (système) | Meilleure extraction EXIF/GPS | Repli sur `exifread`, puis PIL |
 

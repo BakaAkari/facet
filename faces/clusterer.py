@@ -718,6 +718,16 @@ def extract_faces_from_existing(scorer, force=False):
     batch_size = face_processing.get('extract_batch_size', 16)
     crop_padding = face_processing.get('crop_padding', 0.3)
 
+    if force:
+        # Before anything is deleted: an analyzer whose models cannot load would
+        # otherwise leave the library with no faces at all.
+        ensure_models = getattr(scorer.face_analyzer, 'ensure_models', None)
+        if ensure_models is not None and not ensure_models():
+            raise RuntimeError(
+                "The face models could not be loaded, so nothing was deleted -- the "
+                "first run downloads them into pretrained_models/, so check the network "
+                "connection, or this OpenCV build lacks FaceDetectorYN/FaceRecognizerSF.")
+
     with get_connection(scorer.db_path, row_factory=False) as conn:
         if force:
             # Named persons outlive the delete only if we remember which boxes

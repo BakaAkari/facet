@@ -109,6 +109,28 @@ class TestQueueLayer:
         assert 'faces_permissive' in models
         assert models.count('qrealign') == 1
 
+    EXT_ALL = {'qrealign': True, 'aesthetic_v25': True, 'deqa': True}
+
+    def test_commercial_queue_drops_restricted_extended_iqa(self, commercial):
+        models = _proc(_profile('topiq'), ext=self.EXT_ALL)._select_models()
+        assert 'qrealign' in models
+        assert 'aesthetic_v25' not in models
+        assert 'deqa' not in models
+
+    def test_allow_unclear_queues_deqa_but_never_the_agpl_package(self):
+        licensing.set_policy(licensing.MODE_COMMERCIAL, allow_unclear=True)
+        models = _proc(_profile('topiq'), ext=self.EXT_ALL)._select_models()
+        assert 'deqa' in models
+        assert 'aesthetic_v25' not in models
+
+    def test_default_queue_still_queues_every_enabled_extended_scorer(self):
+        models = _proc(_profile('topiq'), ext=self.EXT_ALL)._select_models()
+        assert {'qrealign', 'aesthetic_v25', 'deqa'} <= set(models)
+
+    def test_commercial_queue_only_holds_loader_allowed_models(self, commercial):
+        models = _proc(_profile('topiq'), ext=self.EXT_ALL)._select_models()
+        assert all(licensing.loader_allowed(m) for m in models), models
+
     def test_default_queue_is_unchanged(self):
         models = _proc(_profile('topiq'), ext={'qrealign': True})._select_models()
         assert models == ['clip', 'topiq', 'topiq_iaa', 'topiq_nr_face', 'liqe',
@@ -681,6 +703,28 @@ class TestSpawnedChildPolicy:
         monkeypatch.delenv('FACET_LICENSING_MODE', raising=False)
         assert 'FACET_LICENSING_MODE' not in _cross_process_job_env()
 
+    def test_scan_env_carries_a_forbidden_allow_unclear(self, commercial, monkeypatch):
+        from api.routers.scan import _cross_process_job_env
+        monkeypatch.delenv('FACET_LICENSING_ALLOW_UNCLEAR', raising=False)
+        assert _cross_process_job_env()['FACET_LICENSING_ALLOW_UNCLEAR'] == '0'
+
+    def test_scan_env_does_not_grant_allow_unclear(self, monkeypatch):
+        from api.config import child_process_env
+        licensing.set_policy(licensing.MODE_COMMERCIAL, allow_unclear=True)
+        monkeypatch.delenv('FACET_LICENSING_ALLOW_UNCLEAR', raising=False)
+        assert 'FACET_LICENSING_ALLOW_UNCLEAR' not in child_process_env()
+
+    def test_child_with_a_permissive_cwd_config_cannot_relax_the_server(self, commercial, monkeypatch):
+        """The child re-resolves a working-directory config that says allow_unclear: true."""
+        from api.config import child_process_env
+        env = child_process_env()
+        for key in ('FACET_LICENSING_MODE', 'FACET_LICENSING_ALLOW_UNCLEAR'):
+            monkeypatch.setenv(key, env[key])
+        cwd_cfg = {'licensing': {'mode': 'default', 'allow_unclear': True}}
+        child = licensing.resolve_policy(cwd_cfg)
+        assert child == licensing.Policy('commercial', False)
+        assert not licensing.allowed('samp_net', child)
+
     def test_every_facet_child_spawn_site_passes_the_policy_env(self):
         """No `facet.py` child may be started with a bare inherited environment."""
         spawners = {'Popen', 'create_subprocess_exec'}
@@ -847,10 +891,19 @@ class TestPoisonedFullPaths:
     with pyiqa and insightface poisoned so that any import raises."""
 
     @pytest.fixture()
-    def poisoned(self, poison, monkeypatch):
-        monkeypatch.setitem(sys.modules, 'pyiqa', None)
-        monkeypatch.setitem(sys.modules, 'insightface', None)
+    def poisoned(self, poison):
+        # The recording finder alone: a `sys.modules[name] = None` guard makes Python
+        # refuse the import WITHOUT consulting meta_path, hiding a swallowed import.
         return poison
+
+    def test_a_swallowed_import_is_still_recorded(self, poisoned):
+        """Positive control: the tripwire sees an import its caller then swallows."""
+        for package in ('insightface', 'pyiqa'):
+            try:
+                __import__(package)
+            except Exception:
+                pass
+        assert poisoned.attempts == ['insightface', 'pyiqa']
 
     def test_batch_processor_single_pass(self, commercial, poisoned, tmp_path):
         from tests.test_batch_processor_e2e import _FakeFaceAnalyzer, _make_processor, _tiny_jpegs

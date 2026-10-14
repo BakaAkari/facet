@@ -80,7 +80,7 @@ Siehe [Viewer-Integration](#viewer-integration) für die vollständige Referenz 
 | Einstellung | Standard | Beschreibung |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Mindestkonfidenz der Erkennung |
-| `min_face_size` | `20` | Mindestgröße des Gesichts in Pixeln |
+| `min_face_size` | `20` | Mindestgröße des Gesichts in Pixeln — Nur InsightFace: der YuNet-Detektor im kommerziellen Modus verwendet feste, gemessene Werte (0,7 Konfidenz, 30 px) und ignoriert `min_confidence_percent` sowie diese Einstellung. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio für die Blinzelerkennung |
 
 ### Gesichts-Clustering
@@ -194,7 +194,7 @@ CPU-Clustering mit festem `algorithm` ist für dieselbe Eingabe deterministisch.
 
 Alle Modi außer `--cluster-faces-force` behalten die Personendatensätze, löschen aber sämtliche Gesicht→Person-Zuordnungen und bauen sie neu auf. Ein neu gebildeter Cluster wird einer Person zurückgegeben, wenn entweder:
 
-1. sein mittleres Embedding innerhalb von `merge_threshold` (Standard 0,6 Kosinus für ArcFace, 0,45 für SFace) zum gespeicherten Zentroid dieser Person liegt, **oder**
+1. sein mittleres Embedding innerhalb von `merge_threshold` (Standard 0,6 Kosinus für ArcFace, 0,65 für SFace) zum gespeicherten Zentroid dieser Person liegt, **oder**
 2. mindestens die Hälfte seiner Gesichter vor dem Lauf zu dieser Person gehörte.
 
 Die zweite Regel wiegt schwerer, als sie klingt. Das Zentroid einer Person ist ein einzelner Mittelwertvektor; wer über Jahre fotografiert wurde, deckt einen weiten Bereich ab, und HDBSCAN teilt ihn korrekt in enge Untercluster, die weit von diesem Mittelwert entfernt liegen und an Regel 1 scheitern. In der oben genannten Bibliothek lieferte Regel 1 allein 38 % der Gesichter an benannte Personen zurück; mit Regel 2 sind es 96 %.

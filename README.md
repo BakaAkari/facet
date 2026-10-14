@@ -242,4 +242,4 @@ First time here? Follow the **[Getting Started](docs/GETTING_STARTED.md)** walkt
 
 ### Licensing
 
-Facet's own code is MIT. Some of the default models are **not** licensed for commercial use: pyiqa (TOPIQ, LIQE and friends) and the InsightFace weights are non-commercial. A `licensing.mode: commercial` setting (coming in this release) restricts Facet to permissively licensed models. See [Third-party models and licences](docs/THIRD_PARTY_MODELS.md).
+Facet's own code is MIT. Some of the default models are **not** licensed for commercial use: pyiqa (TOPIQ, LIQE and friends) and the InsightFace weights are non-commercial. The `licensing.mode: commercial` setting restricts Facet to permissively licensed models: restricted components are never imported or downloaded, and each slot is routed to a permissive replacement (see [Licensing](docs/CONFIGURATION.md#licensing)). See [Third-party models and licences](docs/THIRD_PARTY_MODELS.md).

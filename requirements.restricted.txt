@@ -13,8 +13,8 @@ insightface>=0.7.0
 #   onnxruntime-gpu>=1.15.0,<1.18 # GPU acceleration for CUDA 11.8
 
 # Quality Assessment (PyIQA models: TOPIQ, HyperIQA, DBCNN, MUSIQ).
-# >=0.1.16 also exposes Q-ReAlign (qrealign) — see models/pyiqa_scorer.py
-# PYIQA_MODELS for the registered models and their score ranges.
+# See models/pyiqa_scorer.py PYIQA_MODELS for the registered models and their
+# score ranges. Q-ReAlign does not need pyiqa: it loads natively via transformers.
 pyiqa>=0.1.16
 # pyiqa's liqe/clipiqa archs depend on PyPI openai-clip, which still imports
 # pkg_resources at runtime (LIQE/CLIPIQA); setuptools 81 removed pkg_resources.

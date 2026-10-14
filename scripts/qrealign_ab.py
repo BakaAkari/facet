@@ -23,7 +23,7 @@ Both models are invoked via pyiqa's standard ``create_metric`` interface with
 task ``'aesthetic'`` (matches the AVA-MOS-scale intent documented on the
 ``qalign_score`` column and the precedent in ``scripts/score_qalign_ava.py``),
 passing a PIL image bounded to PyIQAScorer's production long-edge limit
-(``_MAX_INFERENCE_SIZE``) — the same input contract every shipped pyiqa
+(``utils.image_bounds.MAX_INFERENCE_SIZE``) — the same input contract every shipped pyiqa
 scorer runs under — and no other preprocessing.
 
 Read-only against the DB (opened ``mode=ro``, safe on a live library copy).
@@ -63,7 +63,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from optimization.eval_common import (  # noqa: E402
     N_DECILES,
     append_partial,
-    bound_to_inference_size,
     done_keys,
     ensure_fresh_partial_file,
     filter_todo,
@@ -73,6 +72,7 @@ from optimization.eval_common import (  # noqa: E402
     stratified_sample_rows,
 )
 from optimization.iqa_eval import spearman_srcc  # noqa: E402
+from utils.image_bounds import bound_to_inference_size  # noqa: E402
 from utils.image_loading import load_image_from_path  # noqa: E402
 
 logging.basicConfig(
