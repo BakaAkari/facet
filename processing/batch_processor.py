@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from analyzers import CompositionAnalyzer, ImageCache
 from db.scoring_overrides import get_photo_scoring_overrides
+from licensing import LicenceError
 from processing.scorer import build_scoring_metrics
 from utils import (
     load_image_from_path, get_tag_params, detect_silhouette,
@@ -289,6 +290,8 @@ class BatchProcessor:
 
             # Use shared batch method for aesthetic/quality scoring
             aesthetic_results = self.scorer.get_aesthetic_and_quality_batch(pil_images, clip_inputs)
+        except LicenceError:
+            raise
         except Exception as e:
             logger.exception("Batch inference failed for %d images", len(batch))
             for item in batch:
@@ -486,6 +489,8 @@ class BatchProcessor:
 
                 self.result_queue.put({'result': res, 'pil_img': pil_img})
 
+            except LicenceError:
+                raise
             except Exception as e:
                 self.result_queue.put({'path': item['path'], 'error': str(e)})
 
@@ -501,6 +506,10 @@ class BatchProcessor:
         total = len(photo_paths)
         if total == 0:
             return
+
+        # Build every lazily-created model once, before any worker or GPU work, so
+        # a startup refusal stops the scan instead of failing every photo.
+        self.scorer.preflight_models()
 
         # Track start time for metrics
         start_time = time.time()
@@ -628,6 +637,8 @@ class BatchProcessor:
         """
         if total_count == 0:
             return None
+
+        self.scorer.preflight_models()
 
         # Convert to list for calibration split
         all_paths = list(path_iterator)

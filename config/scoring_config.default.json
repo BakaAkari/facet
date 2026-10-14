@@ -3734,8 +3734,13 @@
   },
   "iqa_extended": {
     "qrealign": "auto",
+    "qrealign_size": "mini",
     "aesthetic_v25": false,
     "deqa": false
+  },
+  "licensing": {
+    "mode": "default",
+    "allow_unclear": false
   },
   "plugins": {
     "enabled": false,

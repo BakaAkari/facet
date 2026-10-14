@@ -11,6 +11,8 @@ import numpy as np
 from PIL import Image
 from typing import Optional
 
+import licensing
+
 logger = logging.getLogger("facet.pyiqa")
 
 # Lazy import to avoid loading pyiqa unless needed
@@ -18,7 +20,8 @@ pyiqa = None
 
 
 def _ensure_pyiqa():
-    """Lazy load pyiqa library."""
+    """Lazy load pyiqa library (refused in commercial licensing mode)."""
+    licensing.require('pyiqa')
     global pyiqa
     if pyiqa is None:
         try:
@@ -108,43 +111,13 @@ PYIQA_MODELS = {
         'description': 'LIQE - Quality score + distortion type diagnosis',
         'has_distortion': True,
     },
-    # Q-ReAlign (LLM-based IQA, Q-ReAlign-Mini 0.8B, Apache-2.0). One variant:
-    # at ~3GB it needs no quantisation, so it is the first extended-IQA scorer
-    # that fits from the 8gb profile up (it replaced Q-Align, whose smallest
-    # 4-bit variant already wanted bitsandbytes and ~5GB).
-    #
-    # TRAP: pyiqa registers qrealign on a **(0, 1)** score range, NOT the (1, 5)
-    # AVA MOS range Q-Align used. _normalize_score clamps the raw value into
-    # score_range before scaling to 0-10, so carrying the old (1, 5) over would
-    # clamp every real score (all < 1) to exactly 1 and emit a constant 0.0
-    # column — silently, and with every unit test still green. Verify against
-    # pyiqa's own registry before touching this tuple.
-    #
-    # TRAP 2: pyiqa's QReAlign arch defaults to task='quality', but the A/B that
-    # chose Q-ReAlign scored with task_='aesthetic' (scripts/qrealign_ab.py
-    # SCORE_TASK) — that IAA head is the validated signal the qrealign_score
-    # column is documented and weighted against. The quality head is
-    # ceiling-compressed by comparison (raw ~0.48-0.99 vs ~0.12-0.75), so
-    # shipping it would silently serve a different distribution than the one the
-    # swap was decided on. CONTRACT: 'task' is forwarded as a **per-call**
-    # ``task_=`` kwarg — pyiqa's InferenceModel.forward passes **kwargs straight
-    # through to the net (pyiqa/models/inference_model.py), which is the only
-    # supported override; setting it as an attribute on ``.net`` does nothing.
-    'qrealign': {
-        'pyiqa_id': 'qrealign',
-        'vram_gb': 3,
-        'lower_better': False,
-        'score_range': (0, 1),
-        'task': 'aesthetic',
-        'description': 'Q-ReAlign-Mini 0.8B — LLM-based IQA (~3GB VRAM, Apache-2.0)',
-    },
 }
 
 
 # Models whose forward pass is per-sample independent in eval mode and accept a
 # stacked same-size batch tensor, so real batching gives results bit-identical to
 # per-image scoring. Resolution-sensitive multi-scale models (musiq*), the
-# variable-output LIQE, and the VLM Q-ReAlign stay serial (forced fixed-size
+# variable-output LIQE stay serial (forced fixed-size
 # batching would shift their scores).
 _BATCHABLE_MODELS = {'topiq', 'hyperiqa', 'dbcnn', 'topiq_iaa', 'topiq_nr_face', 'clipiqa+'}
 

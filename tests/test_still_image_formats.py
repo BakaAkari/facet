@@ -72,6 +72,9 @@ class _FakeFacet:
         self.config = ScoringConfig(config_path)
         self.model_manager = None
 
+    def preflight_models(self):
+        pass
+
     def filter_unscanned_paths(self, paths):
         return set(paths)
 

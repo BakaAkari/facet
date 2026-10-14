@@ -113,6 +113,9 @@ class FakeScorer:
     def commit(self):
         self.committed = True
 
+    def preflight_models(self):
+        pass
+
 
 def _make_processor(scorer, **kwargs):
     from unittest import mock

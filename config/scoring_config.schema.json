@@ -87,8 +87,16 @@
       "type": "object",
       "properties": {
         "qrealign": { "enum": [true, false, "auto"] },
+        "qrealign_size": { "enum": ["mini", "lite"] },
         "aesthetic_v25": { "type": "boolean" },
         "deqa": { "type": "boolean" }
+      }
+    },
+    "licensing": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["default", "commercial"] },
+        "allow_unclear": { "type": "boolean" }
       }
     },
     "ocr": {

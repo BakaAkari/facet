@@ -336,6 +336,13 @@ def create_app() -> FastAPI:
 
     from api.config import _FULL_CONFIG
 
+    # Install the licensing policy for this server. set_policy is in-process only;
+    # spawned facet.py children inherit commercial mode through
+    # api.config.child_process_env (FACET_LICENSING_MODE).
+    import licensing
+    pol = licensing.resolve_policy(_FULL_CONFIG)
+    licensing.set_policy(pol.mode, pol.allow_unclear)
+
     # Request logging middleware — requests slower than the configured
     # threshold (performance.slow_request_ms) are logged at WARNING.
     slow_request_ms = int(_FULL_CONFIG.get("performance", {}).get("slow_request_ms", 1000))

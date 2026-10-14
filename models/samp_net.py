@@ -21,6 +21,8 @@ import torchvision.transforms as transforms
 import torchvision.models as models
 from PIL import Image
 
+import licensing
+from licensing import LicenceError
 from models.composition_patterns import COMPOSITION_PATTERNS
 from models.weights import download_weights
 
@@ -398,6 +400,7 @@ class SaliencyDetector:
 
     def _ensure_initialized(self):
         """Lazy initialization of the model."""
+        licensing.require('u2netp')
         if self._initialized:
             return
 
@@ -430,6 +433,7 @@ class SaliencyDetector:
 
     def _download_weights(self):
         """Download U2-Net-P weights if not present."""
+        licensing.require('u2netp')
         if os.path.exists(self.weights_path):
             return
 
@@ -443,6 +447,8 @@ class SaliencyDetector:
                 os.remove(self.weights_path)
                 raise Exception("Download resulted in invalid file (too small)")
             logger.info("U2-Net-P download complete.")
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("Failed to auto-download U2-Net-P weights: %s", e)
             logger.info("Please download manually from: %s", U2NETP_WEIGHTS_URL)
@@ -861,6 +867,7 @@ class SAMPNetScorer:
             model_path: Path to SAMP-Net weights. If None, uses default.
             device: 'cuda', 'mps', or 'cpu'. If None, auto-selected via get_device().
         """
+        licensing.require('samp_net')
         from utils.device import get_device, is_device_available
         if device is None:
             device = get_device()
@@ -898,6 +905,7 @@ class SAMPNetScorer:
         transfer or a substituted asset is discarded instead of being unpickled
         on the next run.
         """
+        licensing.require('samp_net')
         if os.path.exists(self.model_path):
             return
 
@@ -905,6 +913,8 @@ class SAMPNetScorer:
             download_weights(SAMPNET_WEIGHTS_URL, Path(self.model_path),
                              sha256=SAMPNET_WEIGHTS_SHA256)
             logger.info("SAMP-Net download complete.")
+        except LicenceError:
+            raise
         except Exception as e:
             # Composition is one signal among many; ModelManager catches the
             # resulting None and the pass loop skips SAMP-Net, so a download
@@ -921,6 +931,7 @@ class SAMPNetScorer:
 
     def _load_model(self):
         """Load and initialize the SAMP-Net model."""
+        licensing.require('samp_net')
         self._download_weights()
 
         # Initialize model architecture
@@ -1130,6 +1141,8 @@ def create_samp_scorer(config) -> SAMPNetScorer:
         device = get_device()
 
         return SAMPNetScorer(model_path=model_path, device=device)
+    except LicenceError:
+        raise
     except Exception as e:
         logger.error("Failed to initialize SAMP-Net scorer: %s", e)
         return None

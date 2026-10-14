@@ -1304,6 +1304,7 @@ Pontuadores de qualidade pesados/experimentais que adicionam colunas suplementar
 {
   "iqa_extended": {
     "qrealign": "auto",
+    "qrealign_size": "mini",
     "aesthetic_v25": true,
     "deqa": false
   }
@@ -1312,7 +1313,8 @@ Pontuadores de qualidade pesados/experimentais que adicionam colunas suplementar
 
 | Configuração | Padrão | Valores aceitos | Coluna | Descrição |
 |--------------|--------|-----------------|--------|-----------|
-| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | IQA baseado em LLM Q-ReAlign-Mini 0.8B (suportado por pyiqa, pesos Apache-2.0, ~2-3GB VRAM/RAM). `"auto"` liga para os perfis `8gb`/`16gb`/`24gb` e desliga para `legacy`/CPU; `true`/`false` sobrepõem explicitamente o padrão do perfil. |
+| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | IQA baseado em LLM Q-ReAlign-Mini 0.8B (carregador nativo `transformers`, sem pyiqa; pesos Apache-2.0, ~2-3GB VRAM/RAM). `"auto"` liga para os perfis `8gb`/`16gb`/`24gb` e desliga para `legacy`/CPU; `true`/`false` sobrepõem explicitamente o padrão do perfil. |
+| `qrealign_size` | `"mini"` | `"mini"` · `"lite"` | - | Tamanho do Q-ReAlign carregado pelo avaliador nativo: `mini` (0.8B) ou `lite` (4B). Usado para a coluna `qrealign` e, com `licensing.mode: "commercial"`, como modelo principal de estética e qualidade. |
 | `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (cabeça SigLIP, ~2GB). Requer o pacote `aesthetic-predictor-v2-5`. **Descontinuado:** licenciado sob AGPL-3.0 e sem manutenção desde 2024-12-18 — prefira `qrealign`. |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | IQA VLM DeQA-Score (GPU 16GB+; ignorado e deixado NULL caso contrário). |
 
@@ -1323,6 +1325,30 @@ Quando habilitada, cada métrica é exposta ao agregado ponderado, mas tem peso 
 **Exibição no visualizador.** Quando qualquer uma dessas colunas é preenchida, o visualizador mostra o valor no painel **Quality** dos detalhes da foto (`Q-ReAlign`, `Aesthetic V2.5`, `DeQA`) e expõe um controle deslizante de faixa correspondente na barra lateral de filtros da galeria sob **Extended Quality** (`min_qrealign`/`max_qrealign`, `min_aesthetic_v25`/`max_aesthetic_v25`, `min_deqa`/`max_deqa`). As fotos escaneadas antes de a camada ser habilitada têm `NULL` nessas colunas, e definir um mínimo ou máximo em um desses controles deslizantes **as exclui** — um `NULL` nunca satisfaz uma comparação `>=`/`<=`. Faça um novo escaneamento antes de filtrar por uma métrica recém-habilitada, ou essas fotos sairão silenciosamente da galeria.
 
 **Robustez.** O DeQA-Score carrega código remoto `trust_remote_code` cuja assinatura de forward varia entre revisões de checkpoint; seu pontuador é defensivo — qualquer falha de previsão (assinatura incorreta, formato de saída inesperado, OOM) é capturada e o `deqa_score` da imagem fica `NULL` em vez de travar o escaneamento.
+
+---
+
+## Licenciamento
+
+Controla quais componentes de modelos o Facet pode carregar. Veja [THIRD_PARTY_MODELS.md](THIRD_PARTY_MODELS.md) para a tabela de licenças por componente.
+
+```json
+{
+  "licensing": {
+    "mode": "default",
+    "allow_unclear": false
+  }
+}
+```
+
+| Configuração | Padrão | Valores aceitos | Descrição |
+|---------|---------|-------------------|-------------|
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` carrega todos os modelos (comportamento entregue). `"commercial"` nunca importa, enfileira nem baixa componentes cuja licença não seja adequada ao uso comercial: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) e InsightFace são recusados em todas as camadas. Estética e qualidade vêm do avaliador nativo Q-ReAlign, a composição do analisador baseado em regras e os rostos do pipeline facial permissivo (ainda não disponível: até chegar, uma varredura comercial para no arranque). `liqe` e `aesthetic_iaa` não têm substituto e ficam `NULL`. |
+| `allow_unclear` | `false` | `true` / `false` | No modo comercial, permite também componentes com licença *incerta* (SAMP-Net, U2-Net-P, a cabeça estética CLIP-MLP da LAION). Componentes com licença não comercial continuam recusados. |
+
+Um componente recusado lança um `LicenceError` que nomeia o componente e o seu substituto; todo manipulador que pudesse absorvê-lo volta a lançá-lo (um teste exige isso), de modo que uma recusa para a varredura no arranque em vez de virar falhas por foto ou um recurso silencioso. Os comandos que dependem apenas de um componente recusado (`--score-topiq`, `--recompute-iqa` para modelos pyiqa, `--recompute-composition-gpu`, `--extract-faces-gpu-*`) terminam com essa mensagem no modo comercial. O modo é lido da configuração resolvida no arranque. O visualizador passa `FACET_LICENSING_MODE=commercial` no ambiente de cada processo `facet.py` que inicia (varreduras, recálculos), de modo que um filho nunca volte ao modo padrão a partir de outro diretório de trabalho. Nada disto é aconselhamento jurídico.
+
+A variável de ambiente `FACET_LICENSING_MODE` prevalece sobre o ficheiro: `commercial` força o modo comercial, `default` ou vazia significa sem substituição (nunca relaxa um ficheiro que diga `commercial`) e qualquer outro valor é ignorado com um aviso.
 
 ---
 

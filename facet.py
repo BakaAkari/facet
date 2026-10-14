@@ -92,6 +92,7 @@ except ImportError:
         return iterable
 
 # Import config module (lightweight, no cv2/torch dependency)
+import licensing
 from config import ScoringConfig, PercentileNormalizer
 from config.scoring_config import resolve_scoring_config_path
 from utils.image_loading import (
@@ -1380,6 +1381,66 @@ def _library_job_requested(args):
     return any(getattr(args, name) for name in LIBRARY_JOB_ARGS)
 
 
+def _apply_licensing_policy(args):
+    """Resolve the licensing policy from the config this run uses and install it.
+
+    Honours ``--config`` (and ``$FACET_LICENSING_MODE``). Children spawned without
+    ``--config`` resolve the same policy lazily through ``licensing.policy()``.
+    """
+    from config_resolve import load_resolved
+    try:
+        cfg = load_resolved(resolve_scoring_config_path(args.config))
+        pol = licensing.resolve_policy(cfg)
+    except (OSError, ValueError):
+        if not args.doctor:
+            raise
+        # --doctor exists to diagnose a missing or invalid config and reports
+        # the problem itself ("Licensing", "Config"); it must not crash first.
+        # It loads no models, so the strictest reading the environment allows is
+        # enough.
+        try:
+            pol = licensing.resolve_policy(None)
+        except ValueError:
+            # A bad $FACET_LICENSING_MODE: assume the strictest mode.
+            pol = licensing.Policy(licensing.MODE_COMMERCIAL, False)
+    licensing.set_policy(pol.mode, pol.allow_unclear)
+    return pol
+
+
+def _upgrade_iqa_step(args):
+    """``(flag, label)`` of the ``--upgrade-db`` IQA step, or None when no IQA model is allowed.
+
+    Default mode always has the pyiqa trio. Commercial mode has only Q-ReAlign,
+    and only when ``iqa_extended.qrealign`` resolves on; with neither,
+    ``--recompute-iqa`` would refuse every run, so the step is skipped instead.
+    """
+    if not licensing.is_commercial():
+        return "--recompute-iqa", "TOPIQ IAA + NR-Face + LIQE"
+    if any(licensing.loader_allowed(m) for m in ('topiq_iaa', 'topiq_nr_face', 'liqe')):
+        return "--recompute-iqa", "Image-quality metrics (permitted models only)"
+    try:
+        enabled = ScoringConfig(args.config, validate=False).get_extended_iqa_settings().get('qrealign')
+    except (OSError, ValueError):
+        enabled = False
+    return ("--recompute-iqa", "Q-ReAlign quality score") if enabled else None
+
+
+def _commercial_refusals(args):
+    """CLI flags that cannot run under ``licensing.mode: commercial``, as (flag, reason) pairs."""
+    refused = []
+    if args.score_topiq:
+        refused.append(('--score-topiq', "TOPIQ is a pyiqa model; use --recompute-iqa "
+                                         "(Q-ReAlign) instead."))
+    if args.recompute_composition_gpu and not licensing.loader_allowed('samp_net'):
+        refused.append(('--recompute-composition-gpu',
+                        "SAMP-Net is not permitted; use --recompute-composition-cpu, or set "
+                        "licensing.allow_unclear."))
+    if args.extract_faces_gpu_incremental or args.extract_faces_gpu_force:
+        refused.append(('--extract-faces-gpu-*', "InsightFace is not permitted and the permissive "
+                                                 "face extraction is not available yet."))
+    return refused
+
+
 def _upgrade_db_schema(args, db_path):
     """Migrate the schema under the library lock; returns the columns added.
 
@@ -1594,6 +1655,10 @@ def _run_scan(args, resumed_run):
         logger.info("DRY RUN MODE - Scoring %d sample photos (not saving to database)", sample_count)
         logger.info("=" * 80)
 
+        # Resolve the face analyzer / commercial aesthetic scorer once, so a
+        # startup refusal aborts here rather than failing every sample.
+        scorer.preflight_models()
+
         results = []
         for i, photo_path in enumerate(sample_files, 1):
             logger.info("[%d/%d] Processing %s...", i, sample_count, photo_path.name)
@@ -1611,6 +1676,8 @@ def _run_scan(args, resumed_run):
                     logger.info("OK (aggregate: %.2f)", result.get('aggregate', 0))
                 else:
                     logger.warning("FAILED")
+            except licensing.LicenceError:
+                raise
             except Exception as e:
                 logger.error("ERROR: %s", e)
 
@@ -1687,6 +1754,11 @@ def _run_scan(args, resumed_run):
             model_manager = ModelManager(scorer.config)
             todo_paths = [str(f) for f in todo_list]
             processed = run_single_pass(todo_paths, args.single_pass_name, scorer, model_manager)
+            if processed == 0:
+                # A refused or unknown pass did nothing: say so in the exit code.
+                logger.error("Pass '%s' processed no photos.", args.single_pass_name)
+                scan_run.finish('failed')
+                exit(1)
             logger.info("Processed %d photos with %s pass", processed, args.single_pass_name)
 
         elif args.single_pass:
@@ -2133,6 +2205,11 @@ def main():
 
     parser = cli_args.build_parser()
     args = parser.parse_args()
+
+    policy = _apply_licensing_policy(args)
+    if policy.mode == licensing.MODE_COMMERCIAL:
+        for flag, reason in _commercial_refusals(args):
+            parser.error(f"{flag} is refused in licensing.mode 'commercial': {reason}")
 
     # Validate argument dependencies
     if args.apply_recommendations and not args.compute_recommendations:
@@ -2605,7 +2682,7 @@ def main():
         steps = [
             ("--extract-gps", "GPS coordinates from EXIF"),
             ("--detect-duplicates", "Duplicate detection (pHash)"),
-            ("--recompute-iqa", "TOPIQ IAA + NR-Face + LIQE"),
+            _upgrade_iqa_step(args),
             ("--recompute-saliency", "Subject saliency (BiRefNet)"),
             ("--recompute-composition-cpu", "Rule-based composition"),
             ("--recompute-burst", "Burst detection grouping"),
@@ -2615,6 +2692,10 @@ def main():
             ("--recompute-face-signals", "Per-face eyes/smile signals from landmarks"),
             ("--recompute-average", "Aggregate scores"),
         ]
+        if steps[2] is None:
+            logger.info("--- IQA metrics: skipped (no IQA model is permitted under the active "
+                        "licensing policy) ---")
+            steps = [step for step in steps if step is not None]
         cmd_base = [sys.executable, os.path.abspath(__file__)]
         if args.db:
             cmd_base += ["--db", args.db]

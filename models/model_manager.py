@@ -8,6 +8,8 @@ Supports PyIQA, Qwen2-VL, and CLIP models with automatic selection.
 import logging
 from typing import Dict, List
 
+import licensing
+from licensing import LicenceError
 from utils.system_memory import BYTES_PER_GB
 
 logger = logging.getLogger("facet.models")
@@ -51,6 +53,7 @@ def build_face_analyzer(config, device):
         A FaceAnalyzer; it reports ``available = False`` rather than raising
         when InsightFace itself cannot be loaded.
     """
+    licensing.require('insightface')
     from analyzers import FaceAnalyzer
 
     face_settings = config.get_face_detection_settings()
@@ -68,6 +71,17 @@ def build_face_analyzer(config, device):
         enable_blendshapes=blendshape_settings.get('enabled', True),
         blendshape_min_crop=blendshape_settings.get('min_crop_size', 192),
     )
+
+
+def build_permissive_face_analyzer(config):
+    """Build the permissive (commercial-safe) face analyzer, the commercial twin of
+    :func:`build_face_analyzer`.
+
+    Commercial mode never builds InsightFace. Its replacement (YuNet + SFace +
+    MediaPipe) arrives in a later wave, so until then this refuses loudly: a
+    commercial scan with no face stage must stop, not write face-less rows.
+    """
+    raise NotImplementedError("permissive face pipeline arrives in W5")
 
 
 class ModelManager:
@@ -270,6 +284,7 @@ class ModelManager:
         Always uses ViT-L-14 (clip_legacy config) because the MLP head
         was trained on 768-dim embeddings.
         """
+        licensing.require('clip_mlp_head')
         if 'clip_aesthetic' in self.models:
             return self.models['clip_aesthetic']
 
@@ -300,6 +315,8 @@ class ModelManager:
             logger.info("CLIP+MLP aesthetic loaded: %s", model_name)
             return self.models['clip_aesthetic']
 
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("Failed to load CLIP+MLP: %s", e)
             return None
@@ -471,7 +488,14 @@ class ModelManager:
         """
         if self.keep_in_ram == 'never':
             return False
-        if model_name not in self.CPU_CACHEABLE_MODELS:
+        # Native Q-ReAlign is cacheable only in commercial mode: adding it to the
+        # static set would change the default-mode retained set (samp_net would
+        # drop out on a 32 GB host). Both names share one instance, so the move
+        # is idempotent.
+        if model_name in ('qrealign', 'qrealign_quality'):
+            if not licensing.is_commercial():
+                return False
+        elif model_name not in self.CPU_CACHEABLE_MODELS:
             return False
         if model_name == 'insightface' and self.device == 'cuda':
             return False
@@ -561,6 +585,8 @@ class ModelManager:
             self.models[model_name] = model
             self._cache_hits += 1
             return model
+        except LicenceError:
+            raise
         except Exception as e:
             logger.warning("Failed to restore %s from cache: %s", model_name, e)
             del model
@@ -627,6 +653,9 @@ class ModelManager:
             'clip_aesthetic': self._load_clip_aesthetic,
             'samp_net': self._load_samp_net,
             'insightface': self._load_insightface,
+            'faces_permissive': self._load_faces_permissive,
+            'qrealign': lambda: self._load_qrealign_native('qrealign'),
+            'qrealign_quality': lambda: self._load_qrealign_native('qrealign_quality'),
             'vlm_tagger': lambda: self._load_vlm_tagger('qwen2_5_vl_7b'),
             'qwen3_vl_tagger': lambda: self._load_vlm_tagger('qwen3_vl_2b'),
             'qwen3_5_tagger': lambda: self._load_vlm_tagger('qwen3_5_2b'),
@@ -636,9 +665,9 @@ class ModelManager:
             'deqa': self._load_deqa,
         }
 
-        # PyIQA models (qrealign is pyiqa-backed too; gated by config)
+        # PyIQA models (refused in commercial mode; Q-ReAlign is native, not pyiqa)
         pyiqa_models = ['topiq', 'hyperiqa', 'dbcnn', 'musiq', 'musiq-koniq', 'clipiqa+',
-                        'topiq_iaa', 'topiq_nr_face', 'liqe', 'qrealign']
+                        'topiq_iaa', 'topiq_nr_face', 'liqe']
 
         if model_name in loaders:
             return loaders[model_name]()
@@ -650,6 +679,7 @@ class ModelManager:
 
     def _load_samp_net(self):
         """Load SAMP-Net composition model."""
+        licensing.require('samp_net')
         if 'samp_net' in self.models:
             return self.models['samp_net']
 
@@ -667,6 +697,8 @@ class ModelManager:
             logger.info("SAMP-Net loaded: %s", model_path)
             return scorer
 
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("Failed to load SAMP-Net: %s", e)
             return None
@@ -685,6 +717,7 @@ class ModelManager:
         blendshape settings, so a default-threshold app would silently score
         faces by different rules than every other face path in Facet.
         """
+        licensing.require('insightface')
         if 'insightface' in self.models:
             return self.models['insightface']
 
@@ -695,8 +728,61 @@ class ModelManager:
             logger.info("InsightFace loaded")
             return analyzer
 
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("Failed to load InsightFace: %s", e)
+            return None
+
+    def _load_faces_permissive(self):
+        """Load the permissive face analyzer the commercial ``faces_permissive`` pass runs.
+
+        ``NotImplementedError`` from the factory is deliberately not swallowed:
+        a commercial scan with no face stage must stop, not return None and
+        record a retryable chunk failure.
+        """
+        licensing.require('yunet')
+        if 'faces_permissive' in self.models:
+            return self.models['faces_permissive']
+
+        logger.info("Loading permissive face analyzer...")
+        try:
+            analyzer = build_permissive_face_analyzer(self.config)
+            self.models['faces_permissive'] = analyzer
+            return analyzer
+        except (LicenceError, NotImplementedError):
+            raise
+        except Exception as e:
+            logger.error("Failed to load the permissive face analyzer: %s", e)
+            return None
+
+    def _load_qrealign_native(self, name: str = 'qrealign'):
+        """Load the native Q-ReAlign scorer for ``qrealign`` (aesthetic task) or
+        ``qrealign_quality`` (quality task).
+
+        Both names share one scorer instance, so a pass that queues both holds one
+        copy of the model. No pyiqa is involved in either mode.
+        """
+        licensing.require('qrealign_native')
+        if name in self.models:
+            return self.models[name]
+        sibling = 'qrealign_quality' if name == 'qrealign' else 'qrealign'
+        if sibling in self.models:
+            self.models[name] = self.models[sibling]
+            return self.models[name]
+
+        logger.info("Loading native Q-ReAlign (%s)...", name)
+        try:
+            from models.qrealign_native import QReAlignNativeScorer
+
+            scorer = QReAlignNativeScorer(size=self.config.get_qrealign_size(), device=self.device)
+            scorer.load()
+            self.models[name] = scorer
+            return scorer
+        except LicenceError:
+            raise
+        except Exception as e:
+            logger.error("Failed to load native Q-ReAlign: %s", e)
             return None
 
     def _load_vlm_tagger(self, config_key: str = 'qwen2_5_vl_7b'):
@@ -755,6 +841,7 @@ class ModelManager:
         Returns:
             PyIQAScorer instance
         """
+        licensing.require(model_name)
         if model_name in self.models:
             return self.models[model_name]
 
@@ -768,12 +855,15 @@ class ModelManager:
             logger.info("PyIQA %s loaded", model_name)
             return scorer
 
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("Failed to load PyIQA %s: %s", model_name, e)
             return None
 
     def _load_aesthetic_v25(self):
         """Load Aesthetic Predictor V2.5 (optional extended-IQA tier, gated OFF)."""
+        licensing.require('aesthetic_v25')
         if 'aesthetic_v25' in self.models:
             return self.models['aesthetic_v25']
         try:
@@ -783,6 +873,8 @@ class ModelManager:
             self.models['aesthetic_v25'] = scorer
             logger.info("Aesthetic Predictor V2.5 loaded")
             return scorer
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("Failed to load Aesthetic Predictor V2.5: %s", e)
             return None
@@ -793,6 +885,7 @@ class ModelManager:
         Returns None (logged "skipped") when the GPU is too small, leaving the
         deqa_score column NULL rather than failing the pass.
         """
+        licensing.require('deqa')
         if 'deqa' in self.models:
             return self.models['deqa']
         try:
@@ -805,6 +898,8 @@ class ModelManager:
             self.models['deqa'] = scorer
             logger.info("DeQA-Score loaded")
             return scorer
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("Failed to load DeQA-Score: %s", e)
             return None
@@ -1010,6 +1105,8 @@ class ModelManager:
         'topiq_nr_face': 2,   # Shares backbone with TOPIQ
         'liqe': 2,            # CLIP-based quality assessment
         'qrealign': 3,        # Q-ReAlign-Mini 0.8B (no quantisation needed)
+        'qrealign_quality': 3,  # same native scorer, quality task
+        'faces_permissive': 1,  # YuNet + SFace + MediaPipe (small ONNX/CPU models)
         'aesthetic_v25': 2,   # Aesthetic Predictor V2.5 (SigLIP head)
         'deqa': 16,           # DeQA-Score VLM (very heavy)
         'saliency': 2,        # BiRefNet saliency detection
@@ -1031,6 +1128,8 @@ class ModelManager:
         'topiq_nr_face': 2.0,
         'liqe': 2.0,
         'qrealign': 5.0,       # 0.8B params at FP32 (~3.2GB) + activations
+        'qrealign_quality': 5.0,
+        'faces_permissive': 1.0,
         'saliency': 2.0,
         'qwen3_vl_tagger': 5.0,
         'qwen3_5_tagger': 5.0,
@@ -1039,11 +1138,25 @@ class ModelManager:
 
     def get_model_vram(self, model_name: str) -> int:
         """Get VRAM requirement for a model in GB."""
+        if model_name in ('qrealign', 'qrealign_quality') and self._qrealign_is_lite():
+            return self.QREALIGN_LITE_VRAM_GB
         return self.MODEL_VRAM_REQUIREMENTS.get(model_name, 4)
 
     def get_model_ram(self, model_name: str) -> float:
         """Get RAM requirement for CPU execution in GB."""
+        if model_name in ('qrealign', 'qrealign_quality') and self._qrealign_is_lite():
+            return self.QREALIGN_LITE_RAM_GB
         return self.MODEL_RAM_REQUIREMENTS.get(model_name, 2.0)
+
+    # Q-ReAlign-Lite is 4B parameters (Mini is 0.8B): the table entries above are Mini's.
+    QREALIGN_LITE_VRAM_GB = 10
+    QREALIGN_LITE_RAM_GB = 18.0
+
+    def _qrealign_is_lite(self) -> bool:
+        try:
+            return self.config.get_qrealign_size() == 'lite'
+        except Exception:
+            return False
 
     def select_tagging_model(self, available_vram: float) -> str:
         """

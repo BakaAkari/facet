@@ -16,6 +16,7 @@ O **modo comercial** (`licensing.mode: commercial` em `scoring_config.json`, pre
 <!-- BEGIN GENERATED -->
 | Componente | Licença do código | Licença dos pesos | Uso comercial | Usado para | Substituto |
 |---|---|---|---|---|---|
+| [pyiqa (package)](https://github.com/chaofengc/IQA-PyTorch) (`pyiqa`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | não | every pyiqa-backed scorer below | `qrealign_native` |
 | [TOPIQ NR](https://github.com/chaofengc/IQA-PyTorch) (`topiq`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | não | aesthetic / quality_score (16gb, 24gb) | `qrealign_native` |
 | [HyperIQA](https://github.com/chaofengc/IQA-PyTorch) (`hyperiqa`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | não | quality (optional) | `qrealign_native` |
 | [DBCNN](https://github.com/chaofengc/IQA-PyTorch) (`dbcnn`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | não | quality (optional) | `qrealign_native` |
@@ -25,8 +26,7 @@ O **modo comercial** (`licensing.mode: commercial` em `scoring_config.json`, pre
 | [TOPIQ IAA](https://github.com/chaofengc/IQA-PyTorch) (`topiq_iaa`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | não | aesthetic_iaa (supplementary) | - |
 | [TOPIQ NR-Face](https://github.com/chaofengc/IQA-PyTorch) (`topiq_nr_face`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | não | face_quality_iqa (supplementary) | `ofiq` |
 | [LIQE](https://github.com/chaofengc/IQA-PyTorch) (`liqe`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | não | quality + distortion diagnosis (supplementary) | - |
-| [Q-ReAlign (pyiqa wrapper)](https://github.com/chaofengc/IQA-PyTorch) (`qrealign`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | não | qrealign_score (extended IQA) | `qrealign_native` |
-| [Q-ReAlign Mini/Lite/Pro (transformers)](https://huggingface.co/q-future) (`qrealign_native`) | MIT | Apache-2.0 | sim | aesthetic / quality_score / qrealign_score (commercial mode) | - |
+| [Q-ReAlign Mini/Lite/Pro (transformers)](https://huggingface.co/q-future) (`qrealign_native`) | MIT | Apache-2.0 | sim | qrealign_score (extended IQA); aesthetic / quality_score (commercial mode) | - |
 | [InsightFace buffalo_l](https://github.com/deepinsight/insightface) (`insightface`) | MIT (package) | Non-commercial research only | não | face detection, recognition, 106-point landmarks | `yunet` |
 | [YuNet (opencv_zoo)](https://github.com/opencv/opencv_zoo) (`yunet`) | MIT | MIT | sim | face detection (commercial mode) | - |
 | [SFace (opencv_zoo)](https://github.com/opencv/opencv_zoo) (`sface`) | Apache-2.0 | Apache-2.0 | sim | face recognition (commercial mode) | - |

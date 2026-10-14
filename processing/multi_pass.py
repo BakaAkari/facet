@@ -22,7 +22,9 @@ from typing import List, Dict, Any
 
 from tqdm import tqdm
 
+import licensing
 from db.scoring_overrides import get_photo_scoring_overrides
+from licensing import LicenceError
 from models.model_manager import UNIFIED_MEMORY_ACCELERATOR, ModelManager
 from processing.scorer import build_scoring_metrics
 from utils.device import clear_device_cache
@@ -286,29 +288,26 @@ class ChunkedMultiPassProcessor:
         models.append('clip')
 
         # Quality/Aesthetic model selection
-        quality_config = self.config.get('quality', {})
-        quality_model = quality_config.get('model', 'auto')
-
-        if quality_model == 'auto':
-            profile_cfg = self.model_manager.get_active_profile()
-            profile_aesthetic = profile_cfg.get('aesthetic_model', 'clip-mlp')
-            # Map profile aesthetic_model to quality model name used in passes
-            selected_quality = 'topiq' if profile_aesthetic == 'topiq' else 'clip_aesthetic'
-        else:
-            selected_quality = quality_model
+        selected_quality = self._selected_quality()
+        commercial = licensing.is_commercial()
 
         # PyIQA models: topiq, hyperiqa, dbcnn, musiq
         pyiqa_models = ['topiq', 'hyperiqa', 'dbcnn', 'musiq', 'musiq-koniq', 'clipiqa+']
-        if selected_quality in pyiqa_models:
+        if selected_quality in pyiqa_models or selected_quality == 'qrealign':
             models.append(selected_quality)
         # else: clip_aesthetic uses same model as CLIP embeddings
 
-        # Supplementary PyIQA models (per-profile)
+        # Supplementary PyIQA models (per-profile). Commercial mode drops every
+        # one the registry refuses; they are all pyiqa-backed.
         active_profile = self.model_manager.get_active_profile()
         supplementary_models = active_profile.get('supplementary_pyiqa', [])
         for supp_model in supplementary_models:
-            if supp_model not in models:
-                models.append(supp_model)
+            if supp_model in models:
+                continue
+            if commercial and not licensing.loader_allowed(supp_model):
+                logger.info("Commercial mode: skipping supplementary model '%s'.", supp_model)
+                continue
+            models.append(supp_model)
 
         # Extended-IQA tier (config-gated: qrealign defaults to "auto" -> on for
         # every profile but legacy; aesthetic_v25/deqa are OFF by default). Each
@@ -320,8 +319,12 @@ class ChunkedMultiPassProcessor:
         except Exception:
             ext = {}
         for ext_model in ('qrealign', 'aesthetic_v25', 'deqa'):
-            if ext.get(ext_model) and ext_model not in models:
-                models.append(ext_model)
+            if not ext.get(ext_model) or ext_model in models:
+                continue
+            if commercial and not licensing.loader_allowed(ext_model):
+                logger.info("Commercial mode: skipping extended-IQA model '%s'.", ext_model)
+                continue
+            models.append(ext_model)
 
         # Saliency model (BiRefNet) if enabled for this profile
         if active_profile.get('saliency_enabled', False):
@@ -341,7 +344,10 @@ class ChunkedMultiPassProcessor:
         # leaving composition to the rule-based fallback, which is what made the
         # 24gb profile ship without any composition model on the default path.
         composition_model = profile.get('composition_model', 'rule-based')
-        if composition_model == 'samp-net':
+        if composition_model == 'samp-net' and commercial and not licensing.loader_allowed('samp_net'):
+            logger.info("Commercial mode: SAMP-Net is not permitted; composition uses the "
+                        "rule-based analyzer.")
+        elif composition_model == 'samp-net':
             models.append('samp_net')
         elif composition_model not in ('rule-based', 'none'):
             logger.warning(
@@ -349,10 +355,52 @@ class ChunkedMultiPassProcessor:
                 "rule-based analyzer. Set composition_model to 'samp-net', or "
                 "processing.mode to 'single-pass'.", composition_model)
 
-        # Face analysis
-        models.append('insightface')
+        # Face analysis. Commercial mode swaps InsightFace for the permissive stack.
+        models.append(self._face_pass_name())
 
         return models
+
+    def _selected_quality(self) -> str:
+        """The primary aesthetic/quality model this run uses, licensing applied.
+
+        The single decision both the model queue and ``_pass_qrealign`` read, so
+        "which model owns ``aesthetic``" can never be answered two ways.
+        """
+        quality_config = self.config.get('quality', {})
+        quality_model = quality_config.get('model', 'auto')
+
+        if quality_model == 'auto':
+            profile_cfg = self.model_manager.get_active_profile()
+            profile_aesthetic = profile_cfg.get('aesthetic_model', 'clip-mlp')
+            # Map profile aesthetic_model to quality model name used in passes
+            selected_quality = 'topiq' if profile_aesthetic == 'topiq' else 'clip_aesthetic'
+        else:
+            selected_quality = quality_model
+
+        if licensing.is_commercial():
+            selected_quality = self._commercial_primary_quality(selected_quality)
+        return selected_quality
+
+    def _qrealign_is_primary(self) -> bool:
+        """Whether Q-ReAlign (not CLIP-MLP or a pyiqa model) owns aesthetic/quality."""
+        return self._selected_quality() == 'qrealign'
+
+    @staticmethod
+    def _face_pass_name() -> str:
+        """Name of the face pass the active licensing policy schedules."""
+        return 'insightface' if licensing.loader_allowed('insightface') else 'faces_permissive'
+
+    @staticmethod
+    def _commercial_primary_quality(selected_quality: str) -> str:
+        """Primary aesthetic/quality model under commercial mode.
+
+        The CLIP+MLP head survives only when the registry allows it (it does
+        under ``licensing.allow_unclear``); every pyiqa model is replaced by the
+        native Q-ReAlign scorer, which fills aesthetic and quality in one pass.
+        """
+        if selected_quality == 'clip_aesthetic' and licensing.loader_allowed('clip_aesthetic'):
+            return 'clip_aesthetic'
+        return 'qrealign'
 
     def process_directory(self, photo_paths: List[str], show_progress: bool = True) -> Dict[str, Any]:
         """
@@ -459,6 +507,13 @@ class ChunkedMultiPassProcessor:
         supplementary.add('samp_net')  # SAMP-Net is optional (weights may be unavailable — composition is skipped)
         # Extended-IQA scorers are heavy/experimental — load/VRAM failure skips the pass.
         supplementary.update(('qrealign', 'aesthetic_v25', 'deqa'))
+        if licensing.is_commercial():
+            # The permissive face pass is the only commercial face stage, and
+            # Q-ReAlign is a required model whenever it owns aesthetic/quality
+            # (it stays supplementary beside an allow_unclear CLIP-MLP head).
+            supplementary.discard('faces_permissive')
+            if self._qrealign_is_primary():
+                supplementary.discard('qrealign')
 
         # Run each pass group
         for group_idx, model_group in enumerate(self.pass_groups):
@@ -473,6 +528,8 @@ class ChunkedMultiPassProcessor:
             for model_name in list(loaded_models):
                 try:
                     self._run_model_pass(model_name, loaded_models[model_name], images, results)
+                except LicenceError:
+                    raise
                 except Exception as ex:
                     if model_name in supplementary:
                         logger.error("Supplementary %s inference failed, skipping: %s", model_name, ex)
@@ -734,7 +791,7 @@ class ChunkedMultiPassProcessor:
     # PyIQA models list
     PYIQA_MODELS = ['topiq', 'hyperiqa', 'dbcnn', 'musiq', 'musiq-koniq', 'clipiqa+',
                     'topiq_iaa', 'topiq_nr_face', 'liqe',
-                    'qrealign', 'aesthetic_v25', 'deqa']
+                    'aesthetic_v25', 'deqa']
 
     def _run_model_pass(self, model_name: str, model: Any,
                         images: Dict[str, Dict], results: Dict[str, Dict]):
@@ -751,8 +808,10 @@ class ChunkedMultiPassProcessor:
             self._pass_clip(model, images, results)
         elif model_name == 'samp_net':
             self._pass_samp_net(model, images, results)
-        elif model_name == 'insightface':
+        elif model_name in ('insightface', 'faces_permissive'):
             self._pass_insightface(model, images, results)
+        elif model_name in ('qrealign', 'qrealign_quality'):
+            self._pass_qrealign(model, model_name, images, results)
         elif model_name in VLM_TAGGER_KEYS:
             self._pass_vlm_tagger(model, images, results)
         elif model_name == 'saliency':
@@ -808,6 +867,8 @@ class ChunkedMultiPassProcessor:
                 result = scorer.score(img_cv)
                 results[path]['comp_score'] = result.get('comp_score', 5.0)
                 results[path]['composition_pattern'] = result.get('pattern', 'unknown')
+            except LicenceError:
+                raise
             except Exception as e:
                 logger.error("SAMP-Net failed for %s: %s", path, e)
 
@@ -850,19 +911,24 @@ class ChunkedMultiPassProcessor:
                 else:
                     results[path]['isolation_bonus'] = 1.0
 
+            except LicenceError:
+                raise
             except Exception as e:
                 logger.error("Face detection failed for %s: %s", path, e)
+                # A failed analysis is unknown, not "no face": the per-face metrics
+                # stay NULL (the scorer reads NULL as neutral) and face_details
+                # None tells the save to leave the stored faces alone.
                 results[path]['face_count'] = 0
-                results[path]['face_quality'] = 0
-                results[path]['eye_sharpness'] = 0
-                results[path]['face_sharpness'] = 0
+                results[path]['face_quality'] = None
+                results[path]['eye_sharpness'] = None
+                results[path]['face_sharpness'] = None
                 results[path]['face_ratio'] = 0
-                results[path]['is_blink'] = 0
+                results[path]['is_blink'] = None
                 results[path]['is_group_portrait'] = 0
-                results[path]['face_confidence'] = 0
-                results[path]['raw_eye_sharpness'] = 0
+                results[path]['face_confidence'] = None
+                results[path]['raw_eye_sharpness'] = None
                 results[path]['isolation_bonus'] = 1.0
-                results[path]['face_details'] = []
+                results[path]['face_details'] = None
 
     def _pass_vlm_tagger(self, tagger: Any, images: Dict, results: Dict):
         """VLM pass: semantic tagging."""
@@ -876,6 +942,8 @@ class ChunkedMultiPassProcessor:
             tags_list = tagger.tag_batch(pil_imgs, max_tags=max_tags)
             for i, path in enumerate(paths):
                 results[path]['tags'] = tags_to_string(tags_list[i])
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("VLM tagging failed: %s", e)
 
@@ -893,6 +961,8 @@ class ChunkedMultiPassProcessor:
                            'subject_placement', 'bg_separation'):
                     results[path][key] = scores[i].get(key, 5.0)
                 results[path]['subject_bbox'] = scores[i].get('subject_bbox')
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("BiRefNet saliency pass failed: %s", e)
 
@@ -902,10 +972,49 @@ class ChunkedMultiPassProcessor:
         'topiq_nr_face': 'face_quality_iqa',
         'liqe': 'liqe_score',
         # Optional extended-IQA tier (config-gated) -> dedicated columns.
-        'qrealign': 'qrealign_score',
         'aesthetic_v25': 'aesthetic_v25',
         'deqa': 'deqa_score',
     }
+
+    def _pass_qrealign(self, scorer: Any, model_name: str, images: Dict, results: Dict):
+        """Native Q-ReAlign pass (no pyiqa).
+
+        Default mode (and commercial beside an ``allow_unclear`` CLIP-MLP head):
+        ``qrealign`` is supplementary and fills only the dedicated
+        ``qrealign_score`` column from the aesthetic task. Commercial mode otherwise: it is the
+        primary model, so the same aesthetic call also fills ``aesthetic`` and
+        ``scoring_model``, and the quality task fills ``quality_score``.
+        ``qrealign_quality`` fills only ``quality_score``. Each image is scored in its
+        own try, so one bad frame never blanks the rest of the chunk.
+        """
+        paths = list(images.keys())
+        primary = self._qrealign_is_primary()
+        quality_only = model_name == 'qrealign_quality'
+        tasks = ('aesthetic', 'quality') if primary else ('aesthetic',)
+
+        for path in paths:
+            pil = images[path]['pil']
+            try:
+                if quality_only:
+                    results[path]['quality_score'] = scorer.score(pil, 'quality')
+                    continue
+                scored = scorer.score_tasks(pil, tasks)
+                results[path]['qrealign_score'] = scored['aesthetic']
+                if primary:
+                    results[path]['aesthetic'] = scored['aesthetic']
+                    results[path]['quality_score'] = scored['quality']
+                    results[path]['scoring_model'] = 'qrealign'
+            except LicenceError:
+                raise
+            except Exception as e:
+                logger.error("Q-ReAlign %s failed for %s: %s", model_name, path, e)
+                if primary:
+                    # A required model: record this photo as failed (retryable)
+                    # instead of saving it scanned-complete with a neutral score.
+                    results[path][SCAN_FAILED_KEY] = model_name
+                    on_error = getattr(self, 'on_error', None)
+                    if on_error:
+                        on_error(path, model_name, f"required model pass failed: {model_name}: {e}")
 
     def _pass_pyiqa(self, scorer: Any, model_name: str, images: Dict, results: Dict):
         """PyIQA pass: quality assessment using TOPIQ, HyperIQA, DBCNN, etc."""
@@ -931,6 +1040,8 @@ class ChunkedMultiPassProcessor:
                     results[path]['quality_score'] = scores[i]
                     if model_name == 'topiq':
                         results[path]['topiq_score'] = scores[i]
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("PyIQA %s pass failed: %s", model_name, e)
 
@@ -1013,14 +1124,14 @@ class ChunkedMultiPassProcessor:
             exif = img_data.get('exif', {})
             photo_override = chunk_overrides.get(str(Path(path).resolve()), {})
             metrics = build_scoring_metrics(
-                aesthetic=data.get('aesthetic', 5.0),
+                aesthetic=data.get('aesthetic'),
                 face_count=data.get('face_count', 0),
-                face_quality=data.get('face_quality', 0),
-                eye_sharpness=data.get('eye_sharpness', 0),
-                face_sharpness=data.get('face_sharpness', 0),
+                face_quality=data.get('face_quality'),
+                eye_sharpness=data.get('eye_sharpness'),
+                face_sharpness=data.get('face_sharpness'),
                 face_ratio=data.get('face_ratio', 0),
                 is_group_portrait=data.get('is_group_portrait', 0),
-                is_blink=data.get('is_blink', 0),
+                is_blink=data.get('is_blink'),
                 isolation_bonus=data.get('isolation_bonus', 1.0),
                 sharpness_data=sharpness,
                 color_data=color,
@@ -1118,7 +1229,7 @@ class ChunkedMultiPassProcessor:
                 'category': data.get('category', 'default'),
 
                 # Scoring fields
-                'aesthetic': data.get('aesthetic', 5.0),
+                'aesthetic': data.get('aesthetic'),
                 'aggregate': data.get('aggregate', 5.0),
                 'quality_score': data.get('quality_score'),
                 'scoring_model': data.get('scoring_model', 'clip-mlp'),
@@ -1126,16 +1237,18 @@ class ChunkedMultiPassProcessor:
 
                 # Face fields
                 'face_count': data.get('face_count', 0),
-                'face_quality': data.get('face_quality', 0),
-                'eye_sharpness': data.get('eye_sharpness', 0),
-                'face_sharpness': data.get('face_sharpness', 0),
+                # Absent means no face pass produced it (unknown, stored NULL), not "no face".
+                'face_quality': data.get('face_quality'),
+                'eye_sharpness': data.get('eye_sharpness'),
+                'face_sharpness': data.get('face_sharpness'),
                 'face_ratio': data.get('face_ratio', 0),
-                'face_confidence': data.get('face_confidence', 0),
+                'face_confidence': data.get('face_confidence'),
                 'isolation_bonus': data.get('isolation_bonus', 1.0),
-                'is_blink': data.get('is_blink', 0),
+                'is_blink': data.get('is_blink'),
                 'is_group_portrait': data.get('is_group_portrait', 0),
-                'raw_eye_sharpness': data.get('raw_eye_sharpness', 0),
-                'face_details': data.get('face_details', []),
+                'raw_eye_sharpness': data.get('raw_eye_sharpness'),
+                # None = faces unknown: save_photos_batch leaves stored faces alone.
+                'face_details': data.get('face_details'),
 
                 # Technical metrics
                 'tech_sharpness': round(data.get('tech_sharpness', sharpness.get('normalized', 5.0)), 2),
@@ -1210,7 +1323,7 @@ class ChunkedMultiPassProcessor:
         defaults. Faces are refreshed only when the insightface pass ran.
         """
         executed_models = {m for group in self.pass_groups for m in group}
-        refresh_faces = 'insightface' in executed_models
+        refresh_faces = bool(executed_models & {'insightface', 'faces_permissive'})
 
         batch = []
         for path, data in self._iter_saveable(results, images):
@@ -1313,6 +1426,26 @@ def run_single_pass(paths: List[str], pass_name: str, scorer, model_manager) -> 
 
     model_name = pass_models.get(pass_name)
 
+    # Commercial mode re-routes the passes whose default model is refused:
+    # faces -> the permissive stack, quality/aesthetic -> native Q-ReAlign,
+    # composition -> the rule-based analyzer, and the pyiqa-only passes are
+    # refused outright (the caller turns a 0 into a nonzero exit).
+    if licensing.is_commercial():
+        if pass_name == 'faces':
+            model_name = ChunkedMultiPassProcessor._face_pass_name()
+        elif pass_name == 'composition' and not licensing.loader_allowed('samp_net'):
+            # SAMP-Net is refused, but rule-based composition is its commercial
+            # replacement: it needs no model, reads the stored thumbnails and
+            # covers the whole library (the path list does not scope it).
+            logger.info("Commercial mode: running rule-based composition instead of SAMP-Net.")
+            scorer.recompute_composition_scores()
+            return len(paths)
+        elif model_name and not licensing.loader_allowed(model_name):
+            logger.error(
+                "Pass '%s' needs '%s', which licensing.mode 'commercial' does not permit.",
+                pass_name, model_name)
+            return 0
+
     # For quality/aesthetic, determine model from config
     if pass_name in ('quality', 'aesthetic'):
         quality_config = scorer.config.config.get('quality', {})
@@ -1325,6 +1458,11 @@ def run_single_pass(paths: List[str], pass_name: str, scorer, model_manager) -> 
             model_name = quality_model
         else:
             model_name = 'topiq'  # Default to best pyiqa model
+        if licensing.is_commercial():
+            model_name = ChunkedMultiPassProcessor._commercial_primary_quality(
+                'clip_aesthetic' if model_name == 'clip_aesthetic' else model_name)
+            if model_name == 'clip_aesthetic':
+                model_name = 'clip'
 
     # For tags, determine model from profile. A CLIP-similarity profile has no
     # VLM tagger to run as a pass — routing it to the 'clip' embedding pass would

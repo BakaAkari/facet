@@ -18,8 +18,14 @@ the weights were trained on, and the dataset licences are unverified.
 from __future__ import annotations
 
 import importlib.util
+import logging
+import os
 from dataclasses import dataclass
 from typing import Mapping, Optional
+
+logger = logging.getLogger(__name__)
+
+LICENSING_MODE_ENV = 'FACET_LICENSING_MODE'
 
 MODE_DEFAULT = 'default'
 MODE_COMMERCIAL = 'commercial'
@@ -62,6 +68,8 @@ def _pyiqa(id, name, slot, replacement, note=''):
 
 COMPONENTS: dict[str, Component] = {c.id: c for c in (
     # --- pyiqa-backed scorers (every key of models.pyiqa_scorer.PYIQA_MODELS) ---
+    _pyiqa('pyiqa', 'pyiqa (package)', 'every pyiqa-backed scorer below', 'qrealign_native',
+           'The package itself: importing it is refused in commercial mode.'),
     _pyiqa('topiq', 'TOPIQ NR', 'aesthetic / quality_score (16gb, 24gb)', 'qrealign_native'),
     _pyiqa('hyperiqa', 'HyperIQA', 'quality (optional)', 'qrealign_native'),
     _pyiqa('dbcnn', 'DBCNN', 'quality (optional)', 'qrealign_native'),
@@ -73,14 +81,10 @@ COMPONENTS: dict[str, Component] = {c.id: c for c in (
     _pyiqa('topiq_nr_face', 'TOPIQ NR-Face', 'face_quality_iqa (supplementary)', 'ofiq'),
     _pyiqa('liqe', 'LIQE', 'quality + distortion diagnosis (supplementary)', None,
            'No permissive replacement: the metric is unavailable in commercial mode.'),
-    _c('qrealign', 'Q-ReAlign (pyiqa wrapper)', 'package', _PYIQA_CODE, _PYIQA_WEIGHTS,
-       'no', _PYIQA_URL, 'qrealign_score (extended IQA)', 'qrealign_native',
-       'Facet currently loads Q-ReAlign through pyiqa; the model itself is permissive '
-       '(see qrealign_native).'),
     _c('qrealign_native', 'Q-ReAlign Mini/Lite/Pro (transformers)', 'weights', 'MIT',
-       'Apache-2.0', 'yes', 'https://huggingface.co/q-future', 'aesthetic / quality_score / '
-       'qrealign_score (commercial mode)', None,
-       'Permissive only when loaded through transformers, not pyiqa.'),
+       'Apache-2.0', 'yes', 'https://huggingface.co/q-future', 'qrealign_score (extended IQA); '
+       'aesthetic / quality_score (commercial mode)', None,
+       'Loaded through transformers (models/qrealign_native.py); no pyiqa involved.'),
     # --- faces ---
     _c('insightface', 'InsightFace buffalo_l', 'weights', 'MIT (package)',
        'Non-commercial research only', 'no', 'https://github.com/deepinsight/insightface',
@@ -143,6 +147,9 @@ LOADER_COMPONENTS: dict[str, str] = {
     'qwen3_5_tagger': 'qwen3_5_2b',
     'qwen3_5_4b_tagger': 'qwen3_5_4b',
     'saliency': 'birefnet',
+    'qrealign': 'qrealign_native',
+    'qrealign_quality': 'qrealign_native',
+    'faces_permissive': 'yunet',
 }
 
 
@@ -170,10 +177,35 @@ def _validated(mode: str, allow_unclear: bool) -> Policy:
     return Policy(mode, bool(allow_unclear))
 
 
+def env_forces_commercial() -> bool:
+    """Whether ``$FACET_LICENSING_MODE`` forces commercial mode.
+
+    The value is stripped and lower-cased. ``commercial`` overrides any file
+    value; ``default`` or empty is no override (it can never relax a file that
+    says commercial); anything else raises ``ValueError`` so a typo cannot
+    silently leave a commercial install running in default mode.
+    """
+    value = os.environ.get(LICENSING_MODE_ENV, '').strip().lower()
+    if not value or value == MODE_DEFAULT:
+        return False
+    if value == MODE_COMMERCIAL:
+        return True
+    raise ValueError(
+        f"{LICENSING_MODE_ENV}={value!r} is invalid; allowed values: "
+        f"{MODE_COMMERCIAL!r}, {MODE_DEFAULT!r} or empty")
+
+
+def licensing_block(cfg: Optional[Mapping]) -> dict:
+    """The effective ``{'mode', 'allow_unclear'}`` of a config dict, env override applied."""
+    block = (cfg or {}).get('licensing') or {}
+    mode = MODE_COMMERCIAL if env_forces_commercial() else block.get('mode', MODE_DEFAULT)
+    return {'mode': mode, 'allow_unclear': bool(block.get('allow_unclear', False))}
+
+
 def resolve_policy(cfg: Optional[Mapping]) -> Policy:
     """Policy for a resolved config dict; an absent ``licensing`` block is default mode."""
-    block = (cfg or {}).get('licensing') or {}
-    return _validated(block.get('mode', MODE_DEFAULT), block.get('allow_unclear', False))
+    block = licensing_block(cfg)
+    return _validated(block['mode'], block['allow_unclear'])
 
 
 def set_policy(mode: str, allow_unclear: bool = False) -> Policy:
@@ -229,6 +261,23 @@ def require(component_id: str, policy_: Optional[Policy] = None) -> None:
         f"licence status is '{comp.commercial}' (code: {comp.code_licence}; "
         f"weights: {comp.weights_licence}).{hint}{unclear}"
     )
+
+
+def loader_allowed(loader_name: str, policy_: Optional[Policy] = None) -> bool:
+    """Whether the policy lets a ModelManager loader name run.
+
+    A name the registry does not know is not allowed in commercial mode: the
+    queue layer must never schedule a model nobody has classified.
+    """
+    component_id = component_for_loader(loader_name)
+    if component_id not in COMPONENTS:
+        return not is_commercial(policy_)
+    return allowed(component_id, policy_)
+
+
+def is_commercial(policy_: Optional[Policy] = None) -> bool:
+    """Whether the active policy is ``commercial`` mode."""
+    return (policy_ or policy()).mode == MODE_COMMERCIAL
 
 
 def unavailable_metrics(policy_: Optional[Policy] = None) -> set[str]:

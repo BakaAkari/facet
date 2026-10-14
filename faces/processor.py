@@ -6,6 +6,7 @@ Producer-consumer processor for parallel face operations.
 
 import logging
 from db import get_connection
+from licensing import LicenceError
 from db.schema import FACES_UPSERT_SQL, face_upsert_row
 import threading
 import queue
@@ -134,6 +135,8 @@ class FaceProcessor:
                 with self.metrics_lock:
                     self.metrics['processed'] += 1
 
+            except LicenceError:
+                raise
             except Exception:
                 with self.metrics_lock:
                     self.metrics['errors'] += 1

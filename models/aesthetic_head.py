@@ -21,6 +21,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+import licensing
+
 from models.weights import (
     AESTHETIC_MLP_WEIGHTS_SHA256, AESTHETIC_MLP_WEIGHTS_URL, download_weights, pretrained_model_path,
 )
@@ -59,7 +61,11 @@ def load_aesthetic_head(device: str = 'cpu') -> AestheticMLP:
     ``strict=True`` because a partially-loaded head produces plausible-looking
     scores from untrained weights: a scan that stops is recoverable, a library
     scored with noise is not.
+
+    Refused in commercial licensing mode unless ``licensing.allow_unclear`` is set:
+    the head's weights carry no licence.
     """
+    licensing.require('clip_mlp_head')
     weights_path = pretrained_model_path(AESTHETIC_HEAD_WEIGHTS_FILENAME)
     if not weights_path.exists():
         download_weights(AESTHETIC_MLP_WEIGHTS_URL, weights_path, sha256=AESTHETIC_MLP_WEIGHTS_SHA256)

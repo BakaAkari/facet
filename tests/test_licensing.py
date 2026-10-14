@@ -37,7 +37,7 @@ class TestRegistryCoverage:
 
     def test_every_model_manager_loader_is_registered(self):
         loaders, pyiqa_names = _routing_names()
-        assert len(loaders) >= 10 and len(pyiqa_names) >= 10  # the parse found the routing table
+        assert len(loaders) >= 10 and len(pyiqa_names) >= 9  # the parse found the routing table
         missing = [n for n in loaders + pyiqa_names
                    if licensing.component_for_loader(n) not in licensing.COMPONENTS]
         assert not missing
@@ -45,7 +45,7 @@ class TestRegistryCoverage:
     def test_required_ids_present(self):
         for cid in ('insightface', 'samp_net', 'u2netp', 'clip_mlp_head',
                     'mediapipe_face_landmarker', 'yunet', 'sface', 'ofiq', 'siglip2', 'clip',
-                    'qwen3_5_2b', 'qwen3_5_4b', 'birefnet', 'deqa', 'aesthetic_v25', 'qrealign'):
+                    'qwen3_5_2b', 'qwen3_5_4b', 'birefnet', 'deqa', 'aesthetic_v25', 'qrealign_native'):
             assert cid in licensing.COMPONENTS
 
     def test_registry_is_internally_consistent(self):
@@ -197,3 +197,34 @@ class TestDoctorLicenceSection:
             conn.execute('CREATE TABLE photos (path TEXT PRIMARY KEY)')
         out = self._doctor(capsys, tmp_path, db=db)
         assert 'Model licences' in out and 'Face embedding model' not in out
+
+
+class TestLicensingModeEnv:
+    """$FACET_LICENSING_MODE forces commercial over the file, on every resolution path."""
+
+    def test_commercial_env_overrides_file(self, monkeypatch):
+        monkeypatch.setenv('FACET_LICENSING_MODE', 'commercial')
+        pol = licensing.resolve_policy({'licensing': {'mode': 'default'}})
+        assert pol.mode == 'commercial'
+
+    def test_lazy_policy_sees_env(self, monkeypatch):
+        monkeypatch.setenv('FACET_LICENSING_MODE', 'commercial')
+        licensing.reset_policy()
+        assert licensing.policy().mode == 'commercial'
+
+    @pytest.mark.parametrize('value', ['', 'default'])
+    def test_default_or_empty_is_no_override(self, monkeypatch, value):
+        monkeypatch.setenv('FACET_LICENSING_MODE', value)
+        assert licensing.resolve_policy({'licensing': {'mode': 'commercial'}}).mode == 'commercial'
+        assert licensing.resolve_policy({}).mode == 'default'
+
+    @pytest.mark.parametrize('value', ['Commercial', ' COMMERCIAL '])
+    def test_value_is_case_and_whitespace_insensitive(self, monkeypatch, value):
+        monkeypatch.setenv('FACET_LICENSING_MODE', value)
+        assert licensing.resolve_policy({}).mode == 'commercial'
+
+    @pytest.mark.parametrize('value', ['bogus', 'comercial'])
+    def test_invalid_value_raises(self, monkeypatch, value):
+        monkeypatch.setenv('FACET_LICENSING_MODE', value)
+        with pytest.raises(ValueError, match='FACET_LICENSING_MODE'):
+            licensing.resolve_policy({})

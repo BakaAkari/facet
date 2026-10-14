@@ -21,7 +21,9 @@ import logging
 import functools
 import re as _re
 from pathlib import Path
+import licensing
 from int_affinity import storable_int
+from licensing import LicenceError
 from db import init_database, get_connection
 from db.render_version import DISPLAY_RENDER_VERSION
 from db.schema import FACES_UPSERT_SQL, face_upsert_row
@@ -781,6 +783,8 @@ class Facet:
                         self.vlm_composition = create_composition_analyzer(self.model_manager)
                         if self.vlm_composition:
                             logger.info("Qwen2-VL composition analyzer initialized")
+                    except LicenceError:
+                        raise
                     except Exception as e:
                         logger.info("Qwen2-VL not available: %s", e)
                         self.vlm_composition = None
@@ -789,7 +793,7 @@ class Facet:
 
                 # Try to load SAMP-Net for composition (8GB profile)
                 samp_config = self.config.get_samp_net_config()
-                if self.config.is_using_samp_net():
+                if self.config.is_using_samp_net() and licensing.allowed('samp_net'):
                     try:
                         model_path = samp_config['model_path']
                         _load_samp_net_module()
@@ -800,6 +804,8 @@ class Facet:
                         # Eagerly load U2-Net-P saliency model to avoid loading during batch workers
                         self.samp_scorer.ensure_loaded()
                         logger.info("SAMP-Net composition scorer initialized")
+                    except LicenceError:
+                        raise
                     except Exception as e:
                         logger.info("SAMP-Net not available: %s", e)
                         self.samp_scorer = None
@@ -905,6 +911,12 @@ class Facet:
             self.aesthetic_head = None
             return
 
+        # Commercial mode: the LAION head is not permitted, the native Q-ReAlign
+        # scorer provides the aesthetic score instead.
+        if not licensing.allowed('clip_mlp_head'):
+            self.aesthetic_head = None
+            return
+
         self.aesthetic_head = load_aesthetic_head(self.device)
 
     @property
@@ -924,9 +936,25 @@ class Facet:
         which is how the scan paths are tested with a stand-in.
         """
         if self._face_analyzer is None and not self.lightweight:
-            from models.model_manager import build_face_analyzer
-            self._face_analyzer = build_face_analyzer(self.config, self.device)
+            from models.model_manager import build_face_analyzer, build_permissive_face_analyzer
+            if licensing.loader_allowed('insightface'):
+                self._face_analyzer = build_face_analyzer(self.config, self.device)
+            else:
+                self._face_analyzer = build_permissive_face_analyzer(self.config)
         return self._face_analyzer
+
+    def preflight_models(self):
+        """Resolve the lazily built scan models once, before any per-image work.
+
+        The single-pass and dry-run paths otherwise build the face analyzer and
+        the commercial aesthetic scorer inside a per-image handler, so a startup
+        refusal (a licence gate, a missing package) would be recorded as one
+        failure per photo after the GPU had already worked. Raising here stops
+        the scan before the first image.
+        """
+        _ = self.face_analyzer
+        if licensing.is_commercial() and self.aesthetic_head is None:
+            self._commercial_aesthetic_scorer()
 
     @face_analyzer.setter
     def face_analyzer(self, analyzer):
@@ -1019,6 +1047,10 @@ class Facet:
         Returns: (aesthetic, clip_embedding_bytes, quality_score, scoring_model)
         """
         clip_aesthetic, clip_embedding = self.get_aesthetic_with_embedding(pil_img)
+        if self.aesthetic_head is None and licensing.is_commercial():
+            # No head to fall back on: the commercial scorer decides, exactly as
+            # in the batch path, never a neutral 5.0 labelled clip-mlp.
+            return self._commercial_aesthetic_result(pil_img, clip_embedding)
         return clip_aesthetic, clip_embedding, None, 'clip-mlp'
 
     def get_aesthetic_and_quality_batch(self, pil_images, clip_inputs=None):
@@ -1043,6 +1075,11 @@ class Facet:
                 clip_aesthetic = float(clip_scores[i])
                 clip_embedding = embeddings[i].astype(np.float32).tobytes()
                 results.append((clip_aesthetic, clip_embedding, None, 'clip-mlp'))
+        elif licensing.is_commercial():
+            results = [
+                self._commercial_aesthetic_result(pil, embeddings[i].astype(np.float32).tobytes())
+                for i, pil in enumerate(pil_images)
+            ]
         else:
             results = []
             for i in range(n):
@@ -1050,6 +1087,22 @@ class Facet:
                 results.append((5.0, clip_embedding, None, 'topiq'))
 
         return results
+
+    def _commercial_aesthetic_result(self, pil_img, clip_embedding):
+        """One ``(aesthetic, embedding, quality, scoring_model)`` tuple from native Q-ReAlign."""
+        scored = self._commercial_aesthetic_scorer().score_tasks(pil_img, ('aesthetic', 'quality'))
+        return scored['aesthetic'], clip_embedding, scored['quality'], 'qrealign'
+
+    def _commercial_aesthetic_scorer(self):
+        """The native Q-ReAlign scorer the single-pass path uses in commercial mode."""
+        scorer = getattr(self, '_qrealign_native', None)
+        if scorer is None:
+            licensing.require('qrealign_native')
+            from models.qrealign_native import QReAlignNativeScorer
+            scorer = QReAlignNativeScorer(size=self.config.get_qrealign_size(), device=self.device)
+            scorer.load()
+            self._qrealign_native = scorer
+        return scorer
 
     def get_composition_scores(self, pil_img, img_cv, base_comp_data):
         """
@@ -1460,6 +1513,8 @@ class Facet:
             res.update(exif_data)
 
             return res
+        except LicenceError:
+            raise
         except Exception as e:
             logger.error("Error scoring %s: %s", original_path, e)
             return None
@@ -2051,14 +2106,17 @@ class Facet:
     def _IQA_MODELS(self):
         """Base IQA models plus any config-enabled extended pyiqa models.
 
-        Q-ReAlign is pyiqa-backed, so when ``iqa_extended.qrealign`` resolves to
-        enabled it slots into the same VRAM-aware multi-pass scoring as the base
-        models (writing the qrealign_score column). Its default is ``"auto"``,
+        Q-ReAlign is a native ``transformers`` scorer (no pyiqa); when
+        ``iqa_extended.qrealign`` resolves to enabled it slots into the same
+        VRAM-aware multi-pass scoring as the base models (writing the
+        qrealign_score column). Its default is ``"auto"``,
         which is on for every profile but legacy — at ~3GB it fits from the 8gb
         profile up. Non-pyiqa extended scorers (Aesthetic V2.5, DeQA) have their
         own loaders and are not part of this list.
         """
-        models = list(self._BASE_IQA_MODELS)
+        # Commercial mode keeps only the models the registry allows (none of the
+        # pyiqa-backed base models); a refused model must not even be listed.
+        models = [(m, c) for m, c in self._BASE_IQA_MODELS if licensing.loader_allowed(m)]
         try:
             if self.config.get_extended_iqa_settings().get('qrealign'):
                 models.append(('qrealign', 'qrealign_score'))
@@ -2082,10 +2140,13 @@ class Facet:
         Skips face_quality_iqa for photos without faces.
         """
         import time
-        from models.pyiqa_scorer import PYIQA_MODELS
         from models.model_manager import ModelManager
 
         columns = [col for _, col in self._IQA_MODELS]
+        if not columns:
+            raise LicenceError(
+                "No IQA model is available to recompute under the active licensing policy: "
+                "the pyiqa models are refused in commercial mode and iqa_extended.qrealign is off.")
 
         start_time = time.time()
 
@@ -2109,7 +2170,7 @@ class Facet:
         # Auto-detect VRAM and group models into passes
         vram_gb = ModelManager.detect_vram()
         model_names = [m for m, _ in self._IQA_MODELS]
-        total_model_vram = sum(PYIQA_MODELS[m]['vram_gb'] for m in model_names)
+        total_model_vram = sum(self._iqa_model_vram_gb(m) for m in model_names)
 
         if vram_gb >= total_model_vram + IQA_PASS_VRAM_MARGIN_GB:
             passes = [model_names]  # all at once
@@ -2137,11 +2198,31 @@ class Facet:
             logger.error("  %s thumbnail decode errors", counters['errors'])
         logger.info("Run --recompute-average to update aggregate scores with new IQA metrics.")
 
+    def _iqa_model_vram_gb(self, model_name):
+        """VRAM budget of one recompute-iqa model: pyiqa table, or the native Q-ReAlign size."""
+        from models.model_manager import ModelManager
+        if model_name == 'qrealign':
+            return (ModelManager.QREALIGN_LITE_VRAM_GB if self.config.get_qrealign_size() == 'lite'
+                    else ModelManager.MODEL_VRAM_REQUIREMENTS['qrealign'])
+        from models.pyiqa_scorer import PYIQA_MODELS
+        return PYIQA_MODELS[model_name]['vram_gb']
+
+    def _make_iqa_scorer(self, model_name):
+        """Loaded scorer for one recompute-iqa model; Q-ReAlign is native, the rest pyiqa."""
+        if model_name == 'qrealign':
+            licensing.require('qrealign_native')
+            from models.qrealign_native import QReAlignNativeScorer
+            scorer = QReAlignNativeScorer(size=self.config.get_qrealign_size(), device=self.device)
+        else:
+            from models.pyiqa_scorer import PyIQAScorer
+            scorer = PyIQAScorer(model_name=model_name)
+        scorer.load()
+        return scorer
+
     def _run_iqa_pass(self, model_names, batch_size, counters):
         """Run one IQA pass with the given models loaded simultaneously."""
         from io import BytesIO
         from PIL import Image
-        from models.pyiqa_scorer import PyIQAScorer
 
         col_map = dict(self._IQA_MODELS)  # model_name -> column
         pass_columns = [col_map[m] for m in model_names]
@@ -2150,9 +2231,7 @@ class Facet:
         scorers = {}
         for model_name in model_names:
             column = col_map[model_name]
-            scorer = PyIQAScorer(model_name=model_name)
-            scorer.load()
-            scorers[column] = scorer
+            scorers[column] = self._make_iqa_scorer(model_name)
 
         where_null = " OR ".join(f"{c} IS NULL" for c in pass_columns)
 
@@ -2359,7 +2438,8 @@ class Facet:
         # landmarks and per-face quality signals — shared upsert: see db.schema)
         face_records = []
         for res, _ in results_with_images:
-            face_details = res.get('face_details', [])
+            # face_details None = faces unknown (the face pass failed): not []
+            face_details = res.get('face_details') or []
             for face in face_details:
                 if face.get('embedding'):
                     face_records.append(face_upsert_row(res['path'], face))
@@ -2427,9 +2507,12 @@ class Facet:
             # Refresh faces for every photo we just wrote (the UPSERT no longer
             # cascade-deletes them) — this also clears stale faces on a photo
             # that lost all its faces on re-scan — then batch-insert the fresh rows.
+            # A photo whose face analysis failed (face_details is None) keeps its
+            # stored faces: unknown is not "lost all its faces".
             conn.executemany(
                 "DELETE FROM faces WHERE photo_path = ?",
-                [(res['path'],) for res, _ in results_with_images],
+                [(res['path'],) for res, _ in results_with_images
+                 if not ('face_details' in res and res['face_details'] is None)],
             )
             if face_records:
                 conn.executemany(FACES_UPSERT_SQL, face_records)
@@ -2491,7 +2574,7 @@ class Facet:
         face_records = []
         if refresh_faces:
             for res, _, _ in batch:
-                for face in res.get('face_details', []):
+                for face in res.get('face_details') or []:
                     if face.get('embedding'):
                         face_records.append(face_upsert_row(res['path'], face))
 
@@ -2502,7 +2585,8 @@ class Facet:
             if refresh_faces:
                 conn.executemany(
                     "DELETE FROM faces WHERE photo_path = ?",
-                    [(res['path'],) for res, _, _ in batch],
+                    [(res['path'],) for res, _, _ in batch
+                     if not ('face_details' in res and res['face_details'] is None)],
                 )
                 if face_records:
                     conn.executemany(FACES_UPSERT_SQL, face_records)
@@ -2706,5 +2790,7 @@ def process_single_photo(photo_path, scorer):
         # Run the scoring (The AI parts will still use the GPU lock)
         res = scorer.score_photo_from_pil(current_pil, img_cv, str(photo_path))
         return res, current_pil
+    except LicenceError:
+        raise
     except Exception as e:
         return None, str(e)

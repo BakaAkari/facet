@@ -867,6 +867,10 @@ class ScoringConfig:
             'deqa': bool(section.get('deqa', False)),
         }
 
+    def get_qrealign_size(self):
+        """Q-ReAlign size loaded by the native scorer: ``"mini"`` | ``"lite"``."""
+        return self.config.get('iqa_extended', {}).get('qrealign_size', 'mini')
+
     def get_face_clustering_settings(self):
         """Get face clustering settings."""
         return self.config.get('face_clustering', {

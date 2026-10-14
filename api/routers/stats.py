@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from api.auth import CurrentUser, get_optional_user, require_edition
 from api.config import (
+    child_process_env,
     CORRELATION_X_AXES, CORRELATION_Y_METRICS, FACET_SCRIPT,
     _get_stats_cached_async, _stats_cache,
     _CONFIG_PATH, reload_config, server_scoring_config,
@@ -1133,6 +1134,7 @@ async def api_stats_categories_recompute(
             '--config', config_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_process_env(),
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=300)

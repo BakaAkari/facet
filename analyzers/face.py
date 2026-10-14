@@ -10,6 +10,9 @@ import sys
 import cv2
 import numpy as np
 
+import licensing
+from licensing import LicenceError
+
 logger = logging.getLogger("facet.face_analyzer")
 
 from utils.image_transforms import crop_face_with_padding
@@ -22,6 +25,7 @@ class FaceAnalyzer:
                  thumbnail_size=128, thumbnail_quality=85, blink_ear_threshold=0.21,
                  min_faces_for_group=4, enable_3d_landmarks=False,
                  enable_blendshapes=False, blendshape_min_crop=192):
+        licensing.require('insightface')
         self.available = False
         self.min_confidence = min_confidence
         self.min_face_size = min_face_size
@@ -68,6 +72,8 @@ class FaceAnalyzer:
                 finally:
                     sys.stdout = _stdout
             self.available = True
+        except LicenceError:
+            raise
         except Exception as e:
             logger.warning("InsightFace not available: %s", e)
 

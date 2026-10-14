@@ -114,6 +114,20 @@ def _pyiqa_qrealign_factory(pyiqa_id: str, task: str) -> Callable:
     return factory
 
 
+def _native_qrealign_factory(size: str, task: str) -> Callable:
+    """Q-ReAlign through plain transformers (no pyiqa); scores are already 0-10."""
+    def factory(device):
+        from models.qrealign_native import QReAlignNativeScorer
+        scorer = QReAlignNativeScorer(size=size, device=device).load()
+
+        def score(pil):
+            return scorer.score(pil, task=task)
+
+        score.close = scorer.unload
+        return score
+    return factory
+
+
 def _register_builtins():
     stored = {
         'aesthetic': ('aesthetic', 'topiq_score', 'aesthetic_iaa', 'qrealign_score',
@@ -132,6 +146,9 @@ def _register_builtins():
             factory = _pyiqa_qrealign_factory(f'qrealign-{size}', task)
             for slot in ('aesthetic', 'quality'):
                 register_candidate(slot, f'qrealign-{size}:{task}', factory)
+            native = _native_qrealign_factory(size, task)
+            for slot in ('aesthetic', 'quality'):
+                register_candidate(slot, f'qrealign-native-{size}:{task}', native)
 
 
 _register_builtins()

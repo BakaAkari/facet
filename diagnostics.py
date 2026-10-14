@@ -117,7 +117,7 @@ def _components_in_use(cfg, profile_name):
     extended = cfg.get('iqa_extended', {})
     qrealign = extended.get('qrealign', 'auto')
     if qrealign is True or (qrealign == 'auto' and profile_name != 'legacy'):
-        add('qrealign')
+        add('qrealign_native')
     for name in ('aesthetic_v25', 'deqa'):
         if extended.get(name):
             add(name)
