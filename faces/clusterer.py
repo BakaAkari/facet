@@ -10,21 +10,19 @@ from db import get_connection
 import numpy as np
 import time
 
+from db.embedding_space import (
+    ARCFACE_MODEL, active_embedding_model, expected_dim, model_filter_sql, model_mismatch_sql, tag_matches,
+)
+from db.person_carry_over import (
+    persist_named_snapshot, repair_preserved_representatives, replay_persisted_snapshot,
+)
+from db.person_centroids import recompute_person_centroid
 from utils import bytes_to_embedding, load_image_for_face_crop, crop_face_with_padding
 from faces.processor import FaceProcessor
 
 import logging
 
 logger = logging.getLogger("facet.face_cluster")
-
-# Embedding-space marker for the current recognition model (InsightFace
-# buffalo_l / ArcFace w600k_r50). Face embeddings from a different model live in
-# an incompatible vector space and must never be clustered together. Faces are
-# tagged via faces.embedding_model (schema default); clustering loads only this
-# active space. NOTE: when a recognition-model switch (e.g. AdaFace) is added,
-# resolve the active space from config here instead of hardcoding, and require a
-# full re-extraction (the spaces are not comparable). See docs/FACE_RECOGNITION.md.
-ACTIVE_EMBEDDING_MODEL = "arcface_buffalo_l"
 
 try:
     from tqdm import tqdm
@@ -62,7 +60,8 @@ class FaceClusterer:
                  algorithm='boruvka_balltree', leaf_size=40, use_gpu='auto',
                  merge_threshold=0.6,
                  use_db_thumbnails=True,
-                 face_thumbnail_size=128, face_thumbnail_quality=85):
+                 face_thumbnail_size=128, face_thumbnail_quality=85,
+                 embedding_model=None):
         """
         Initialize the face clusterer.
 
@@ -80,8 +79,13 @@ class FaceClusterer:
                               original images when generating fallback thumbnails (faster for RAW/NFS)
             face_thumbnail_size: Size for face thumbnails (default 128)
             face_thumbnail_quality: JPEG quality for face thumbnails (default 85)
+            embedding_model: Recognition model whose embeddings are clustered
+                            (default: the active model). Faces of any other model
+                            are never loaded, compared or reassigned.
         """
         self.db_path = db_path
+        self.embedding_model = embedding_model or active_embedding_model()
+        self.embedding_dim = expected_dim(self.embedding_model)
         self.min_faces = min_faces
         # min_samples controls core point density; lower = more clusters, fewer noise points
         # Default to min(min_faces, 2) for less conservative clustering
@@ -119,9 +123,9 @@ class FaceClusterer:
         return self._cuml_available
 
     def load_embeddings(self):
-        """Load face embeddings for the ACTIVE recognition space only.
+        """Load face embeddings for this clusterer's recognition space only.
 
-        Faces are tagged with ``embedding_model`` (schema default). Embeddings
+        Faces are tagged with ``embedding_model``. Embeddings
         produced by a different recognition model live in an incompatible vector
         space; clustering them together silently corrupts persons. We therefore
         load only the active space (treating a NULL tag as the legacy ArcFace
@@ -131,30 +135,29 @@ class FaceClusterer:
         embeddings = []
 
         with get_connection(self.db_path, row_factory=False) as conn:
-            cursor = conn.execute("""
+            match_sql, match_params = model_filter_sql(self.embedding_model)
+            cursor = conn.execute(f"""
                 SELECT id, embedding FROM faces
-                WHERE embedding IS NOT NULL
-                  AND (embedding_model = ? OR embedding_model IS NULL)
-            """, (ACTIVE_EMBEDDING_MODEL,))
+                WHERE embedding IS NOT NULL AND {match_sql}
+            """, match_params)
 
             for row in cursor.fetchall():
                 face_id, embedding_bytes = row
                 if embedding_bytes:
                     # Convert bytes to numpy array using shared utility
-                    embedding = bytes_to_embedding(embedding_bytes, dim=512)
+                    embedding = bytes_to_embedding(embedding_bytes, dim=self.embedding_dim)
                     if embedding is not None:
                         face_ids.append(face_id)
                         embeddings.append(embedding)
 
             # Guard: warn if faces from a different (incompatible) embedding
             # space exist — they were excluded to avoid mixing vector spaces.
-            other = conn.execute("""
-                SELECT embedding_model, COUNT(*) FROM faces
-                WHERE embedding IS NOT NULL
-                  AND embedding_model IS NOT NULL
-                  AND embedding_model != ?
-                GROUP BY embedding_model
-            """, (ACTIVE_EMBEDDING_MODEL,)).fetchall()
+            other_sql, other_params = model_mismatch_sql(self.embedding_model)
+            other = conn.execute(f"""
+                SELECT COALESCE(embedding_model, ?), COUNT(*) FROM faces
+                WHERE embedding IS NOT NULL AND {other_sql}
+                GROUP BY 1
+            """, [ARCFACE_MODEL] + other_params).fetchall()
             if other:
                 excluded = sum(count for _, count in other)
                 spaces = ", ".join(f"{model}({count})" for model, count in other)
@@ -163,7 +166,7 @@ class FaceClusterer:
                     "clustering only the active space '%s' to avoid mixing "
                     "incompatible embeddings. Re-extract all faces after a "
                     "recognition-model change.",
-                    excluded, spaces, ACTIVE_EMBEDDING_MODEL,
+                    excluded, spaces, self.embedding_model,
                 )
 
         return face_ids, np.array(embeddings) if embeddings else np.array([])
@@ -313,8 +316,9 @@ class FaceClusterer:
 
         Returns:
             Dict mapping person_id to {'name': str, 'centroid': np.array | None}.
-            A person with no stored centroid (API-created via create/split/assign,
-            or otherwise never re-clustered) is kept with ``centroid=None`` — it is
+            A person with no stored centroid in this run's embedding space
+            (API-created via create/split/assign, never re-clustered, or built
+            from another model) is kept with ``centroid=None`` — it is
             still preserved, but only through the previous-owner history rule, not
             centroid similarity. Excluding these (the old ``centroid IS NOT NULL``
             filter) dropped them from preservation, so every incremental run cleared
@@ -325,19 +329,24 @@ class FaceClusterer:
 
         if preserve_named_only:
             cursor = conn.execute("""
-                SELECT id, name, centroid FROM persons WHERE name IS NOT NULL
+                SELECT id, name, centroid, centroid_model FROM persons WHERE name IS NOT NULL
             """)
         else:
-            cursor = conn.execute("SELECT id, name, centroid FROM persons")
+            cursor = conn.execute("SELECT id, name, centroid, centroid_model FROM persons")
 
         existing_persons = {}
         for row in cursor.fetchall():
-            person_id, name, centroid_bytes = row
-            if centroid_bytes:
+            person_id, name, centroid_bytes, centroid_model = row
+            centroid = None
+            # A centroid from another model (or of another length) is in a space
+            # this run's embeddings do not live in: the person is still kept, but
+            # only through the previous-owner history rule.
+            if centroid_bytes and tag_matches(centroid_model, self.embedding_model):
                 centroid = np.frombuffer(centroid_bytes, dtype=np.float32)
-                centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
-            else:
-                centroid = None
+                if len(centroid) == self.embedding_dim:
+                    centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
+                else:
+                    centroid = None
             existing_persons[person_id] = {'name': name, 'centroid': centroid}
 
         if existing_persons:
@@ -355,8 +364,10 @@ class FaceClusterer:
         if not existing_persons:
             return {}
         preserved_ids = set(existing_persons.keys())
+        match_sql, match_params = model_filter_sql(self.embedding_model)
         rows = conn.execute(
-            "SELECT id, person_id FROM faces WHERE person_id IS NOT NULL"
+            f"SELECT id, person_id FROM faces WHERE person_id IS NOT NULL AND {match_sql}",
+            match_params,
         ).fetchall()
         return {face_id: person_id for face_id, person_id in rows if person_id in preserved_ids}
 
@@ -411,62 +422,9 @@ class FaceClusterer:
                     SELECT COUNT(*) FROM faces WHERE person_id = ?
                 ) WHERE id = ?
             """, (pid, pid))
-
-            cursor = conn.execute("""
-                SELECT embedding FROM faces WHERE person_id = ? AND embedding IS NOT NULL
-            """, (pid,))
-            person_embeddings = []
-            for row in cursor.fetchall():
-                emb = np.frombuffer(row[0], dtype=np.float32)
-                if len(emb) == 512:
-                    person_embeddings.append(emb / (np.linalg.norm(emb) + 1e-10))
-
-            if person_embeddings:
-                new_centroid = np.mean(person_embeddings, axis=0).astype(np.float32)
-                new_centroid = new_centroid / (np.linalg.norm(new_centroid) + 1e-10)
-                conn.execute("""
-                    UPDATE persons SET centroid = ? WHERE id = ?
-                """, (new_centroid.tobytes(), pid))
-
-    def _repair_preserved_representatives(self, conn, person_ids):
-        """Fix a preserved person's representative face when clustering moved it.
-
-        Incremental / named-only clustering clears and reassigns ``person_id`` on
-        every face, so a preserved person's ``representative_face_id`` can end up
-        pointing at a face now owned by someone else (or no one). Replace it with
-        the person's highest-confidence remaining face, or clear both columns when
-        the person kept no faces. Tuple-row equivalent of
-        ``api.db_helpers.repair_stale_representative`` (this connection opens with
-        ``row_factory=False``).
-        """
-        for pid in person_ids:
-            row = conn.execute(
-                "SELECT representative_face_id FROM persons WHERE id = ?", (pid,)
-            ).fetchone()
-            if not row:
-                continue
-            rep_id = row[0]
-            if rep_id is not None and conn.execute(
-                "SELECT 1 FROM faces WHERE id = ? AND person_id = ?", (rep_id, pid)
-            ).fetchone():
-                continue
-            replacement = conn.execute(
-                "SELECT id, face_thumbnail FROM faces WHERE person_id = ? "
-                "ORDER BY confidence DESC LIMIT 1",
-                (pid,),
-            ).fetchone()
-            if replacement:
-                conn.execute(
-                    "UPDATE persons SET representative_face_id = ?, face_thumbnail = ? "
-                    "WHERE id = ?",
-                    (replacement[0], replacement[1], pid),
-                )
-            else:
-                conn.execute(
-                    "UPDATE persons SET representative_face_id = NULL, "
-                    "face_thumbnail = NULL WHERE id = ?",
-                    (pid,),
-                )
+            # A person with no face in this run's space keeps its older-space
+            # centroid (tagged with its own model); never a mixed average.
+            recompute_person_centroid(conn, pid, self.embedding_model)
 
     def _update_database(self, face_to_cluster, embeddings, face_ids, force=False, preserve_named_only=False):
         """
@@ -493,18 +451,28 @@ class FaceClusterer:
             existing_persons = self._load_existing_persons(conn, force, preserve_named_only)
             preserved_assignments = self._preserved_face_assignments(conn, existing_persons)
 
+            # Only this run's embedding space is re-matched: a face (or a person
+            # built from a face) of another model is not in `embeddings`, so
+            # clearing it here would orphan it with no way to be reassigned.
+            face_match_sql, face_match_params = model_filter_sql(self.embedding_model)
+            person_match_sql, person_match_params = model_filter_sql(
+                self.embedding_model, 'centroid_model')
             if force:
                 # Full reset - delete everything
                 conn.execute("UPDATE faces SET person_id = NULL")
                 conn.execute("DELETE FROM persons")
             elif preserve_named_only:
                 # Delete unnamed persons, clear face assignments for re-matching
-                conn.execute("UPDATE faces SET person_id = NULL")
-                deleted = conn.execute("DELETE FROM persons WHERE name IS NULL").rowcount
+                conn.execute(f"UPDATE faces SET person_id = NULL WHERE {face_match_sql}",
+                             face_match_params)
+                deleted = conn.execute(
+                    f"DELETE FROM persons WHERE name IS NULL AND {person_match_sql}",
+                    person_match_params).rowcount
                 logger.info("  Deleted %s unnamed auto-clustered person(s)", deleted)
             else:
                 # Clear face assignments for re-matching, but keep all persons
-                conn.execute("UPDATE faces SET person_id = NULL")
+                conn.execute(f"UPDATE faces SET person_id = NULL WHERE {face_match_sql}",
+                             face_match_params)
 
             # Group faces by cluster label
             clusters = {}
@@ -614,16 +582,18 @@ class FaceClusterer:
                     if stored_thumbnail:
                         # Use pre-generated thumbnail from detection time
                         cursor = conn.execute("""
-                            INSERT INTO persons (name, representative_face_id, face_count, centroid, auto_clustered, face_thumbnail)
-                            VALUES (NULL, ?, ?, ?, 1, ?)
-                        """, (representative_face_id, len(cluster_face_ids), centroid_bytes, stored_thumbnail))
+                            INSERT INTO persons (name, representative_face_id, face_count, centroid, centroid_model, auto_clustered, face_thumbnail)
+                            VALUES (NULL, ?, ?, ?, ?, 1, ?)
+                        """, (representative_face_id, len(cluster_face_ids), centroid_bytes,
+                              self.embedding_model, stored_thumbnail))
                     else:
                         # Defer thumbnail generation for faces without stored thumbnails (legacy data)
                         thumbnails_to_generate.append(representative_face_id)
                         cursor = conn.execute("""
-                            INSERT INTO persons (name, representative_face_id, face_count, centroid, auto_clustered, face_thumbnail)
-                            VALUES (NULL, ?, ?, ?, 1, NULL)
-                        """, (representative_face_id, len(cluster_face_ids), centroid_bytes))
+                            INSERT INTO persons (name, representative_face_id, face_count, centroid, centroid_model, auto_clustered, face_thumbnail)
+                            VALUES (NULL, ?, ?, ?, ?, 1, NULL)
+                        """, (representative_face_id, len(cluster_face_ids), centroid_bytes,
+                              self.embedding_model))
                     person_id = cursor.lastrowid
 
                     # Update faces with person_id
@@ -664,7 +634,7 @@ class FaceClusterer:
                 self._update_person_centroids(conn, existing_persons.keys())
                 # Clustering reassigned person_id on every face, so a preserved
                 # person's stored representative may now belong to someone else.
-                self._repair_preserved_representatives(conn, existing_persons.keys())
+                repair_preserved_representatives(conn, existing_persons.keys())
                 # An incremental run can leave a preserved *unnamed* auto-clustered
                 # person with no faces (all folded into other clusters). These husks
                 # accumulate run over run, so drop them -- but keep named persons and
@@ -690,7 +660,7 @@ class FaceClusterer:
         Match a new face embedding against existing person centroids.
 
         Args:
-            embedding_bytes: 512-dim face embedding as bytes
+            embedding_bytes: face embedding (this clusterer's model) as bytes
             threshold: Minimum cosine similarity to match
 
         Returns:
@@ -699,7 +669,7 @@ class FaceClusterer:
         if threshold is None:
             threshold = self.merge_threshold
         embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
-        if len(embedding) != 512:
+        if len(embedding) != self.embedding_dim:
             return None
 
         # Normalize
@@ -709,14 +679,19 @@ class FaceClusterer:
         best_similarity = threshold
 
         with get_connection(self.db_path, row_factory=False) as conn:
-            cursor = conn.execute("""
-                SELECT id, centroid FROM persons WHERE centroid IS NOT NULL
-            """)
+            person_match_sql, person_match_params = model_filter_sql(
+                self.embedding_model, 'centroid_model')
+            cursor = conn.execute(f"""
+                SELECT id, centroid FROM persons
+                WHERE centroid IS NOT NULL AND {person_match_sql}
+            """, person_match_params)
 
             for row in cursor.fetchall():
                 person_id, centroid_bytes = row
                 if centroid_bytes:
                     centroid = np.frombuffer(centroid_bytes, dtype=np.float32)
+                    if len(centroid) != self.embedding_dim:
+                        continue
                     centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
 
                     # Cosine similarity
@@ -745,11 +720,16 @@ def extract_faces_from_existing(scorer, force=False):
 
     with get_connection(scorer.db_path, row_factory=False) as conn:
         if force:
-            # Delete all existing faces
+            # Named persons outlive the delete only if we remember which boxes
+            # were theirs. The memory is a table written in the SAME transaction
+            # as the delete: the extraction below runs for hours, and a crash in
+            # it must not orphan the named persons for good.
+            remembered = persist_named_snapshot(conn)
             deleted = conn.execute("DELETE FROM faces").rowcount
             conn.commit()
             if deleted > 0:
-                logger.info("Deleted %s existing face records.", deleted)
+                logger.info("Deleted %s existing face records (%d named-person faces remembered).",
+                            deleted, remembered)
 
             # Get ALL photos
             cursor = conn.execute("SELECT path FROM photos")
@@ -761,24 +741,31 @@ def extract_faces_from_existing(scorer, force=False):
             """)
         photos = [row[0] for row in cursor.fetchall()]
 
-    if not photos:
+    if photos:
+        logger.info("Extracting faces from %s photos...", len(photos))
+        logger.info("Workers: %s, Batch size: %s", num_workers, batch_size)
+
+        processor = FaceProcessor(
+            db_path=scorer.db_path,
+            config=face_processing,
+            num_workers=num_workers,
+            batch_size=batch_size,
+            mode='extract',
+            face_analyzer=scorer.face_analyzer,
+            crop_padding=crop_padding
+        )
+
+        processor.run(photos, desc="Extracting faces")
+    else:
         logger.info("No photos in database.")
-        return
 
-    logger.info("Extracting faces from %s photos...", len(photos))
-    logger.info("Workers: %s, Batch size: %s", num_workers, batch_size)
-
-    processor = FaceProcessor(
-        db_path=scorer.db_path,
-        config=face_processing,
-        num_workers=num_workers,
-        batch_size=batch_size,
-        mode='extract',
-        face_analyzer=scorer.face_analyzer,
-        crop_padding=crop_padding
-    )
-
-    processor.run(photos, desc="Extracting faces")
+    # Also replays what an earlier run that died after its delete left behind.
+    with get_connection(scorer.db_path, row_factory=False) as conn:
+        stats = replay_persisted_snapshot(conn)
+    if stats:
+        logger.info("Re-attached %d face(s) to named persons; %d previously named face(s) "
+                    "found no matching detection (re-run clustering to place them).",
+                    stats['reattached'], stats['unmatched'])
 
 
 def refill_face_thumbnails(db_path, config, force=False):
@@ -807,12 +794,17 @@ def refill_face_thumbnails(db_path, config, force=False):
                 logger.info("Cleared %s existing face thumbnails.", cleared)
 
         # Get faces with bbox data (all if force, only missing thumbnails otherwise)
+        # Only ArcFace rows are expected to carry landmarks; an SFace row has none
+        # by design and must not be re-queued on every refill because of it.
+        arcface_sql, arcface_params = model_filter_sql(ARCFACE_MODEL)
         cursor = conn.execute("""
             SELECT id, photo_path, bbox_x1, bbox_y1, bbox_x2, bbox_y2
             FROM faces
             WHERE bbox_x1 IS NOT NULL
             {}
-        """.format("" if force else "AND (face_thumbnail IS NULL OR landmark_2d_106 IS NULL)"))
+        """.format("" if force else
+                   f"AND (face_thumbnail IS NULL OR (landmark_2d_106 IS NULL AND {arcface_sql}))"),
+            [] if force else arcface_params)
         faces = cursor.fetchall()
 
     if not faces:
@@ -865,7 +857,7 @@ def run_face_clustering(db_path, config, force=False, preserve_named_only=False)
         logger.info("legacy profile: forcing CPU face clustering (use_gpu=never)")
         use_gpu = 'never'
 
-    auto_merge = cluster_settings.get('auto_merge_distance_percent', 0) / 100
+    auto_merge = cluster_settings['auto_merge_distance_percent'] / 100
     face_processing = config.get_face_processing_settings()
 
     clusterer = FaceClusterer(
@@ -876,7 +868,7 @@ def run_face_clustering(db_path, config, force=False, preserve_named_only=False)
         algorithm=cluster_settings.get('clustering_algorithm', 'boruvka_balltree'),
         leaf_size=cluster_settings.get('leaf_size', 40),
         use_gpu=use_gpu,
-        merge_threshold=cluster_settings.get('merge_threshold', 0.6),
+        merge_threshold=cluster_settings['merge_threshold'],
         use_db_thumbnails=face_processing.get('use_db_thumbnails', True),
         face_thumbnail_size=face_processing.get('face_thumbnail_size', 128),
         face_thumbnail_quality=face_processing.get('face_thumbnail_quality', 85)

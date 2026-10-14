@@ -1304,10 +1304,10 @@ IEC 61966-2-1。NCLX 传递特征值 16：ISO/IEC 23001-8 / ITU-T H.273。
 
 | 设置 | 默认值 | 可接受的值 | 说明 |
 |---------|---------|-----------------|-------------|
-| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` 加载所有模型（发布时的行为）。`"commercial"` 绝不导入、排队或下载许可证不适合商业使用的组件：`pyiqa`（TOPIQ、HyperIQA、LIQE 等）和 InsightFace 在每一层都会被拒绝。美学与质量由原生 Q-ReAlign 评分器提供，构图由基于规则的分析器提供，人脸由宽松许可的人脸流水线提供（尚不可用：在其上线之前，商业模式的扫描会在启动时停止）。`liqe` 和 `aesthetic_iaa` 没有替代方案，保持为 `NULL`。 |
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` 加载所有模型（发布时的行为）。`"commercial"` 绝不导入、排队或下载许可证不适合商业使用的组件：`pyiqa`（TOPIQ、HyperIQA、LIQE 等）和 InsightFace 在每一层都会被拒绝。美学与质量由原生 Q-ReAlign 评分器提供，构图由基于规则的分析器提供，人脸由宽松许可的人脸流水线提供（YuNet 检测、128 维 SFace 特征向量，可选 MediaPipe 的眼睛/微笑和 OFIQ 人脸质量）。`liqe` 和 `aesthetic_iaa` 没有替代方案，保持为 `NULL`。 |
 | `allow_unclear` | `false` | `true` / `false` | 在商业模式下，同时允许许可证*不明确*的组件（SAMP-Net、U2-Net-P、LAION CLIP-MLP 美学头）。非商业许可的组件仍被拒绝。 |
 
-被拒绝的组件会抛出 `LicenceError`，其中指明该组件及其替代项；所有可能吞掉它的处理器都会重新抛出它（有测试强制保证），因此拒绝会在启动时终止扫描，而不是变成逐张照片的失败或静默回退。仅依赖被拒绝组件的命令（`--score-topiq`、针对 pyiqa 模型的 `--recompute-iqa`、`--recompute-composition-gpu`、`--extract-faces-gpu-*`）在商业模式下会带着该消息退出。该模式在启动时从解析后的配置中读取。查看器会在其启动的每个 `facet.py` 进程（扫描、重新计算）的环境中传入 `FACET_LICENSING_MODE=commercial`，因此子进程不会因工作目录不同而回落到默认模式。以上内容不构成法律建议。
+被拒绝的组件会抛出 `LicenceError`，其中指明该组件及其替代项；所有可能吞掉它的处理器都会重新抛出它（有测试强制保证），因此拒绝会在启动时终止扫描，而不是变成逐张照片的失败或静默回退。仅依赖被拒绝组件的命令（`--score-topiq`、针对 pyiqa 模型的 `--recompute-iqa`、`--recompute-composition-gpu`）在商业模式下会带着该消息退出。该模式在启动时从解析后的配置中读取。查看器会在其启动的每个 `facet.py` 进程（扫描、重新计算）的环境中传入 `FACET_LICENSING_MODE=commercial`，因此子进程不会因工作目录不同而回落到默认模式。以上内容不构成法律建议。
 
 环境变量 `FACET_LICENSING_MODE` 优先于文件：`commercial` 强制使用商业模式，`default` 或为空表示不覆盖（它永远不会放宽写有 `commercial` 的文件），其他任何值都会被忽略并给出警告。
 
@@ -1359,11 +1359,13 @@ InsightFace 人脸检测设置。
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -1373,11 +1375,12 @@ InsightFace 人脸检测设置。
 | `enabled` | `true` | 启用人脸聚类 |
 | `min_faces_per_person` | `2` | 每个人物最少的照片数 |
 | `min_samples` | `2` | HDBSCAN 的 min_samples 参数 |
-| `auto_merge_distance_percent` | `15` | 在此距离内自动合并 |
 | `clustering_algorithm` | `"best"` | HDBSCAN 算法 |
 | `leaf_size` | `40` | 树的叶子大小（仅 CPU） |
 | `use_gpu` | `"auto"` | GPU 模式：`auto`、`always`、`never`（见下文说明） |
-| `merge_threshold` | `0.6` | 用于匹配的质心相似度 |
+| `thresholds_by_model` | 见 JSON | 按识别模型分别设置：`auto_merge_distance_percent`（自动合并距离）和 `merge_threshold`（质心相似度）。默认值：ArcFace `15` / `0.6`，SFace `27.5` / `0.65` |
+
+`merge_threshold` 和 `auto_merge_distance_percent` 是单个识别模型特征向量空间内的相似度与距离，因此会针对**当前生效的**模型（默认 ArcFace，商业模式为 SFace）从 `thresholds_by_model` 读取。没有对应条目的模型会报错，而不是回退。直接放在 `face_clustering` 下的值不再被读取。
 
 **GPU 聚类说明（`use_gpu`）：**
 

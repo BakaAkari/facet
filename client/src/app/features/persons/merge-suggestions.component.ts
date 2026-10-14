@@ -20,23 +20,10 @@ import { FixedPipe } from '../../shared/pipes/fixed.pipe';
 import { ConfirmDialogComponent } from '../../shared/components/confirm-dialog/confirm-dialog.component';
 import { HeaderSlotService } from '../../core/services/header-slot.service';
 import { I18N, i18nKeys } from '../../core/i18n/keys';
+import type { MergeSuggestionsResponse } from '../../core/api/types';
 
-interface SuggestionPerson {
-  id: number;
-  name: string | null;
-  face_count: number;
-  face_thumbnail?: boolean;
-}
-
-interface MergeSuggestion {
-  person1: SuggestionPerson;
-  person2: SuggestionPerson;
-  similarity: number;
-}
-
-interface MergeSuggestionsResponse {
-  suggestions: MergeSuggestion[];
-}
+type MergeSuggestion = MergeSuggestionsResponse['suggestions'][number];
+type SuggestionPerson = MergeSuggestion['person1'];
 
 @Component({
   selector: 'app-merge-suggestions',
@@ -72,15 +59,17 @@ interface MergeSuggestionsResponse {
             <mat-icon>arrow_back</mat-icon>
           </a>
           <span class="text-sm opacity-70 shrink-0">{{ I18N.persons.similarity_threshold | translate }}</span>
-          <mat-slider [min]="0.3" [max]="0.9" [step]="0.05" [discrete]="true" class="w-40">
-            <input
-              matSliderThumb
-              [value]="threshold()"
-              (valueChange)="onThresholdChange($event)"
-              [attr.aria-label]="I18N.persons.similarity_threshold | translate"
-            />
-          </mat-slider>
-          <span class="text-sm font-mono w-12">{{ threshold() * 100 | fixed:0 }}%</span>
+          @if (threshold(); as value) {
+            <mat-slider [min]="0.3" [max]="0.9" [step]="0.05" [discrete]="true" class="w-40">
+              <input
+                matSliderThumb
+                [value]="value"
+                (valueChange)="onThresholdChange($event)"
+                [attr.aria-label]="I18N.persons.similarity_threshold | translate"
+              />
+            </mat-slider>
+            <span class="text-sm font-mono w-12">{{ value * 100 | fixed:0 }}%</span>
+          }
           <div class="flex-1"></div>
           @if (canEdit() && suggestions().length > 0) {
             <button mat-flat-button [disabled]="merging()" (click)="confirmAcceptAll()">
@@ -203,7 +192,10 @@ export class MergeSuggestionsComponent implements OnInit, OnDestroy {
   readonly suggestions = signal<MergeSuggestion[]>([]);
   readonly loading = signal(false);
   readonly merging = signal(false);
-  readonly threshold = signal(0.6);
+  /** Null until the server reports the active model's default (or the user picks one). */
+  readonly threshold = signal<number | null>(null);
+  /** Sent only once the user has moved the slider; before that the server decides. */
+  private userThreshold: number | null = null;
 
   private thresholdTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -229,6 +221,7 @@ export class MergeSuggestionsComponent implements OnInit, OnDestroy {
   }
 
   onThresholdChange(value: number): void {
+    this.userThreshold = value;
     this.threshold.set(value);
     if (this.thresholdTimeout) clearTimeout(this.thresholdTimeout);
     this.thresholdTimeout = setTimeout(() => this.loadSuggestions(), 300);
@@ -238,11 +231,13 @@ export class MergeSuggestionsComponent implements OnInit, OnDestroy {
     this.loading.set(true);
     try {
       const res = await firstValueFrom(
-        this.api.get<MergeSuggestionsResponse>('/merge_suggestions', {
-          threshold: this.threshold(),
-        }),
+        this.api.get<MergeSuggestionsResponse>(
+          '/merge_suggestions',
+          this.userThreshold === null ? {} : { threshold: this.userThreshold },
+        ),
       );
       this.suggestions.set(res.suggestions);
+      if (this.userThreshold === null) this.threshold.set(res.threshold);
     } catch {
       this.snackBar.open(this.i18n.t(I18N.persons.error_loading), '', { duration: 3000 });
     } finally {

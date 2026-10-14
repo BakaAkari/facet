@@ -292,6 +292,8 @@ class ScoringConfig:
         if validate:
             for schema_error in self.validate_schema():
                 logger.warning("Config schema error: %s", schema_error)
+            for message in self.validate_moved_face_clustering_keys():
+                logger.warning("Config: %s", message)
             self.validate_weights(verbose=True)
 
     def _load_config(self):
@@ -878,18 +880,36 @@ class ScoringConfig:
         """Q-ReAlign size loaded by the native scorer: ``"mini"`` | ``"lite"``."""
         return self.config.get('iqa_extended', {}).get('qrealign_size', 'mini')
 
-    def get_face_clustering_settings(self):
-        """Get face clustering settings."""
-        return self.config.get('face_clustering', {
+    def get_face_clustering_settings(self, embedding_model=None):
+        """Get face clustering settings with the thresholds of one embedding model.
+
+        ``auto_merge_distance_percent`` and ``merge_threshold`` are distances and
+        similarities in a model's own embedding space, so they live under
+        ``face_clustering.thresholds_by_model`` and are flattened into the result
+        for ``embedding_model`` (default: the active model). A model with no
+        entry raises ``ValueError``: a threshold tuned for another space would
+        silently mis-merge people.
+        """
+        from db.embedding_space import ARCFACE_MODEL, SFACE_MODEL, active_embedding_model
+        settings = dict(self.config.get('face_clustering', {
             'enabled': True,
             'min_faces_per_person': 2,
             'min_samples': 2,
-            'auto_merge_distance_percent': 0,
             'clustering_algorithm': 'boruvka_balltree',
             'leaf_size': 40,
             'use_gpu': 'auto',
-            'merge_threshold': 0.6
-        })
+            'thresholds_by_model': {
+                ARCFACE_MODEL: {'auto_merge_distance_percent': 0, 'merge_threshold': 0.6},
+                SFACE_MODEL: {'auto_merge_distance_percent': 0, 'merge_threshold': 0.65},
+            },
+        }))
+        by_model = settings.pop('thresholds_by_model', {})
+        model = embedding_model or active_embedding_model(self)
+        if model not in by_model:
+            raise ValueError(
+                f"face_clustering.thresholds_by_model has no entry for {model!r}")
+        settings.update(by_model[model])
+        return settings
 
     def get_face_processing_settings(self):
         """Get face processing settings (thumbnails, crop, parallel workers)."""
@@ -1569,6 +1589,26 @@ class ScoringConfig:
                 return name
 
         return self.config.get('viewer', {}).get('default_category', 'default')
+
+    # face_clustering keys that moved under thresholds_by_model.<model>; a similarity
+    # threshold only means something in one model's embedding space.
+    _MOVED_FACE_CLUSTERING_KEYS = ('merge_threshold', 'auto_merge_distance_percent')
+
+    def validate_moved_face_clustering_keys(self):
+        """Warnings for a config still setting the old flat clustering thresholds.
+
+        They are ignored (there is no alias, by design), so an install that tuned
+        them would silently change its clustering on upgrade; name the new home.
+        """
+        block = self.config.get('face_clustering')
+        if not isinstance(block, dict):
+            return []
+        return [
+            f"face_clustering.{key} is no longer read and is ignored; set it per "
+            f"embedding model under face_clustering.thresholds_by_model.<model>.{key} "
+            "(models: arcface_buffalo_l, sface)"
+            for key in self._MOVED_FACE_CLUSTERING_KEYS if key in block
+        ]
 
     def validate_schema(self):
         """Validate config structure against config/scoring_config.schema.json.

@@ -1317,10 +1317,10 @@ Controls which model components Facet may load. See [THIRD_PARTY_MODELS.md](THIR
 
 | Setting | Default | Accepted values | Description |
 |---------|---------|-----------------|-------------|
-| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` loads every model (shipped behaviour). `"commercial"` never imports, queues or downloads components whose licence is not commercial-safe: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) and InsightFace are refused at every layer. Aesthetic and quality come from the native Q-ReAlign scorer, composition from the rule-based analyser, and faces from the permissive face pipeline (not available yet: until it lands, a commercial scan stops at startup). `liqe` and `aesthetic_iaa` have no replacement and stay `NULL`. |
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` loads every model (shipped behaviour). `"commercial"` never imports, queues or downloads components whose licence is not commercial-safe: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) and InsightFace are refused at every layer. Aesthetic and quality come from the native Q-ReAlign scorer, composition from the rule-based analyser, and faces from the permissive face pipeline (YuNet detection, SFace 128-d embeddings, optional MediaPipe eyes/smile and OFIQ face quality). `liqe` and `aesthetic_iaa` have no replacement and stay `NULL`. |
 | `allow_unclear` | `false` | `true` / `false` | In commercial mode, also allow components whose licence is *unclear* (SAMP-Net, U2-Net-P, the LAION CLIP-MLP aesthetic head). Components with a non-commercial licence stay refused. |
 
-A refused component raises a `LicenceError` that names the component and its replacement; every handler that could absorb it re-raises it (a test enforces this), so a refusal stops the scan at startup instead of turning into per-photo failures or a silent fallback. Commands that depend only on a refused component (`--score-topiq`, `--recompute-iqa` for pyiqa models, `--recompute-composition-gpu`, `--extract-faces-gpu-*`) exit with that message in commercial mode. The mode is read from the resolved config at startup. The viewer passes `FACET_LICENSING_MODE=commercial` in the environment of every `facet.py` process it spawns (scans, recomputes), so a child never re-resolves to default mode from a different working directory. Nothing here is legal advice.
+A refused component raises a `LicenceError` that names the component and its replacement; every handler that could absorb it re-raises it (a test enforces this), so a refusal stops the scan at startup instead of turning into per-photo failures or a silent fallback. Commands that depend only on a refused component (`--score-topiq`, `--recompute-iqa` for pyiqa models, `--recompute-composition-gpu`) exit with that message in commercial mode. The mode is read from the resolved config at startup. The viewer passes `FACET_LICENSING_MODE=commercial` in the environment of every `facet.py` process it spawns (scans, recomputes), so a child never re-resolves to default mode from a different working directory. Nothing here is legal advice.
 
 The `FACET_LICENSING_MODE` environment variable overrides the file: `commercial` forces commercial mode, `default` or empty means no override (it can never relax a file that says `commercial`), and any other value is ignored with a warning.
 
@@ -1372,11 +1372,13 @@ HDBSCAN clustering for face recognition.
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -1386,11 +1388,12 @@ HDBSCAN clustering for face recognition.
 | `enabled` | `true` | Enable face clustering |
 | `min_faces_per_person` | `2` | Minimum photos per person |
 | `min_samples` | `2` | HDBSCAN min_samples parameter |
-| `auto_merge_distance_percent` | `15` | Auto-merge within this distance |
 | `clustering_algorithm` | `"best"` | HDBSCAN algorithm |
 | `leaf_size` | `40` | Tree leaf size (CPU only) |
 | `use_gpu` | `"auto"` | GPU mode: `auto`, `always`, `never` (see notes below) |
-| `merge_threshold` | `0.6` | Centroid similarity for matching |
+| `thresholds_by_model` | see JSON | Per recognition model: `auto_merge_distance_percent` (auto-merge distance) and `merge_threshold` (centroid similarity for matching). Defaults: ArcFace `15` / `0.6`, SFace `27.5` / `0.65` |
+
+`merge_threshold` and `auto_merge_distance_percent` are similarities and distances inside one recognition model's embedding space, so they are read from `thresholds_by_model` for the **active** model (ArcFace by default, SFace in commercial mode). A model with no entry is an error, not a fallback: a threshold tuned for another space would silently mis-merge people. Setting `merge_threshold` or `auto_merge_distance_percent` directly under `face_clustering` is no longer read.
 
 **GPU clustering notes (`use_gpu`):**
 

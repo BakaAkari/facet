@@ -4,11 +4,12 @@ Merge suggestions API router -- face merge group analysis.
 """
 
 import sqlite3
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.auth import CurrentUser, require_authenticated
-from api.config import VIEWER_CONFIG, is_multi_user_enabled
+from api.config import VIEWER_CONFIG, is_multi_user_enabled, server_scoring_config
 from api.database import get_db
 from api.db_helpers import get_visibility_clause
 from api.models.albums import MergeSuggestionsResponse
@@ -68,27 +69,13 @@ def _pairwise_suggestions(threshold):
     then merged different people irreversibly.
     """
     import numpy as np
-    from db import person_not_hidden_clause
+    from db.person_centroids import load_person_centroids
 
     with get_db() as conn:
-        rows = conn.execute(
-            f"SELECT id, name, face_count, centroid FROM persons "
-            f"WHERE centroid IS NOT NULL AND {person_not_hidden_clause()} "
-            f"ORDER BY face_count DESC"
-        ).fetchall()
+        loaded = load_person_centroids(conn, include_hidden=False)
 
-    persons, centroids = [], []
-    for row in rows:
-        if not row['centroid']:
-            continue
-        c = np.frombuffer(row['centroid'], dtype=np.float32)
-        c = c / (np.linalg.norm(c) + 1e-10)
-        persons.append({
-            'id': row['id'],
-            'name': row['name'],
-            'face_count': row['face_count'] or 0,
-        })
-        centroids.append(c)
+    persons = [{k: p[k] for k in ('id', 'name', 'face_count')} for p in loaded]
+    centroids = [p['centroid'] for p in loaded]
 
     suggestions = []
     n = len(persons)
@@ -119,14 +106,20 @@ def _pairwise_suggestions(threshold):
     response_model_exclude_unset=True,
 )
 def get_merge_suggestions(
-    threshold: float = Query(0.6, ge=0.0, le=1.0),
+    threshold: Optional[float] = Query(None, ge=0.0, le=1.0),
     user: CurrentUser = Depends(require_authenticated),
 ):
-    """Return merge suggestions as pairwise person comparisons."""
+    """Return merge suggestions as pairwise person comparisons.
+
+    Without ``threshold`` the active embedding model's ``merge_threshold`` from
+    ``face_clustering.thresholds_by_model`` applies.
+    """
     # Check if feature is enabled
     if not VIEWER_CONFIG.get("features", {}).get("show_merge_suggestions", True):
         raise HTTPException(status_code=403, detail="Merge suggestions feature is disabled")
 
+    if threshold is None:
+        threshold = server_scoring_config().get_face_clustering_settings()['merge_threshold']
     suggestions = _pairwise_suggestions(threshold)
 
     # Drop pairs the user has already dismissed so they stop reappearing.
@@ -144,4 +137,4 @@ def get_merge_suggestions(
             if s["person1"]["id"] in visible and s["person2"]["id"] in visible
         ]
 
-    return {"suggestions": suggestions}
+    return {"suggestions": suggestions, "threshold": threshold}

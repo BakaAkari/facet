@@ -133,8 +133,8 @@ class TestWriterPersistence:
         conn = sqlite3.connect(tmp_path / "faces.db")
         _create_faces_table(conn)
         face = _face_detail()
-        conn.execute(FACES_UPSERT_SQL, face_upsert_row('/p.jpg', face))
-        conn.execute(FACES_UPSERT_SQL, face_upsert_row('/p.jpg', face))  # rescan
+        conn.execute(FACES_UPSERT_SQL, face_upsert_row('/p.jpg', face, 'arcface_buffalo_l'))
+        conn.execute(FACES_UPSERT_SQL, face_upsert_row('/p.jpg', face, 'arcface_buffalo_l'))  # rescan
         rows = conn.execute(
             "SELECT eyes_open_score, smile_score FROM faces WHERE photo_path = '/p.jpg'"
         ).fetchall()

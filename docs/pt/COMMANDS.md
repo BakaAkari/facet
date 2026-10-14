@@ -207,7 +207,7 @@ Os embeddings impulsionam a marcação semântica, a detecção de duplicatas, a
 | Comando | Descrição |
 |---------|-------------|
 | `python facet.py --extract-faces-gpu-incremental` | Extrai rostos para novas fotos (GPU, paralelo) |
-| `python facet.py --extract-faces-gpu-force` | Apaga todos os rostos e re-extrai (GPU) |
+| `python facet.py --extract-faces-gpu-force` | Apaga todos os rostos e re-extrai (GPU; extrator permissivo no modo comercial; as pessoas com nome são preservadas) |
 | `python facet.py --cluster-faces-incremental` | Clustering HDBSCAN, preserva todas as pessoas (CPU) |
 | `python facet.py --cluster-faces-incremental-named` | Clustering, preserva apenas as pessoas nomeadas (CPU) |
 | `python facet.py --cluster-faces-force` | Re-clustering completo, apaga todas as pessoas (CPU) |
@@ -292,7 +292,7 @@ Somente leitura: decodifica uma amostra aleatória diretamente do disco e imprim
 | `python facet.py --train-keeper --train-keeper-force` | Grava a cabeça de ranqueamento de retenção mesmo se sua barreira de acurácia não for atingida (também respeita `--ranker-category` e `--user`) |
 | `python facet.py --report-unreviewed-bursts` | Reporta quantos grupos de rajada permanecem não revisados (somente leitura) |
 | `python facet.py --eval-iqa-srcc` | Reporta o SRCC de Spearman de cada métrica IQA/estética vs suas avaliações por estrelas (somente leitura) |
-| `python facet.py --evaluate-models SLOT` | Classifica os modelos candidatos de um slot (`aesthetic`, `quality`, `face-quality`, `end-to-end`) pela concordância com as suas escolhas em pares na tabela comparisons; `--candidates a,b` (`stored:<coluna>` ou um nome registado) e `--eval-out CAMINHO` (predefinido `.facet_cache/eval/<slot>-<timestamp>.json`) refinam-no (somente leitura) |
+| `python facet.py --evaluate-models SLOT` | Classifica os modelos candidatos de um slot (`aesthetic`, `quality`, `faces-detect`, `faces-recognize`, `faces-centroid`, `blink`, `face-quality`, `end-to-end`) pela concordância com as suas escolhas em pares na tabela comparisons; `--candidates a,b` (`stored:<coluna>` ou um nome registado) e `--eval-out CAMINHO` (predefinido `.facet_cache/eval/<slot>-<timestamp>.json`) refinam-no (somente leitura). Os slots de rostos (`faces-detect`: `yunet`, `yunet@<conf>`, `blazeface`; `faces-recognize`: `sface`, `sface@<limiar>`; `faces-centroid`: ajusta o `merge_threshold` do SFace / a fusão automática ao nível do centroide face às pessoas InsightFace; `blink`: varre o limiar de piscar do analisador permissivo face aos indicadores de piscar InsightFace armazenados) medem, em vez disso, a concordância com os rostos InsightFace armazenados numa amostra com semente fixa, pelo que só se aplicam a bibliotecas em modo predefinido; `--limit N` limita as fotos (predefinido 600) ou os rostos de referência (predefinido 1200) |
 | `python facet.py --mine-insights` | Relatório de mineração de dados: inventário de rótulos, correlações métrica-rótulo, distribuição de categorias, deriva (drift) de percentis, saúde das comparações |
 | `python facet.py --mine-insights report.json` | O mesmo, mas também grava o relatório completo como JSON |
 | `python calibrate.py --db <path> --ava-annotations AVA.txt` | Calibra os pesos de pontuação por categoria em relação ao [conjunto de dados AVA](https://github.com/imfing/ava_downloader) maximizando o SRCC vs as pontuações de opinião média do AVA (somente leitura; imprime os pesos propostos) |

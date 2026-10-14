@@ -112,7 +112,7 @@ MINIMAL_SCORING_CONFIG: dict = {
     "viewer": MINIMAL_VIEWER_CONFIG,
     "burst_detection": {"similarity_threshold_percent": 70, "time_window_minutes": 0.8},
     "face_detection": {"min_confidence_percent": 65, "blink_ear_threshold": 0.28},
-    "face_clustering": {"min_faces_per_person": 2, "min_samples": 2, "merge_threshold": 0.6},
+    "face_clustering": {"min_faces_per_person": 2, "min_samples": 2, "thresholds_by_model": {"arcface_buffalo_l": {"auto_merge_distance_percent": 15, "merge_threshold": 0.6}, "sface": {"auto_merge_distance_percent": 27.5, "merge_threshold": 0.65}}},
 }
 
 

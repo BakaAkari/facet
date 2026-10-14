@@ -1346,10 +1346,10 @@ Controlla quali componenti di modelli Facet può caricare. Vedi [THIRD_PARTY_MOD
 
 | Impostazione | Predefinito | Valori accettati | Descrizione |
 |---------|---------|-------------------|-------------|
-| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` carica tutti i modelli (comportamento fornito). `"commercial"` non importa, non mette in coda e non scarica mai componenti la cui licenza non è adatta all'uso commerciale: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) e InsightFace sono rifiutati a ogni livello. Estetica e qualità provengono dal valutatore nativo Q-ReAlign, la composizione dall'analizzatore basato su regole e i volti dalla pipeline facciale permissiva (non ancora disponibile: finché non arriva, una scansione commerciale si ferma all'avvio). `liqe` e `aesthetic_iaa` non hanno sostituti e restano `NULL`. |
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` carica tutti i modelli (comportamento fornito). `"commercial"` non importa, non mette in coda e non scarica mai componenti la cui licenza non è adatta all'uso commerciale: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) e InsightFace sono rifiutati a ogni livello. Estetica e qualità provengono dal valutatore nativo Q-ReAlign, la composizione dall'analizzatore basato su regole e i volti dalla pipeline facciale permissiva (rilevamento YuNet, embedding SFace a 128 dimensioni, e in opzione MediaPipe per occhi/sorriso e la qualità del volto OFIQ). `liqe` e `aesthetic_iaa` non hanno sostituti e restano `NULL`. |
 | `allow_unclear` | `false` | `true` / `false` | In modalità commerciale, consente anche i componenti con licenza *incerta* (SAMP-Net, U2-Net-P, la testa estetica CLIP-MLP di LAION). I componenti con licenza non commerciale restano rifiutati. |
 
-Un componente rifiutato solleva un `LicenceError` che nomina il componente e il suo sostituto; ogni gestore che potrebbe assorbirlo lo rilancia (un test lo impone), così un rifiuto ferma la scansione all'avvio invece di diventare errori per foto o un ripiego silenzioso. I comandi che dipendono solo da un componente rifiutato (`--score-topiq`, `--recompute-iqa` per i modelli pyiqa, `--recompute-composition-gpu`, `--extract-faces-gpu-*`) terminano con quel messaggio in modalità commerciale. La modalità è letta dalla configurazione risolta all'avvio. Il viewer passa `FACET_LICENSING_MODE=commercial` nell'ambiente di ogni processo `facet.py` che avvia (scansioni, ricalcoli), così un figlio non ricade mai nella modalità predefinita da un'altra directory di lavoro. Niente di tutto ciò è consulenza legale.
+Un componente rifiutato solleva un `LicenceError` che nomina il componente e il suo sostituto; ogni gestore che potrebbe assorbirlo lo rilancia (un test lo impone), così un rifiuto ferma la scansione all'avvio invece di diventare errori per foto o un ripiego silenzioso. I comandi che dipendono solo da un componente rifiutato (`--score-topiq`, `--recompute-iqa` per i modelli pyiqa, `--recompute-composition-gpu`) terminano con quel messaggio in modalità commerciale. La modalità è letta dalla configurazione risolta all'avvio. Il viewer passa `FACET_LICENSING_MODE=commercial` nell'ambiente di ogni processo `facet.py` che avvia (scansioni, ricalcoli), così un figlio non ricade mai nella modalità predefinita da un'altra directory di lavoro. Niente di tutto ciò è consulenza legale.
 
 La variabile d'ambiente `FACET_LICENSING_MODE` prevale sul file: `commercial` forza la modalità commerciale, `default` o vuota significa nessuna sovrascrittura (non può mai allentare un file che dice `commercial`) e qualsiasi altro valore viene ignorato con un avviso.
 
@@ -1401,11 +1401,13 @@ Clustering HDBSCAN per il riconoscimento dei volti.
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -1415,11 +1417,12 @@ Clustering HDBSCAN per il riconoscimento dei volti.
 | `enabled` | `true` | Abilita il clustering dei volti |
 | `min_faces_per_person` | `2` | Foto minime per persona |
 | `min_samples` | `2` | Parametro min_samples di HDBSCAN |
-| `auto_merge_distance_percent` | `15` | Unione automatica entro questa distanza |
 | `clustering_algorithm` | `"best"` | Algoritmo HDBSCAN |
 | `leaf_size` | `40` | Dimensione delle foglie dell'albero (solo CPU) |
 | `use_gpu` | `"auto"` | Modalità GPU: `auto`, `always`, `never` |
-| `merge_threshold` | `0.6` | Similarità del centroide per la corrispondenza |
+| `thresholds_by_model` | vedi JSON | Per modello di riconoscimento: `auto_merge_distance_percent` (distanza di unione automatica) e `merge_threshold` (similarità dei centroidi). Valori predefiniti: ArcFace `15` / `0.6`, SFace `27.5` / `0.65` |
+
+`merge_threshold` e `auto_merge_distance_percent` sono similarità e distanze nello spazio di embedding di un singolo modello di riconoscimento, quindi vengono lette da `thresholds_by_model` per il modello **attivo** (ArcFace per impostazione predefinita, SFace in modalità commerciale). Un modello senza voce è un errore, non un ripiego. I valori posti direttamente sotto `face_clustering` non vengono più letti.
 
 **Algoritmi di clustering:**
 

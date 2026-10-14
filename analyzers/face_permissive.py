@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 from analyzers.face_blendshapes import CROP_PADDING, crop_face_region, get_blendshape_scorer
+from analyzers.face_quality_ofiq import get_ofiq_scorer
 from models.weights import (
     SFACE_WEIGHTS_FILENAME,
     SFACE_WEIGHTS_SHA256,
@@ -48,9 +49,13 @@ DETECTOR_SCORE_FLOOR = 0.3
 DETECTOR_NMS = 0.3
 DETECTOR_TOP_K = 5000
 
-# Why 0.5: eyeBlink* is a 0-1 activation; 0.5 is the midpoint where the lid
-# covers about half the eye. Provisional default, W8 tunes it against data.
-DEFAULT_BLINK_THRESHOLD = 0.5
+# Why 0.55 (D33): eyeBlink* is a 0-1 activation. W8 measured max(eyeBlinkL/R) against the
+# InsightFace is_blink label on 446 single-face photos (--evaluate-models blink). F1 on that
+# 48%-positive sample peaks at 0.35, but the library blink rate is 0.74%, so reweighting the
+# negatives by the library base rate gives F1 0.101 at 0.35 and 0.228 at 0.55; at 0.35 about
+# 12.6% of photos would be flagged and, with hide_blinks on by default, hidden. 0.55 also sits
+# next to the ~0.6 eyes-closed cutoff in blendshapes_to_scores.
+DEFAULT_BLINK_THRESHOLD = 0.55
 
 # MediaPipe canonical 478-point mesh eye contours (subject's right / left eye).
 MESH_RIGHT_EYE = (33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246)
@@ -70,7 +75,7 @@ def _zero_result(max_confidence=0):
         'is_blink': 0, 'face_area': 0, 'bbox': None,
         'face_sharpness': 0, 'raw_eye_sharpness': 0,
         'is_group_portrait': 0, 'max_face_confidence': max_confidence,
-        'face_details': [],
+        'face_details': [], 'face_quality_iqa': None,
     }
 
 
@@ -125,7 +130,7 @@ class PermissiveFaceAnalyzer:
     def __init__(self, device='cpu', min_confidence=0.7, min_face_size=30,
                  thumbnail_size=128, thumbnail_quality=85,
                  blink_threshold=DEFAULT_BLINK_THRESHOLD, min_faces_for_group=4,
-                 enable_blendshapes=True, blendshape_min_crop=192):
+                 enable_blendshapes=True, blendshape_min_crop=192, enable_ofiq=True):
         # `device` is accepted for constructor parity; YuNet/SFace run on CPU via cv2.
         self.available = False
         self.min_confidence = min_confidence
@@ -136,6 +141,7 @@ class PermissiveFaceAnalyzer:
         self.min_faces_for_group = min_faces_for_group
         self.enable_blendshapes = enable_blendshapes
         self.blendshape_min_crop = blendshape_min_crop
+        self.enable_ofiq = enable_ofiq
         self._blendshape_scorer = None
         self._detector = None
         self._recognizer = None
@@ -147,6 +153,14 @@ class PermissiveFaceAnalyzer:
                 getattr(cv2, '__version__', '?'))
             return
         self.available = True
+
+    def ensure_models(self):
+        """Load the YuNet/SFace weights now (downloading once); True when usable.
+
+        Called by the scan's preflight so a failed first-run download stops the
+        scan up front instead of surfacing as "no faces" on every photo.
+        """
+        return self.available and self._ensure_models()
 
     def _ensure_models(self):
         if self._detector is not None:
@@ -187,9 +201,17 @@ class PermissiveFaceAnalyzer:
         """Landmarker on a padded crop upscaled to ``blendshape_min_crop``.
 
         Returns ``(eyes_open, smile, blendshapes, mesh_in_full_res)`` or None.
+        Serialised on the instance lock: ``FaceProcessor`` runs several worker
+        threads over ONE analyzer, and the MediaPipe landmarker (a process-wide
+        singleton, so a per-worker analyzer would not isolate it) is not
+        re-entrant. The other engine calls take the same lock.
         """
         if not self.enable_blendshapes:
             return None
+        with self._lock:
+            return self._mesh_analysis_locked(img_cv, bbox)
+
+    def _mesh_analysis_locked(self, img_cv, bbox):
         if self._blendshape_scorer is None:
             self._blendshape_scorer = get_blendshape_scorer(min_crop_size=self.blendshape_min_crop)
         crop = crop_face_region(img_cv, bbox)
@@ -232,16 +254,46 @@ class PermissiveFaceAnalyzer:
         vals = [v for v in (_laplacian_ratio(img_cv, *p) for p in patches) if v is not None]
         return max(vals) if vals else 0
 
+    def _ofiq_quality(self, img_cv, bboxes):
+        """Photo-level ``face_quality_iqa`` from OFIQ, or None when it cannot score.
+
+        OFIQ scores one face crop at a time, so the per-face scores are blended
+        the way ``face_quality`` blends detection confidences (0.7 * worst +
+        0.3 * mean): a group shot is as good as its weakest face. NULL, never 0,
+        when OFIQ is absent or found no face -- unknown is not "bad".
+        """
+        if not self.enable_ofiq:
+            return None
+        scorer = get_ofiq_scorer()
+        if not scorer.available:
+            return None
+        scores = []
+        for bbox in bboxes:
+            with self._lock:
+                score = scorer.score_face(crop_face_region(img_cv, bbox))
+            if score is not None:
+                scores.append(score)
+        if not scores:
+            return None
+        return round(0.7 * min(scores) + 0.3 * (sum(scores) / len(scores)), 2)
+
     def _embed(self, img_cv, row):
-        aligned = self._recognizer.alignCrop(img_cv, row)
-        feat = np.asarray(self._recognizer.feature(aligned), dtype=np.float32).reshape(-1)
+        with self._lock:  # cv2.FaceRecognizerSF keeps internal buffers: not thread-safe
+            aligned = self._recognizer.alignCrop(img_cv, row)
+            feat = np.asarray(self._recognizer.feature(aligned), dtype=np.float32).reshape(-1)
         norm = float(np.linalg.norm(feat))
         return feat / norm if norm > 0 else feat
 
     def analyze_faces(self, img_cv):
         """Same return contract as :meth:`FaceAnalyzer.analyze_faces`."""
-        if not self.available or img_cv is None or not self._ensure_models():
+        if img_cv is None:
             return _zero_result()
+        if not self.available or not self._ensure_models():
+            # Faces UNKNOWN, not absent: face_details None keeps the stored faces
+            # (an empty list would delete them and write face_count=0).
+            result = _zero_result()
+            result['face_details'] = None
+            return result
 
         h, w = img_cv.shape[:2]
         max_confidence = 0
@@ -263,6 +315,7 @@ class PermissiveFaceAnalyzer:
 
         qualities, eye_scores, raw_eyes, sharpness = [], [], [], []
         any_blink = False
+        blink_known = True  # every face was measured (needs the MediaPipe mesh)
         total_area = 0
         min_x, min_y, max_x, max_y = w, h, 0, 0
         face_details = []
@@ -274,7 +327,9 @@ class PermissiveFaceAnalyzer:
 
             mesh_result = self._mesh_analysis(img_cv, bbox)
             eyes_open = smile = mesh = None
-            if mesh_result is not None:
+            if mesh_result is None:
+                blink_known = False
+            else:
                 eyes_open, smile, names, mesh = mesh_result
                 if max(names['eyeBlinkLeft'], names['eyeBlinkRight']) >= self.blink_threshold:
                     any_blink = True
@@ -305,10 +360,14 @@ class PermissiveFaceAnalyzer:
             'eye_sharpness': round(sum(eye_scores) / len(eye_scores), 2),
             'raw_eye_sharpness': sum(raw_eyes) / len(raw_eyes),
             'face_sharpness': sum(sharpness) / len(sharpness),
-            'is_blink': 1 if any_blink else 0,
+            # 1 on any measured blink; 0 only when EVERY face was measured open;
+            # None (unknown) when some face had no mesh, e.g. mediapipe is not
+            # installed. "Not measured" must not read as "eyes open".
+            'is_blink': 1 if any_blink else (0 if blink_known else None),
             'face_area': total_area,
             'bbox': np.array([min_x, min_y, max_x, max_y]),
             'is_group_portrait': 1 if len(faces) >= self.min_faces_for_group else 0,
             'max_face_confidence': max_confidence,
             'face_details': face_details,
+            'face_quality_iqa': self._ofiq_quality(img_cv, [bbox for _, bbox, _ in faces]),
         }

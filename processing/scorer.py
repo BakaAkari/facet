@@ -26,6 +26,8 @@ from int_affinity import storable_int
 from licensing import LicenceError
 from db import init_database, get_connection
 from db.render_version import DISPLAY_RENDER_VERSION
+from db.embedding_space import active_embedding_model
+from db.person_carry_over import replace_photo_faces
 from db.schema import FACES_UPSERT_SQL, face_upsert_row
 from db.scoring_overrides import get_photo_scoring_overrides
 from db.vec import sync_vec_batch
@@ -1001,7 +1003,14 @@ class Facet:
         failure per photo after the GPU had already worked. Raising here stops
         the scan before the first image.
         """
-        _ = self.face_analyzer
+        analyzer = self.face_analyzer
+        ensure_models = getattr(analyzer, 'ensure_models', None)
+        if ensure_models is not None and not ensure_models():
+            raise RuntimeError(
+                "The permissive face models (YuNet, SFace) could not be loaded -- the "
+                "first run downloads them into pretrained_models/, so check the network "
+                "connection, or this OpenCV build lacks FaceDetectorYN/FaceRecognizerSF. "
+                "Stopping the scan: it would otherwise record every photo as having no faces.")
         if licensing.is_commercial() and self.aesthetic_head is None:
             self._commercial_aesthetic_scorer()
 
@@ -1487,6 +1496,7 @@ class Facet:
                 shutter_speed=exif_data.get('shutter_speed'),
                 quality_score=quality_score,
                 scoring_model=scoring_model,
+                face_quality_iqa=face_res.get('face_quality_iqa'),
                 form_data=form_data,
                 scoring_context=photo_override.get('scoring_context'),
                 category_override=photo_override.get('category_override'),
@@ -1559,6 +1569,8 @@ class Facet:
                 'scoring_model': scoring_model,
                 # SAMP-Net composition pattern
                 'composition_pattern': composition_pattern,
+                # OFIQ face quality (permissive analyzer only; None otherwise)
+                'face_quality_iqa': face_res.get('face_quality_iqa'),
                 # Face details for face recognition
                 'face_details': face_res.get('face_details', []),
             }
@@ -1932,8 +1944,14 @@ class Facet:
 
         logger.info("Saving results to database...")
         with get_connection(self.db_path) as conn:
-            # Reset all photos with faces to non-blink status first
-            conn.execute("UPDATE photos SET is_blink = 0 WHERE face_count >= 1")
+            # Reset to non-blink only the photos this pass can re-derive, i.e. those
+            # with at least one stored 106-point landmark. A photo whose faces have
+            # none (SFace rows in commercial mode) keeps the blink value the scan
+            # measured -- possibly NULL (unknown) -- instead of being zeroed.
+            conn.execute(
+                "UPDATE photos SET is_blink = 0 WHERE face_count >= 1 AND EXISTS ("
+                "SELECT 1 FROM faces f WHERE f.photo_path = photos.path "
+                "AND f.landmark_2d_106 IS NOT NULL)")
             update_data = [(status, path) for path, status in photo_blink_status.items()]
             conn.executemany("UPDATE photos SET is_blink = ? WHERE path = ?", update_data)
             conn.commit()
@@ -2490,12 +2508,13 @@ class Facet:
         # Phase 2: Collect all face records for batch insert (including thumbnails,
         # landmarks and per-face quality signals — shared upsert: see db.schema)
         face_records = []
+        embedding_model = active_embedding_model()
         for res, _ in results_with_images:
             # face_details None = faces unknown (the face pass failed): not []
             face_details = res.get('face_details') or []
             for face in face_details:
                 if face.get('embedding'):
-                    face_records.append(face_upsert_row(res['path'], face))
+                    face_records.append(face_upsert_row(res['path'], face, embedding_model))
 
         # Phase 3: Fast DB inserts (short transaction)
         from analyzers.form_facet import FORM_METRIC_COLUMNS
@@ -2562,13 +2581,13 @@ class Facet:
             # that lost all its faces on re-scan — then batch-insert the fresh rows.
             # A photo whose face analysis failed (face_details is None) keeps its
             # stored faces: unknown is not "lost all its faces".
-            conn.executemany(
-                "DELETE FROM faces WHERE photo_path = ?",
-                [(res['path'],) for res, _ in results_with_images
+            # Named persons keep their faces across the replacement: the new rows
+            # are re-attached by box overlap (db.person_carry_over).
+            replace_photo_faces(
+                conn,
+                [res['path'] for res, _ in results_with_images
                  if not ('face_details' in res and res['face_details'] is None)],
-            )
-            if face_records:
-                conn.executemany(FACES_UPSERT_SQL, face_records)
+                face_records, FACES_UPSERT_SQL)
 
             # Sync clip embeddings to photos_vec for vector search
             vec_records = [
@@ -2626,23 +2645,22 @@ class Facet:
 
         face_records = []
         if refresh_faces:
+            embedding_model = active_embedding_model()
             for res, _, _ in batch:
                 for face in res.get('face_details') or []:
                     if face.get('embedding'):
-                        face_records.append(face_upsert_row(res['path'], face))
+                        face_records.append(face_upsert_row(res['path'], face, embedding_model))
 
         with get_connection(self.db_path, row_factory=False) as conn:
             for res, _, computed_columns in batch:
                 conn.execute(_photos_partial_upsert(computed_columns), res)
 
             if refresh_faces:
-                conn.executemany(
-                    "DELETE FROM faces WHERE photo_path = ?",
-                    [(res['path'],) for res, _, _ in batch
+                replace_photo_faces(
+                    conn,
+                    [res['path'] for res, _, _ in batch
                      if not ('face_details' in res and res['face_details'] is None)],
-                )
-                if face_records:
-                    conn.executemany(FACES_UPSERT_SQL, face_records)
+                    face_records, FACES_UPSERT_SQL)
 
             sync_vec_batch(conn, [
                 (res['path'], res['clip_embedding'])

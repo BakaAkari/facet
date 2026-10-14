@@ -91,11 +91,13 @@ Siehe [Viewer-Integration](#viewer-integration) für die vollständige Referenz 
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -104,7 +106,7 @@ Siehe [Viewer-Integration](#viewer-integration) für die vollständige Referenz 
 |---------|---------|-------------|
 | `min_faces_per_person` | `2` | Mindestanzahl Fotos, um eine Person zu erstellen |
 | `min_samples` | `2` | HDBSCAN-Parameter min_samples |
-| `merge_threshold` | `0.6` | Zentroid-Ähnlichkeit für die Zuordnung |
+| `thresholds_by_model` | siehe JSON | Pro Erkennungsmodell: `auto_merge_distance_percent` (Auto-Merge-Abstand) und `merge_threshold` (Zentroid-Ähnlichkeit). Standard: ArcFace `15` / `0.6`, SFace `27.5` / `0.65` |
 | `use_gpu` | `"auto"` | GPU-Modus: `auto`, `always`, `never` |
 
 ### Gesichtsverarbeitung
@@ -192,7 +194,7 @@ CPU-Clustering mit festem `algorithm` ist für dieselbe Eingabe deterministisch.
 
 Alle Modi außer `--cluster-faces-force` behalten die Personendatensätze, löschen aber sämtliche Gesicht→Person-Zuordnungen und bauen sie neu auf. Ein neu gebildeter Cluster wird einer Person zurückgegeben, wenn entweder:
 
-1. sein mittleres Embedding innerhalb von `merge_threshold` (Standard 0,6 Kosinus) zum gespeicherten Zentroid dieser Person liegt, **oder**
+1. sein mittleres Embedding innerhalb von `merge_threshold` (Standard 0,6 Kosinus für ArcFace, 0,45 für SFace) zum gespeicherten Zentroid dieser Person liegt, **oder**
 2. mindestens die Hälfte seiner Gesichter vor dem Lauf zu dieser Person gehörte.
 
 Die zweite Regel wiegt schwerer, als sie klingt. Das Zentroid einer Person ist ein einzelner Mittelwertvektor; wer über Jahre fotografiert wurde, deckt einen weiten Bereich ab, und HDBSCAN teilt ihn korrekt in enge Untercluster, die weit von diesem Mittelwert entfernt liegen und an Regel 1 scheitern. In der oben genannten Bibliothek lieferte Regel 1 allein 38 % der Gesichter an benannte Personen zurück; mit Regel 2 sind es 96 %.
@@ -229,7 +231,7 @@ Verarbeitet nur Fotos mit Gesichtern, keine GPU erforderlich.
 
 ## Optionale OFIQ-Gesichtsqualität (kommerzieller Modus)
 
-Im kommerziellen Modus ist das eingeschränkte Gesichtsqualitätsmodell nicht verfügbar. Als optionaler Ersatz installieren Sie `python-ofiq` (UNICEF-Bindings für BSI OFIQ, ISO/IEC 29794-5; MIT; verträgt sich mit numpy 2 und OpenCV 4.8+) mit `pip install python-ofiq`. Es gibt nur Wheels für Linux x86-64 und macOS arm64 (unter Windows: WSL2 oder Docker). Die OFIQ-Modelle (ca. 400 MB, MIT/Apache-2.0) werden nie mitgeliefert: Bei der ersten Nutzung lädt Facet sie mit festgelegter SHA-256 nach `pretrained_models/ofiq/`. Sobald die Anbindung an die Gesichts-Pipeline steht, wird der OFIQ-Gesamtwert (0-100) durch 10 geteilt und in `face_quality_iqa` gespeichert; diese Anbindung existiert noch nicht. Fehlt `python-ofiq`, bleibt die Spalte NULL und ihre Gewichtung wird herausnormiert.
+Im kommerziellen Modus ist das eingeschränkte Gesichtsqualitätsmodell nicht verfügbar. Als optionaler Ersatz installieren Sie `python-ofiq` (UNICEF-Bindings für BSI OFIQ, ISO/IEC 29794-5; MIT; verträgt sich mit numpy 2 und OpenCV 4.8+) mit `pip install python-ofiq`. Es gibt nur Wheels für Linux x86-64 und macOS arm64 (unter Windows: WSL2 oder Docker). Die OFIQ-Modelle (ca. 400 MB, MIT/Apache-2.0) werden nie mitgeliefert: Bei der ersten Nutzung lädt Facet sie mit festgelegter SHA-256 nach `pretrained_models/ofiq/`. Die kommerzielle Gesichts-Pipeline teilt den OFIQ-Gesamtwert (0-100) durch 10 und speichert ihn in `face_quality_iqa`; der Wert eines Fotos ist 0,7 x sein schlechtestes Gesicht + 0,3 x der Mittelwert. Fehlt `python-ofiq`, bleibt die Spalte NULL und ihre Gewichtung wird herausnormiert.
 
 ## Ausdruckssignale pro Gesicht (Augen offen + Lächeln)
 
@@ -455,7 +457,7 @@ geclustert werden – andernfalls entstehen stillschweigend unbrauchbare Persone
 ohne Fehlermeldung.
 
 `FaceClusterer.load_embeddings()` lädt daher nur den **aktiven** Embedding-Raum
-(`ACTIVE_EMBEDDING_MODEL` in `faces/clusterer.py`; ein `NULL`-Tag wird als
+(`active_embedding_model()` in `db/embedding_space.py`; ein `NULL`-Tag wird als
 veralteter ArcFace-Raum behandelt) und protokolliert eine deutliche Warnung, falls
 Gesichter aus einem anderen Raum vorhanden sind und ausgeschlossen werden. Dies ist
 ein Schutz für die Vorwärtskompatibilität: Er macht einen zukünftigen Wechsel des
@@ -477,7 +479,7 @@ Umsetzung erfordert:
    offline nachgefüllt werden kann – es muss während der Extraktion laufen). Prüfen Sie,
    ob BGR/Normalisierung zum Checkpoint passen.
 3. **Konfigurationsschalter** – `face_detection.recognition_model: arcface|adaface`
-   hinzufügen und `ACTIVE_EMBEDDING_MODEL` daraus auflösen; neue Gesichter entsprechend
+   hinzufügen und `active_embedding_model()` daraus auflösen; neue Gesichter entsprechend
    taggen.
 4. **Vollständige Neu-Extraktion + Re-Clustering** – `--extract-faces-gpu-force`, dann
    `--cluster-faces-force`, da ArcFace- und AdaFace-Embeddings nicht vergleichbar sind.
@@ -486,6 +488,13 @@ Umsetzung erfordert:
 5. **Qualitätsvalidierung** – die Clusterqualität gegen gelabelte Identitäten messen;
    „läuft und gibt 512-dimensionale Vektoren aus“ beweist nicht, dass die Vorverarbeitung
    korrekt ist.
+
+### Gemischte Bibliotheken, Neu-Extraktion und unbekannte Werte
+
+- **Gemischte Bibliotheken.** Eine Bibliothek kann ArcFace- (512-d) und SFace-Gesichter (128-d) gleichzeitig enthalten. Clusterer, Merge-Vorschläge, die Suche nach ähnlichen Personen und Personen-Zentroide verwenden jeweils nur ein Modell (`persons.centroid_model` hält fest, welches); die inkrementellen und die Nur-benannte-Modi des Clusterings lassen Gesichter und Personen des anderen Modells unberührt, `--cluster-faces-force` dagegen löscht alle Gesicht→Person-Zuordnungen und alle Personen, auch benannte, unabhängig vom Modell. Um eine Bibliothek auf das aktive Modell umzustellen, `--extract-faces-gpu-force` ausführen (im kommerziellen Modus mit dem permissiven Extraktor; benannte Personen bleiben erhalten) und danach `--cluster-faces-incremental`.
+- **Warnungen.** Ein Scan protokolliert eine Warnung, wenn gespeicherte Gesichter zu einem anderen als dem aktiven Modell gehören; `--doctor` meldet dieselbe Abweichung gegenüber dem aktiven Modell.
+- **Benannte Personen überleben die Neu-Extraktion.** Bevor `--extract-faces-gpu-force` die Gesichtszeilen löscht, merkt sich Facet die Box jedes Gesichts einer benannten Person; danach erhält jedes neu erkannte Gesicht die Person, deren alte Box es mit IoU >= 0,5 überlappt (eins zu eins, beste Überlappung zuerst), und die Zentroide werden pro Modell neu berechnet. Ein Gesicht ohne passende alte Box bleibt für den nächsten Clustering-Lauf unzugeordnet. Die gemerkten Boxen stehen in der Tabelle `face_reextract_snapshot`, geschrieben in derselben Transaktion wie das Löschen; ein unterbrochener Lauf wird daher von der nächsten Extraktion nachgeholt. Das erneute Scannen eines Fotos erhält benannte Personen auf dieselbe Weise.
+- **Unbekannt ist nicht null.** Ohne MediaPipe kann der permissive Analysator Augen, Lächeln und Blinzeln nicht messen; diese Werte werden als NULL gespeichert (nicht 0 und nicht „blinzelt“). Blink-Filter und Blink-Abzug behandeln NULL als „kein Blinzeln“. Die Leser der 106-Punkte-Landmarken überspringen Gesichter ohne Landmarken.
 
 ## Fehlerbehebung
 
@@ -497,4 +506,4 @@ Umsetzung erfordert:
 | GPU-Clustering schlägt fehl | cuML-Installation prüfen, `"never"` verwenden, um CPU zu erzwingen |
 | Miniaturansichten fehlen | `--refill-face-thumbnails-incremental` ausführen |
 | Falsche Blinzelerkennung | `blink_ear_threshold` anpassen, `--recompute-blinks` ausführen |
-| Warnung „Excluded N faces from non-active embedding space“ | Eine Änderung des Erkennungsmodells hat gemischte Embeddings hinterlassen – `--extract-faces-gpu-force`, dann `--cluster-faces-force` ausführen |
+| Warnung „Excluded N faces from non-active embedding space“ | Eine Änderung des Erkennungsmodells hat gemischte Embeddings hinterlassen – `--extract-faces-gpu-force`, dann `--cluster-faces-incremental` ausführen |

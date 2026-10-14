@@ -1352,10 +1352,10 @@ Steuert, welche Modellkomponenten Facet laden darf. Die Lizenztabelle pro Kompon
 
 | Einstellung | Standard | Zulässige Werte | Beschreibung |
 |---------|---------|-----------------|-------------|
-| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` lädt alle Modelle (ausgelieferte Funktion). `"commercial"` importiert, plant oder lädt niemals Komponenten herunter, deren Lizenz nicht für kommerzielle Nutzung geeignet ist: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) und InsightFace werden auf jeder Ebene abgelehnt. Ästhetik und Qualität kommen vom nativen Q-ReAlign-Bewerter, die Komposition vom regelbasierten Analysator und die Gesichter von der permissiven Gesichts-Pipeline (noch nicht verfügbar: bis sie vorliegt, bricht ein kommerzieller Scan beim Start ab). `liqe` und `aesthetic_iaa` haben keinen Ersatz und bleiben `NULL`. |
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` lädt alle Modelle (ausgelieferte Funktion). `"commercial"` importiert, plant oder lädt niemals Komponenten herunter, deren Lizenz nicht für kommerzielle Nutzung geeignet ist: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) und InsightFace werden auf jeder Ebene abgelehnt. Ästhetik und Qualität kommen vom nativen Q-ReAlign-Bewerter, die Komposition vom regelbasierten Analysator und die Gesichter von der permissiven Gesichts-Pipeline (YuNet-Erkennung, SFace-Embeddings mit 128 Dimensionen, optional MediaPipe für Augen/Lächeln und OFIQ-Gesichtsqualität). `liqe` und `aesthetic_iaa` haben keinen Ersatz und bleiben `NULL`. |
 | `allow_unclear` | `false` | `true` / `false` | Im kommerziellen Modus werden zusätzlich Komponenten mit *unklarer* Lizenz erlaubt (SAMP-Net, U2-Net-P, der LAION-CLIP-MLP-Ästhetik-Head). Komponenten mit nichtkommerzieller Lizenz bleiben abgelehnt. |
 
-Eine abgelehnte Komponente löst einen `LicenceError` aus, der die Komponente und ihren Ersatz nennt; jeder Handler, der ihn aufnehmen könnte, wirft ihn erneut (ein Test erzwingt das), sodass eine Ablehnung den Scan beim Start stoppt, statt zu Fehlern pro Foto oder einem stillen Fallback zu werden. Befehle, die nur von einer abgelehnten Komponente abhängen (`--score-topiq`, `--recompute-iqa` für pyiqa-Modelle, `--recompute-composition-gpu`, `--extract-faces-gpu-*`), beenden sich im kommerziellen Modus mit dieser Meldung. Der Modus wird beim Start aus der aufgelösten Konfiguration gelesen. Der Viewer übergibt `FACET_LICENSING_MODE=commercial` in der Umgebung jedes von ihm gestarteten `facet.py`-Prozesses (Scans, Neuberechnungen), sodass ein Kindprozess aus einem anderen Arbeitsverzeichnis nie im Standardmodus landet. Nichts davon ist Rechtsberatung.
+Eine abgelehnte Komponente löst einen `LicenceError` aus, der die Komponente und ihren Ersatz nennt; jeder Handler, der ihn aufnehmen könnte, wirft ihn erneut (ein Test erzwingt das), sodass eine Ablehnung den Scan beim Start stoppt, statt zu Fehlern pro Foto oder einem stillen Fallback zu werden. Befehle, die nur von einer abgelehnten Komponente abhängen (`--score-topiq`, `--recompute-iqa` für pyiqa-Modelle, `--recompute-composition-gpu`), beenden sich im kommerziellen Modus mit dieser Meldung. Der Modus wird beim Start aus der aufgelösten Konfiguration gelesen. Der Viewer übergibt `FACET_LICENSING_MODE=commercial` in der Umgebung jedes von ihm gestarteten `facet.py`-Prozesses (Scans, Neuberechnungen), sodass ein Kindprozess aus einem anderen Arbeitsverzeichnis nie im Standardmodus landet. Nichts davon ist Rechtsberatung.
 
 Die Umgebungsvariable `FACET_LICENSING_MODE` überschreibt die Datei: `commercial` erzwingt den kommerziellen Modus, `default` oder leer bedeutet keine Überschreibung (sie kann eine Datei mit `commercial` nie lockern), jeder andere Wert wird mit einer Warnung ignoriert.
 
@@ -1407,11 +1407,13 @@ HDBSCAN-Clustering für die Gesichtserkennung.
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -1421,11 +1423,12 @@ HDBSCAN-Clustering für die Gesichtserkennung.
 | `enabled` | `true` | Gesichts-Clustering aktivieren |
 | `min_faces_per_person` | `2` | Mindestanzahl an Fotos pro Person |
 | `min_samples` | `2` | HDBSCAN-Parameter min_samples |
-| `auto_merge_distance_percent` | `15` | Automatisch zusammenführen innerhalb dieser Distanz |
 | `clustering_algorithm` | `"best"` | HDBSCAN-Algorithmus |
 | `leaf_size` | `40` | Blattgröße des Baums (nur CPU) |
 | `use_gpu` | `"auto"` | GPU-Modus: `auto`, `always`, `never` |
-| `merge_threshold` | `0.6` | Zentroid-Ähnlichkeit für die Zuordnung |
+| `thresholds_by_model` | siehe JSON | Pro Erkennungsmodell: `auto_merge_distance_percent` (Auto-Merge-Abstand) und `merge_threshold` (Zentroid-Ähnlichkeit). Standard: ArcFace `15` / `0.6`, SFace `27.5` / `0.65` |
+
+`merge_threshold` und `auto_merge_distance_percent` sind Ähnlichkeiten bzw. Abstände im Embedding-Raum eines einzelnen Erkennungsmodells und werden deshalb für das **aktive** Modell aus `thresholds_by_model` gelesen (standardmäßig ArcFace, im kommerziellen Modus SFace). Ein Modell ohne Eintrag ist ein Fehler, kein Fallback. Werte direkt unter `face_clustering` werden nicht mehr gelesen.
 
 **Clustering-Algorithmen:**
 

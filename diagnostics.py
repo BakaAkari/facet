@@ -127,6 +127,7 @@ def _components_in_use(cfg, profile_name):
 def _report_model_licences(config_path, db_path, profile_name):
     """Licensing mode, the commercial status of each component in use, and face-model drift."""
     import licensing
+    from db.embedding_space import embedding_model_for_policy
     try:
         from config_resolve import load_resolved
         cfg = load_resolved(config_path)
@@ -153,30 +154,25 @@ def _report_model_licences(config_path, db_path, profile_name):
             _info(label, f"commercial use: unclear ({comp.weights_licence})")
         else:
             _info(label, f"commercial use: no ({comp.weights_licence})")
-    _warn_face_model_mismatch(db_path)
+    _warn_face_model_mismatch(db_path, embedding_model_for_policy(pol))
 
 
-def _warn_face_model_mismatch(db_path):
+def _warn_face_model_mismatch(db_path, active_model):
     """Warn when stored face embeddings come from a model other than the active one."""
+    from db.embedding_space import face_model_mismatch_message, mismatched_face_models
     if not os.path.exists(db_path):
         return
-    from faces.clusterer import ACTIVE_EMBEDDING_MODEL
     try:
         uri = pathlib.Path(db_path).resolve().as_uri() + "?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
         try:
-            rows = conn.execute(
-                "SELECT embedding_model, COUNT(*) FROM faces "
-                "WHERE embedding_model IS NOT NULL AND embedding_model != ? "
-                "GROUP BY embedding_model", (ACTIVE_EMBEDDING_MODEL,)).fetchall()
+            rows = mismatched_face_models(conn, active_model)
         finally:
             conn.close()
     except sqlite3.Error:
         return  # no faces table / unreadable DB: reported by the database section
     for model, count in rows:
-        _warn("Face embedding model",
-              f"{count:,} stored faces use '{model}' but the active model is "
-              f"'{ACTIVE_EMBEDDING_MODEL}' — re-extract faces or cluster per model")
+        _warn("Face embedding model", face_model_mismatch_message(model, count, active_model))
 
 
 def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=None):

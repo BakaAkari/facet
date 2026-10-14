@@ -894,6 +894,11 @@ class ChunkedMultiPassProcessor:
                 results[path]['face_confidence'] = face_res.get('max_face_confidence', 0)
                 results[path]['raw_eye_sharpness'] = face_res.get('raw_eye_sharpness', 0)
                 results[path]['face_details'] = face_res.get('face_details', [])
+                # Only the permissive analyzer reports a per-photo face quality
+                # (OFIQ); InsightFace's result has none, and an absent key must
+                # not overwrite the TOPIQ NR-Face value of a default-mode scan.
+                if face_res.get('face_quality_iqa') is not None:
+                    results[path]['face_quality_iqa'] = face_res['face_quality_iqa']
 
                 # Compute face_ratio
                 img_h, img_w = img_cv.shape[:2]

@@ -16,9 +16,12 @@ The DB is opened ``mode=ro`` and never written. Other waves add candidates with
 import json
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass
 from typing import Callable
+
+import numpy as np
 
 from optimization.eval_common import (
     append_partial,
@@ -31,6 +34,11 @@ from optimization.eval_common import (
     pairwise_agreement,
     partial_path,
     ro_connection,
+    size_bucket,
+    stratified_sample_rows,
+    match_boxes,
+    SIZE_BUCKETS,
+    pairwise_f1_grid,
 )
 
 logger = logging.getLogger("facet.model_eval")
@@ -46,10 +54,10 @@ SLOT_TARGET_COLUMNS = {
     'quality': 'quality_score',
     'face-quality': 'face_quality',
 }
-# Slots whose candidates (detectors / embedders) arrive with the permissive face pipeline.
-DEFERRED_SLOTS = ('faces-detect', 'faces-recognize')
+# Slots scored against the stored InsightFace faces, not against pairwise picks.
+FACE_REFERENCE_SLOTS = ('faces-detect', 'faces-recognize', 'faces-centroid', 'blink')
 END_TO_END = 'end-to-end'
-SLOTS = ('aesthetic', 'quality', 'faces-detect', 'faces-recognize', 'face-quality', END_TO_END)
+SLOTS = ('aesthetic', 'quality', 'faces-detect', 'faces-recognize', 'faces-centroid', 'blink', 'face-quality', END_TO_END)
 
 STORED_PREFIX = 'stored:'
 _BLOB_COLUMNS = frozenset({
@@ -69,7 +77,13 @@ class Candidate:
     name: str
     # StoredColumn, or ``factory(device) -> score(pil) -> float`` on the 0-10 scale.
     # A scorer may expose ``close()`` to release its model after the run.
+    # Face slots: ``factory(device, arg)`` builds a detector / embedder, ``arg`` being
+    # the number after ``@`` in ``yunet@0.8`` (None when the name has no ``@``).
     factory: object
+    arg: object = None
+
+    def variant(self, name, arg):
+        return Candidate(self.slot, name, self.factory, arg)
 
 
 _REGISTRY: dict[tuple[str, str], Candidate] = {}
@@ -204,6 +218,11 @@ def resolve_candidate(slot: str, name: str) -> Candidate:
     cand = _REGISTRY.get((slot, name))
     if cand is not None:
         return cand
+    if '@' in name and (slot, name.partition('@')[0]) in _REGISTRY:
+        base, _, arg = name.partition('@')
+        return _REGISTRY[(slot, base)].variant(name, _parse_variant(name, arg))
+    if slot == 'face-quality' and name == 'ofiq':
+        raise ValueError(_ofiq_unavailable_message())
     if name.startswith(STORED_PREFIX):
         return Candidate(slot, name, StoredColumn(name[len(STORED_PREFIX):]))
     known = ', '.join(c.name for c in registered_candidates(slot)) or '(none)'
@@ -376,14 +395,17 @@ def _default_candidates(slot):
     return [c.name for c in registered_candidates(slot)]
 
 
-def evaluate(db_path, slot, candidates=None, out=None, seed=DEFAULT_SEED, config_path=None, device=None):
-    """Run the evaluation and write the JSON report; returns the report dict."""
+def evaluate(db_path, slot, candidates=None, out=None, seed=DEFAULT_SEED, config_path=None, device=None,
+             limit=None):
+    """Run the evaluation and write the JSON report; returns the report dict.
+
+    ``limit`` only applies to the face slots (photos for faces-detect, reference
+    faces for faces-recognize).
+    """
     if slot not in SLOTS:
         raise ValueError(f"unknown slot {slot!r}; expected one of {SLOTS}")
-    if slot in DEFERRED_SLOTS:
-        raise NotImplementedError(
-            f"slot {slot!r} candidates are registered in W5 (permissive face pipeline); "
-            "nothing to evaluate yet")
+    if slot in FACE_REFERENCE_SLOTS:
+        return _evaluate_faces(db_path, slot, candidates, out, seed, limit)
     names = list(candidates) if candidates else _default_candidates(slot)
     if device is None:
         try:
@@ -471,3 +493,775 @@ def log_report(report):
         logger.info("%-34s %9s %17s %7d %6s %8s %8s %8s", name, fmt(r['agreement'], '.3f'), ci,
                     r['n_pairs'], fmt(r['coverage'], '.2f'), fmt(r['mean_latency_s'], '.2f'),
                     fmt(r['peak_vram_gb'], '.2f'), fmt(r['peak_rss_gb'], '.2f'))
+
+
+# ---------------------------------------------------------------------------
+# Face slots (faces-detect, faces-recognize)
+#
+# Scored against the stored InsightFace faces as the REFERENCE, which is only
+# meaningful on a default-mode (buffalo_l) library: the reference is the incumbent
+# model, not ground truth, so a match rate is agreement with InsightFace.
+# Neither slot writes anything; results go to the JSON report only.
+# ---------------------------------------------------------------------------
+
+REFERENCE_EMBEDDING_MODEL = 'arcface_buffalo_l'
+DEFAULT_DETECT_PHOTOS = 600
+DEFAULT_RECOGNIZE_FACES = 1200
+POSITIVE_SHARE = 0.7          # share of the detect sample drawn from photos with stored faces
+PER_PERSON_FACES = 8
+MIN_PERSON_FACES = 3
+IOU_MATCH = 0.5
+BLAZEFACE_MAX_SIDE = 1280
+DEFAULT_BLAZEFACE_CONFIDENCE = 0.5   # MediaPipe's own default
+DEFAULT_YUNET_CONFIDENCE = 0.7       # PermissiveFaceAnalyzer's constructor default
+# MediaPipe BlazeFace short-range, pinned to the versioned float16/1 URL like the
+# face landmarker. Apache-2.0 per the MediaPipe model card (not re-read from a
+# LICENSE file in this repo).
+BLAZEFACE_WEIGHTS_FILENAME = 'blaze_face_short_range.tflite'
+BLAZEFACE_WEIGHTS_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_detector/"
+    "blaze_face_short_range/float16/1/blaze_face_short_range.tflite")
+BLAZEFACE_WEIGHTS_SHA256 = "b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f"
+
+
+def default_threshold_grid():
+    """Cosine thresholds 0.20 .. 0.60 step 0.025 (17 points)."""
+    return [round(0.20 + 0.025 * i, 3) for i in range(17)]
+
+
+def _parse_variant(name, arg):
+    try:
+        return float(arg)
+    except ValueError:
+        raise ValueError(f"candidate {name!r}: the part after '@' must be a number") from None
+
+
+def _ofiq_unavailable_message():
+    import importlib.util
+    if importlib.util.find_spec('ofiq') is None:
+        return ("face-quality candidate 'ofiq' skipped: python-ofiq is not installed "
+                "(it is not on PyPI; see the commercial install notes)")
+    return "face-quality candidate 'ofiq': ofiq is importable but no adapter is wired yet (UNVERIFIED)"
+
+
+def _to_bgr(pil):
+    import cv2
+    return cv2.cvtColor(np.asarray(pil.convert('RGB')), cv2.COLOR_RGB2BGR)
+
+
+def _load_bgr(path):
+    pil = load_original(path)
+    return None if pil is None else _to_bgr(pil)
+
+
+def _yunet_detector_factory(device, conf):
+    from analyzers.face_permissive import _SCORE_COL, PermissiveFaceAnalyzer
+    an = PermissiveFaceAnalyzer(min_confidence=DEFAULT_YUNET_CONFIDENCE if conf is None else conf)
+    if not an.available or not an._ensure_models():
+        raise RuntimeError("YuNet is unavailable (OpenCV lacks FaceDetectorYN or the weights failed to load)")
+
+    def detect(img):
+        h, w = img.shape[:2]
+        out = []
+        for row in an._detect(img):
+            c = float(row[_SCORE_COL])
+            if c < an.min_confidence:
+                continue
+            x1, y1 = max(0.0, float(row[0])), max(0.0, float(row[1]))
+            x2, y2 = min(float(w), float(row[0] + row[2])), min(float(h), float(row[1] + row[3]))
+            if x2 - x1 < an.min_face_size or y2 - y1 < an.min_face_size:
+                continue
+            out.append((x1, y1, x2, y2, c))
+        return out
+    return detect
+
+
+def _blazeface_detector_factory(device, conf):
+    from pathlib import Path
+
+    import cv2
+    import mediapipe as mp
+    from mediapipe.tasks.python import vision
+    from mediapipe.tasks.python.core.base_options import BaseOptions
+
+    from models.weights import download_weights, pretrained_model_path
+    path = pretrained_model_path(BLAZEFACE_WEIGHTS_FILENAME)
+    if not path.exists():
+        download_weights(BLAZEFACE_WEIGHTS_URL, Path(path), BLAZEFACE_WEIGHTS_SHA256)
+    detector = vision.FaceDetector.create_from_options(vision.FaceDetectorOptions(
+        base_options=BaseOptions(model_asset_path=str(path)),
+        min_detection_confidence=DEFAULT_BLAZEFACE_CONFIDENCE if conf is None else conf))
+
+    def detect(img):
+        h, w = img.shape[:2]
+        scale = min(1.0, BLAZEFACE_MAX_SIDE / max(h, w))
+        small = img if scale >= 1.0 else cv2.resize(
+            img, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
+        rgb = np.ascontiguousarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
+        result = detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+        out = []
+        for d in result.detections:
+            b = d.bounding_box
+            x1, y1 = max(0.0, b.origin_x / scale), max(0.0, b.origin_y / scale)
+            x2 = min(float(w), (b.origin_x + b.width) / scale)
+            y2 = min(float(h), (b.origin_y + b.height) / scale)
+            out.append((x1, y1, x2, y2, float(d.categories[0].score)))
+        return out
+
+    detect.close = detector.close
+    return detect
+
+
+def _sface_embedder_factory(device, threshold):
+    """SFace embeddings of given reference boxes, aligned from YuNet's landmarks.
+
+    SFace's aligner needs the 5 landmarks only a detector provides, so each
+    reference box is matched (IoU >= 0.5) to a YuNet detection and a face YuNet
+    does not find yields ``None``: that is the production path, and the coverage
+    loss it causes is reported rather than hidden.
+    """
+    from analyzers.face_permissive import PermissiveFaceAnalyzer
+    an = PermissiveFaceAnalyzer()
+    if not an.available or not an._ensure_models():
+        raise RuntimeError("SFace/YuNet are unavailable (OpenCV lacks FaceRecognizerSF or the weights failed to load)")
+
+    def embed(img, bboxes):
+        rows = an._detect(img)
+        det = [(r[0], r[1], r[0] + r[2], r[1] + r[3]) for r in rows]
+        out = [None] * len(bboxes)
+        for i, j, _ in match_boxes(bboxes, det, IOU_MATCH):
+            out[i] = an._embed(img, rows[j])
+        return out
+    return embed
+
+
+def sample_detect_photos(conn, limit, seed):
+    """Seeded, aggregate-stratified ``[(path, [ref bbox, ...])]``: ~70% photos with stored
+    InsightFace faces, the rest photos with none (the false-positive pool)."""
+    pos = list(conn.execute(
+        "SELECT p.path, COALESCE(p.aggregate, 0) FROM photos p WHERE EXISTS ("
+        "SELECT 1 FROM faces f WHERE f.photo_path = p.path AND f.embedding_model = ? "
+        "AND f.bbox_x1 IS NOT NULL)", (REFERENCE_EMBEDDING_MODEL,)))
+    if not pos:
+        raise ValueError(f"no stored {REFERENCE_EMBEDDING_MODEL} faces: the InsightFace reference "
+                         "exists only on a default-mode library")
+    neg = list(conn.execute(
+        "SELECT p.path, COALESCE(p.aggregate, 0) FROM photos p WHERE COALESCE(p.face_count, 0) = 0 "
+        "AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.photo_path = p.path)"))
+    n_pos = round(limit * POSITIVE_SHARE)
+    chosen = (stratified_sample_rows(pos, n_pos, seed)
+              + stratified_sample_rows(neg, limit - n_pos, seed + 1))
+    chosen = sorted(p for p, _ in chosen)
+    refs = {}
+    for chunk in _chunks(chosen):
+        marks = ','.join('?' * len(chunk))
+        for path, x1, y1, x2, y2 in conn.execute(
+                "SELECT photo_path, bbox_x1, bbox_y1, bbox_x2, bbox_y2 FROM faces "
+                f"WHERE photo_path IN ({marks}) AND embedding_model = ? AND bbox_x1 IS NOT NULL "
+                "ORDER BY face_index", chunk + [REFERENCE_EMBEDDING_MODEL]):
+            refs.setdefault(path, []).append((x1, y1, x2, y2))
+    return [(p, refs.get(p, [])) for p in chosen]
+
+
+def score_face_detection(samples, loader, detectors):
+    """Run every detector over every sample photo, loading each photo once.
+
+    ``samples``: ``[(path, [ref bbox])]``; ``loader(path) -> BGR ndarray | None``;
+    ``detectors``: ``{name: detect(img) -> [(x1, y1, x2, y2, conf)]}``. A photo
+    whose reference boxes overrun the loaded frame by > 5% was analysed at another
+    resolution and is skipped (counted), as is an unreadable one.
+    """
+    acc = {n: {'ref': [], 'neg_hits': [], 'neg_dets': [], 'pos_extra': [], 'lat': []} for n in detectors}
+    skipped = {'unreadable': 0, 'size_mismatch': 0}
+    for path, refs in samples:
+        img = loader(path)
+        if img is None:
+            skipped['unreadable'] += 1
+            continue
+        h, w = img.shape[:2]
+        if any(r[2] > w * 1.05 or r[3] > h * 1.05 for r in refs):
+            skipped['size_mismatch'] += 1
+            continue
+        for name, detect in detectors.items():
+            t0 = time.monotonic()
+            dets = detect(img)
+            acc[name]['lat'].append(time.monotonic() - t0)
+            boxes = [d[:4] for d in dets]
+            if not refs:
+                acc[name]['neg_hits'].append(1.0 if dets else 0.0)
+                acc[name]['neg_dets'].append(len(dets))
+                continue
+            matched = {i for i, _, _ in match_boxes(refs, boxes, IOU_MATCH)}
+            for i, r in enumerate(refs):
+                acc[name]['ref'].append((size_bucket(r, w, h), 1.0 if i in matched else 0.0))
+            acc[name]['pos_extra'].append(len(boxes) - len(matched))
+    return acc, skipped
+
+
+def _rate(vals, seed):
+    lo, hi = bootstrap_ci(vals, seed=seed)
+    return {'rate': float(np.mean(vals)) if vals else None, 'ci_low': lo, 'ci_high': hi, 'n': len(vals)}
+
+
+def summarize_face_detection(acc, seed):
+    out = {}
+    for name, a in acc.items():
+        out[name] = {
+            'match_rate': _rate([v for _, v in a['ref']], seed),
+            'match_rate_by_size': {b: _rate([v for bk, v in a['ref'] if bk == b], seed) for b in SIZE_BUCKETS},
+            'false_positive_rate': _rate(a['neg_hits'], seed),
+            'mean_detections_per_empty_photo': float(np.mean(a['neg_dets'])) if a['neg_dets'] else None,
+            'mean_extra_detections_per_face_photo': float(np.mean(a['pos_extra'])) if a['pos_extra'] else None,
+            'mean_latency_s': float(np.mean(a['lat'])) if a['lat'] else None,
+        }
+    return out
+
+
+def _build_face_runners(slot, names, device):
+    """{name: callable} built from the registry (closed by the caller)."""
+    runners = {}
+    try:
+        for name in names:
+            cand = resolve_candidate(slot, name)
+            runners[name] = cand.factory(device, cand.arg)
+    except Exception:
+        _close_all(runners)
+        raise
+    return runners
+
+
+def _close_all(runners):
+    for fn in runners.values():
+        close = getattr(fn, 'close', None)
+        if close:
+            close()
+
+
+def _evaluate_faces(db_path, slot, candidates, out, seed, limit, loader=None, device=None):
+    names = list(candidates) if candidates else [c.name for c in registered_candidates(slot)]
+    if out is None:
+        out = os.path.join(DEFAULT_OUT_DIR, f"{slot}-{time.strftime('%Y%m%d-%H%M%S')}.json")
+    loader = loader or _load_bgr
+    device = device or 'cpu'
+    conn = ro_connection(db_path)
+    try:
+        if slot == 'blink':
+            report = _run_blink(conn, loader, seed, limit)
+        elif slot == 'faces-detect':
+            report = _run_faces_detect(conn, names, loader, device, seed, limit or DEFAULT_DETECT_PHOTOS)
+        elif slot == 'faces-centroid':
+            report = _run_faces_centroid(conn, names, loader, device, seed, limit or DEFAULT_RECOGNIZE_FACES)
+        else:
+            report = _run_faces_recognize(conn, names, loader, device, seed, limit or DEFAULT_RECOGNIZE_FACES)
+    finally:
+        conn.close()
+    report.update({'slot': slot, 'db': os.path.abspath(db_path), 'seed': seed,
+                   'reference': f'stored {REFERENCE_EMBEDDING_MODEL} faces (agreement, not ground truth)'})
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, 'w') as f:
+        json.dump(report, f, indent=2)
+    logger.info("Report written to %s", out)
+    return report
+
+
+def _pct(v):
+    return 'n/a' if v['rate'] is None else f"{v['rate']:.3f} [{v['ci_low']:.3f}, {v['ci_high']:.3f}]"
+
+
+def _run_faces_detect(conn, names, loader, device, seed, limit):
+    samples = sample_detect_photos(conn, limit, seed)
+    n_ref = sum(len(r) for _, r in samples)
+    logger.info("faces-detect: %d photos (%d with stored faces, %d reference faces)",
+                len(samples), sum(1 for _, r in samples if r), n_ref)
+    detectors = _build_face_runners('faces-detect', names, device)
+    try:
+        with measure() as run_stats:
+            acc, skipped = score_face_detection(samples, loader, detectors)
+    finally:
+        _close_all(detectors)
+    summary = summarize_face_detection(acc, seed)
+    for name, r in summary.items():
+        lat = r['mean_latency_s']
+        logger.info("%-14s match %s  fp %s  lat %s s", name, _pct(r['match_rate']),
+                    _pct(r['false_positive_rate']), 'n/a' if lat is None else f'{lat:.3f}')
+        for b, v in r['match_rate_by_size'].items():
+            logger.info("    %-5s %s (n=%d)", b, _pct(v), v['n'])
+    return {'n_photos': len(samples), 'n_reference_faces': n_ref, 'skipped': skipped,
+            'candidates': summary,
+            # one shared pass over all detectors, so memory is for the whole run
+            'peak_vram_gb_shared_run': run_stats.get('peak_vram_gb'),
+            'peak_rss_gb_shared_run': run_stats.get('peak_rss_gb')}
+
+
+def sample_recognize_faces(conn, limit, seed):
+    """Seeded ``{path: [(bbox, person_id, named)]}`` capped at ``limit`` faces.
+
+    Named persons (>= 3 faces) first, each contributing up to ``PER_PERSON_FACES``
+    faces; unnamed InsightFace clusters top the sample up to the cap.
+    """
+    rows = list(conn.execute(
+        "SELECT f.photo_path, f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2, f.person_id, "
+        "(p.name IS NOT NULL AND p.name != '') FROM faces f JOIN persons p ON p.id = f.person_id "
+        "WHERE f.embedding_model = ? AND f.bbox_x1 IS NOT NULL ORDER BY f.id", (REFERENCE_EMBEDDING_MODEL,)))
+    by_person = {}
+    for path, x1, y1, x2, y2, pid, named in rows:
+        by_person.setdefault(pid, {'named': bool(named), 'faces': []})['faces'].append((path, (x1, y1, x2, y2)))
+    rng = random.Random(seed)
+    groups = {True: [], False: []}
+    for pid in sorted(by_person):
+        if len(by_person[pid]['faces']) >= MIN_PERSON_FACES:
+            groups[by_person[pid]['named']].append(pid)
+    chosen, total = [], 0
+    for named in (True, False):
+        rng.shuffle(groups[named])
+        for pid in groups[named]:
+            if total >= limit:
+                break
+            faces = by_person[pid]['faces']
+            take = rng.sample(faces, min(PER_PERSON_FACES, len(faces), limit - total))
+            if len(take) < MIN_PERSON_FACES:
+                continue
+            chosen.append((pid, named, take))
+            total += len(take)
+    if not chosen:
+        raise ValueError(f"no {REFERENCE_EMBEDDING_MODEL} persons with >= {MIN_PERSON_FACES} faces")
+    photos = {}
+    for pid, named, take in chosen:
+        for path, bbox in take:
+            photos.setdefault(path, []).append((bbox, pid, named))
+    return photos
+
+
+def collect_embeddings(photos, loader, embed):
+    """(emb NxD L2-normalised, person ids, named flags, stats) for the faces ``embed`` could embed."""
+    vecs, pids, named_flags = [], [], []
+    n_req = n_unreadable = 0
+    lat = []
+    for path in sorted(photos):
+        items = photos[path]
+        n_req += len(items)
+        img = loader(path)
+        if img is None:
+            n_unreadable += len(items)
+            continue
+        t0 = time.monotonic()
+        result = embed(img, [b for b, _, _ in items])
+        lat.append((time.monotonic() - t0) / len(items))
+        for (_, pid, named), vec in zip(items, result):
+            if vec is None:
+                continue
+            v = np.asarray(vec, dtype=np.float32).reshape(-1)
+            n = float(np.linalg.norm(v))
+            vecs.append(v / n if n > 0 else v)
+            pids.append(pid)
+            named_flags.append(named)
+    emb = np.stack(vecs) if vecs else np.zeros((0, 0), np.float32)
+    stats = {'n_requested': n_req, 'n_embedded': len(vecs), 'n_unreadable': n_unreadable,
+             'mean_latency_per_face_s': float(np.mean(lat)) if lat else None}
+    return emb, np.asarray(pids), np.asarray(named_flags, dtype=bool), stats
+
+
+def _usable(labels, mask=None):
+    """Mask keeping only faces whose person still has >= 2 embedded faces (within ``mask``)."""
+    keep = np.ones(len(labels), bool) if mask is None else mask.copy()
+    ids, counts = np.unique(labels[keep], return_counts=True)
+    ok = set(ids[counts >= 2].tolist())
+    return keep & np.array([x in ok for x in labels.tolist()], dtype=bool)
+
+
+def _boot_f1(match, same, weights):
+    """F1 at one threshold for a face-resampled population (``weights`` = multiplicities)."""
+    w = weights.astype(np.float64)
+    tp = float(w @ (match & same).astype(np.float64) @ w) / 2
+    n_pred = float(w @ match.astype(np.float64) @ w) / 2
+    n_same = float(w @ same.astype(np.float64) @ w) / 2
+    if tp == 0 or n_pred == 0 or n_same == 0:
+        return 0.0
+    p, r = tp / n_pred, tp / n_same
+    return 2 * p * r / (p + r)
+
+
+def sweep_recognition(emb, labels, grid, seed, n_boot=200):
+    """Pairwise same-person grid, best-F1 point with a face-bootstrap CI, 1-NN accuracy, ARI."""
+    n = len(labels)
+    if n < 3:
+        return {'n_faces': n, 'grid': [], 'best': None}
+    sim = emb @ emb.T
+    rows = pairwise_f1_grid(sim, labels, grid)
+    best = max(rows, key=lambda r: (r['f1'], -r['threshold']))
+    same = labels[:, None] == labels[None, :]
+    np.fill_diagonal(same, False)
+    match = sim >= best['threshold']
+    np.fill_diagonal(match, False)
+    rng = np.random.default_rng(seed)
+    f1s = [_boot_f1(match, same, np.bincount(rng.integers(0, n, n), minlength=n)) for _ in range(n_boot)]
+    lo, hi = np.percentile(f1s, [2.5, 97.5])
+    s2 = sim.copy()
+    np.fill_diagonal(s2, -np.inf)
+    nn_acc = float(np.mean(labels[np.argmax(s2, axis=1)] == labels))
+    from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import squareform
+    from sklearn.metrics import adjusted_rand_score
+    dist = np.clip(1.0 - sim, 0.0, None)
+    np.fill_diagonal(dist, 0.0)
+    clusters = fcluster(linkage(squareform(dist, checks=False), 'average'),
+                        t=1.0 - best['threshold'], criterion='distance')
+    return {'n_faces': n, 'n_persons': int(len(np.unique(labels))), 'grid': rows,
+            'best': dict(best, f1_ci_low=float(lo), f1_ci_high=float(hi)),
+            'nearest_neighbour_same_person_accuracy': nn_acc,
+            'cluster_ari_at_best_threshold': float(adjusted_rand_score(labels, clusters)),
+            'n_clusters_at_best_threshold': int(len(np.unique(clusters)))}
+
+
+def _run_faces_recognize(conn, names, loader, device, seed, limit):
+    photos = sample_recognize_faces(conn, limit, seed)
+    logger.info("faces-recognize: %d reference faces over %d photos",
+                sum(len(v) for v in photos.values()), len(photos))
+    base_cache, results = {}, {}
+    for name in names:
+        cand = resolve_candidate('faces-recognize', name)
+        base = name.partition('@')[0]
+        grid = default_threshold_grid()
+        if cand.arg is not None and round(cand.arg, 6) not in grid:
+            grid = sorted(grid + [round(cand.arg, 6)])
+        if base not in base_cache:
+            embed = cand.factory(device, None)
+            try:
+                with measure() as run_stats:
+                    collected = collect_embeddings(photos, loader, embed)
+            finally:
+                close = getattr(embed, 'close', None)
+                if close:
+                    close()
+            base_cache[base] = collected + (run_stats,)
+        emb, pids, named, stats, run_stats = base_cache[base]
+        keep = _usable(pids)
+        full = sweep_recognition(emb[keep], pids[keep], grid, seed)
+        named_keep = _usable(pids, named)
+        named_only = sweep_recognition(emb[named_keep], pids[named_keep], grid, seed)
+        entry = dict(stats, peak_vram_gb=run_stats.get('peak_vram_gb'), peak_rss_gb=run_stats.get('peak_rss_gb'),
+                     all_persons=full, named_persons_only=named_only)
+        if cand.arg is not None and full['grid']:
+            entry['operating_point'] = next(r for r in full['grid'] if r['threshold'] == round(cand.arg, 6))
+        results[name] = entry
+        b = full['best']
+        if b:
+            logger.info("%s: best threshold %.3f  F1 %.3f [%.3f, %.3f]  P %.3f R %.3f  (%d faces, %d persons)",
+                        name, b['threshold'], b['f1'], b['f1_ci_low'], b['f1_ci_high'], b['precision'],
+                        b['recall'], full['n_faces'], full['n_persons'])
+    return {'n_reference_faces': sum(len(v) for v in photos.values()), 'n_photos': len(photos),
+            'candidates': results}
+
+
+# ---------------------------------------------------------------------------
+# faces-centroid slot: the quantities merge_threshold / auto_merge_distance_percent gate
+#
+# merge_threshold compares a cluster MEAN with a person CENTROID, so a face-to-face
+# F1 sweep (faces-recognize) calibrates the wrong object. Here each reference person
+# with >= 4 faces is split into two seeded random halves and each half becomes a unit
+# centroid: same-person pairs are the two halves of one person, different-person pairs
+# are half A of one person against half B of another.
+# auto_merge_distance_percent becomes HDBSCAN's cluster_selection_epsilon (euclidean
+# sqrt(2 * d) on unit vectors, i.e. a face-to-face cosine DISTANCE d); the proxy
+# measured is the share of different-person face pairs within distance d.
+# ---------------------------------------------------------------------------
+
+CENTROID_MIN_FACES = 4
+CENTROID_ARCFACE_REFERENCE_THRESHOLD = 0.6      # shipped ArcFace merge_threshold
+CENTROID_ARCFACE_REFERENCE_DISTANCE = 0.15      # shipped auto_merge_distance_percent / 100
+
+
+def centroid_threshold_grid():
+    """Cosine thresholds 0.30 .. 0.80 step 0.025 (21 points)."""
+    return [round(0.30 + 0.025 * i, 3) for i in range(21)]
+
+
+def centroid_distance_grid():
+    """Cosine distances 0.05 .. 0.80 step 0.025 (31 points)."""
+    return [round(0.05 + 0.025 * i, 3) for i in range(31)]
+
+
+def half_centroids(emb, labels, seed):
+    """(A, B, person ids): unit centroids of two random halves of each person with >= 4 faces."""
+    rng = np.random.default_rng(seed)
+    a_rows, b_rows, ids = [], [], []
+    for pid in sorted(np.unique(labels).tolist()):
+        idx = np.flatnonzero(labels == pid)
+        if len(idx) < CENTROID_MIN_FACES:
+            continue
+        idx = rng.permutation(idx)
+        h = len(idx) // 2
+        pair = []
+        for part in (idx[:h], idx[h:]):
+            c = emb[part].mean(0)
+            n = float(np.linalg.norm(c))
+            pair.append(c / n if n > 0 else c)
+        a_rows.append(pair[0])
+        b_rows.append(pair[1])
+        ids.append(pid)
+    if not ids:
+        return np.zeros((0, 0), np.float32), np.zeros((0, 0), np.float32), []
+    return np.stack(a_rows), np.stack(b_rows), ids
+
+
+def centroid_sweep(emb, labels, grid, seed):
+    """Per threshold: same-person recall, different-person pairs above it, precision, F1, false-merge rate."""
+    A, B, ids = half_centroids(emb, labels, seed)
+    n = len(ids)
+    if n < 2:
+        return {'n_persons': n, 'grid': []}
+    S = A @ B.T
+    same = np.diag(S)
+    diff = S[~np.eye(n, dtype=bool)]
+    rows = []
+    for t in grid:
+        tp = int((same >= t).sum())
+        fp = int((diff >= t).sum())
+        p = tp / (tp + fp) if (tp + fp) else 0.0
+        r = tp / n
+        rows.append({'threshold': round(float(t), 6), 'same_recall': r, 'diff_pairs_above': fp,
+                     'false_merge_rate': fp / len(diff), 'precision': p,
+                     'f1': 2 * p * r / (p + r) if (p + r) else 0.0})
+    return {'n_persons': n, 'n_same_pairs': n, 'n_diff_pairs': int(len(diff)), 'grid': rows,
+            'same_p5': float(np.percentile(same, 5)), 'same_median': float(np.median(same)),
+            'diff_p99': float(np.percentile(diff, 99)), 'diff_max': float(diff.max())}
+
+
+def face_distance_sweep(emb, labels, grid):
+    """Per cosine distance d: share of different-person face pairs within d, and same-person recall."""
+    sim = emb @ emb.T
+    iu, ju = np.triu_indices(len(labels), k=1)
+    s = sim[iu, ju]
+    same = labels[iu] == labels[ju]
+    n_same, n_diff = int(same.sum()), int((~same).sum())
+    if not n_same or not n_diff:
+        return []
+    return [{'distance': round(float(d), 6), 'false_merge_rate': float((s[~same] >= 1 - d).sum()) / n_diff,
+             'diff_pairs_within': int((s[~same] >= 1 - d).sum()),
+             'same_recall': float((s[same] >= 1 - d).sum()) / n_same} for d in grid]
+
+
+def choose_centroid_threshold(sface_rows, arcface_rows, ref=CENTROID_ARCFACE_REFERENCE_THRESHOLD):
+    """Pre-registered rule: smallest grid threshold whose SFace false-merge rate <= ArcFace's at ``ref``.
+
+    Thresholds are scanned ascending, so the first hit already has the highest recall of any
+    qualifying threshold (recall is non-increasing in the threshold); a tie in rate never
+    needs a separate break.
+    """
+    target = next(r for r in arcface_rows if abs(r['threshold'] - ref) < 1e-9)['false_merge_rate']
+    for r in sorted(sface_rows, key=lambda r: r['threshold']):
+        if r['false_merge_rate'] <= target:
+            return {'threshold': r['threshold'], 'arcface_target_rate': target, 'row': r}
+    return {'threshold': None, 'arcface_target_rate': target, 'row': None}
+
+
+def choose_auto_merge_distance(sface_rows, arcface_rows, ref=CENTROID_ARCFACE_REFERENCE_DISTANCE):
+    """Largest SFace distance whose false-merge rate is <= ArcFace's at ``ref`` (same rate, most recall)."""
+    target = next(r for r in arcface_rows if abs(r['distance'] - ref) < 1e-9)['false_merge_rate']
+    ok = [r for r in sface_rows if r['false_merge_rate'] <= target]
+    best = max(ok, key=lambda r: r['distance']) if ok else None
+    return {'distance': best['distance'] if best else None, 'arcface_target_rate': target, 'row': best}
+
+
+def stored_arcface(conn, keys):
+    """Stored 512-d ArcFace vectors (unit) for ``[(path, bbox)]`` keys, in order; None where missing."""
+    out = []
+    for path, (x1, y1, x2, y2) in keys:
+        row = conn.execute(
+            "SELECT embedding FROM faces WHERE photo_path = ? AND embedding_model = ? "
+            "AND bbox_x1 = ? AND bbox_y1 = ? AND bbox_x2 = ? AND bbox_y2 = ? LIMIT 1",
+            (path, REFERENCE_EMBEDDING_MODEL, x1, y1, x2, y2)).fetchone()
+        if not row or row[0] is None:
+            out.append(None)
+            continue
+        v = np.frombuffer(row[0], dtype=np.float32).copy()
+        n = float(np.linalg.norm(v))
+        out.append(v / n if n > 0 else v)
+    return out
+
+
+def _run_faces_centroid(conn, names, loader, device, seed, limit):
+    photos = sample_recognize_faces(conn, limit, seed)
+    cand = resolve_candidate('faces-recognize', 'sface')
+    keys = []
+
+    def keyed_loader(path):
+        keyed_loader.path = path
+        return loader(path)
+
+    base_embed = cand.factory(device, None)
+
+    def embed(img, boxes):
+        result = base_embed(img, boxes)
+        keys.extend((keyed_loader.path, b) for b, v in zip(boxes, result) if v is not None)
+        return result
+
+    try:
+        emb, pids, named, stats = collect_embeddings(photos, keyed_loader, embed)
+    finally:
+        close = getattr(base_embed, 'close', None)
+        if close:
+            close()
+    arc = stored_arcface(conn, keys)
+    have = np.array([v is not None for v in arc], dtype=bool)
+    spaces = {'sface': emb, 'arcface': np.stack([v for v in arc if v is not None]) if have.any() else emb[:0]}
+    results = {}
+    for scope, mask in (('all_persons', np.ones(len(pids), bool)), ('named_persons_only', named)):
+        m = mask & have
+        keep = _usable(pids, m)
+        scope_res = {}
+        for model, space in spaces.items():
+            full = np.zeros((len(pids), space.shape[1]), np.float32) if len(space) else space
+            if model == 'arcface':
+                full[have] = space
+            else:
+                full = space
+            e, lab = full[keep], pids[keep]
+            scope_res[model] = {
+                'n_faces': int(keep.sum()),
+                'centroid': centroid_sweep(e, lab, centroid_threshold_grid(), seed),
+                'face_distance': face_distance_sweep(e, lab, centroid_distance_grid())}
+        results[scope] = scope_res
+    allres = results['all_persons']
+    chosen = {
+        'merge_threshold': choose_centroid_threshold(allres['sface']['centroid']['grid'],
+                                                      allres['arcface']['centroid']['grid']),
+        'auto_merge_distance': choose_auto_merge_distance(allres['sface']['face_distance'],
+                                                           allres['arcface']['face_distance'])}
+    for k, v in chosen.items():
+        logger.info("faces-centroid %s: sface=%s (ArcFace target rate %.5f)", k,
+                    v.get('threshold', v.get('distance')), v['arcface_target_rate'])
+    return dict(stats, n_reference_faces=sum(len(v) for v in photos.values()), n_photos=len(photos),
+                results=results, chosen=chosen)
+
+
+# ---------------------------------------------------------------------------
+# blink slot: MediaPipe eyeBlink blendshapes vs the stored InsightFace is_blink
+# ---------------------------------------------------------------------------
+
+def blink_threshold_grid():
+    """0.30 .. 0.80 step 0.05 (11 points)."""
+    return [round(0.30 + 0.05 * i, 2) for i in range(11)]
+
+
+def sample_blink_faces(conn, limit, seed):
+    """``[(path, bbox, label)]``: every single-face photo with ``is_blink = 1`` (capped by
+    ``limit`` when given) plus an equal number of ``is_blink = 0`` ones, aggregate-stratified.
+
+    The faces table stores no per-face blink label, so the reference is the photo-level
+    ``is_blink`` and only photos with exactly one stored face are usable.
+    """
+    rows = list(conn.execute(
+        "SELECT p.path, p.is_blink, COALESCE(p.aggregate, 0), f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2 "
+        "FROM photos p JOIN faces f ON f.photo_path = p.path "
+        "WHERE p.is_blink IN (0, 1) AND f.embedding_model = ? AND f.bbox_x1 IS NOT NULL "
+        "AND (SELECT COUNT(*) FROM faces g WHERE g.photo_path = p.path AND g.embedding_model = ?) = 1 "
+        "ORDER BY p.path", (REFERENCE_EMBEDDING_MODEL, REFERENCE_EMBEDDING_MODEL)))
+    if not rows:
+        raise ValueError(f"no single-face photos with {REFERENCE_EMBEDDING_MODEL} faces and a stored is_blink")
+    box = {r[0]: (r[3], r[4], r[5], r[6]) for r in rows}
+    pos = [(r[0], r[2]) for r in rows if r[1] == 1]
+    neg = [(r[0], r[2]) for r in rows if r[1] == 0]
+    n_pos = min(len(pos), limit) if limit else len(pos)
+    n_neg = min(len(neg), n_pos)
+    chosen = ([(p, 1) for p, _ in stratified_sample_rows(pos, n_pos, seed)]
+              + [(p, 0) for p, _ in stratified_sample_rows(neg, n_neg, seed + 1)])
+    return [(p, box[p], lab) for p, lab in sorted(chosen)]
+
+
+def blink_grid(scores, labels, grid):
+    """Precision / recall / F1 of "score >= t" against ``labels`` for each t (unknowns excluded upstream)."""
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=bool)
+    rows = []
+    for t in grid:
+        pred = scores >= t
+        tp = int(np.sum(pred & labels))
+        fp = int(np.sum(pred & ~labels))
+        fn = int(np.sum(~pred & labels))
+        p = tp / (tp + fp) if tp + fp else 0.0
+        r = tp / (tp + fn) if tp + fn else 0.0
+        rows.append({'threshold': t, 'precision': p, 'recall': r,
+                     'f1': 2 * p * r / (p + r) if p + r else 0.0, 'tp': tp, 'fp': fp, 'fn': fn})
+    return rows
+
+
+def sweep_blink(scores, labels, grid, seed, n_boot=1000):
+    """Grid, best-F1 row (ties go to the lower threshold) and bootstrap CIs of its F1 and of
+    the best threshold itself (the argmax re-taken on each resample)."""
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=bool)
+    n = len(labels)
+    if n == 0 or not labels.any():
+        return {'n': n, 'grid': [], 'best': None}
+    rows = blink_grid(scores, labels, grid)
+    best = max(rows, key=lambda r: (r['f1'], -r['threshold']))
+    rng = np.random.default_rng(seed)
+    f1_at_best, argmax_t = [], []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        if not labels[idx].any():
+            continue
+        br = blink_grid(scores[idx], labels[idx], grid)
+        f1_at_best.append(next(r['f1'] for r in br if r['threshold'] == best['threshold']))
+        argmax_t.append(max(br, key=lambda r: (r['f1'], -r['threshold']))['threshold'])
+    lo, hi = np.percentile(f1_at_best, [2.5, 97.5])
+    tlo, thi = np.percentile(argmax_t, [2.5, 97.5])
+    return {'n': n, 'n_positive': int(labels.sum()), 'base_rate': float(labels.mean()), 'grid': rows,
+            'best': dict(best, f1_ci_low=float(lo), f1_ci_high=float(hi),
+                         threshold_ci_low=float(tlo), threshold_ci_high=float(thi))}
+
+
+def _blink_scorer_factory():
+    """``score(img, bbox) -> (left, right) | None`` through PermissiveFaceAnalyzer's own crop + mesh path."""
+    from analyzers.face_permissive import PermissiveFaceAnalyzer
+    an = PermissiveFaceAnalyzer(enable_blendshapes=True)
+
+    def score(img, bbox):
+        res = an._mesh_analysis(img, np.asarray(bbox).astype(int))
+        if res is None:
+            return None
+        names = res[2]
+        return float(names['eyeBlinkLeft']), float(names['eyeBlinkRight'])
+    return score
+
+
+def _run_blink(conn, loader, seed, limit, scorer=None):
+    samples = sample_blink_faces(conn, limit, seed)
+    scorer = scorer or _blink_scorer_factory()
+    logger.info("blink: %d faces (%d blink-positive)", len(samples), sum(s[2] for s in samples))
+    mx, mean, labels = [], [], []
+    unknown = unreadable = 0
+    for i, (path, bbox, label) in enumerate(samples):
+        if i % 50 == 0:
+            logger.info("blink: %d/%d", i, len(samples))
+        img = loader(path)
+        if img is None:
+            unreadable += 1
+            continue
+        res = scorer(img, bbox)
+        if res is None:
+            unknown += 1
+            continue
+        mx.append(max(res))
+        mean.append(float(np.mean(res)))
+        labels.append(label)
+    grid = blink_threshold_grid()
+    out = {'n_sampled': len(samples), 'n_mesh_failed': unknown, 'n_unreadable': unreadable,
+           'sampling': 'all blink-positive single-face photos (capped by limit) + equal negatives, stratified',
+           'reference_note': 'photo-level is_blink on single-face photos (faces table has no blink label)',
+           'max_blink': sweep_blink(mx, labels, grid, seed),
+           'mean_blink': sweep_blink(mean, labels, grid, seed)}
+    for key in ('max_blink', 'mean_blink'):
+        for r in out[key]['grid']:
+            logger.info("%s t=%.2f P %.3f R %.3f F1 %.3f", key, r['threshold'], r['precision'], r['recall'], r['f1'])
+    return out
+
+
+def _register_face_candidates():
+    register_candidate('faces-detect', 'yunet', _yunet_detector_factory)
+    register_candidate('faces-detect', 'blazeface', _blazeface_detector_factory)
+    register_candidate('faces-recognize', 'sface', _sface_embedder_factory)
+
+
+_register_face_candidates()

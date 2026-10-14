@@ -108,7 +108,8 @@ class TestContract:
         reference = _insightface_contract()
         analyzer, *_ = _analyzer(monkeypatch, [_row(100, 100, 120, 140, 0.95)], 640)
         result = analyzer.analyze_faces(_textured())
-        assert set(result) == set(reference)
+        # face_quality_iqa (OFIQ) is the one result key only this analyzer reports
+        assert set(result) == set(reference) | {'face_quality_iqa'}
         assert set(result['face_details'][0]) == (
             set(reference['face_details'][0]) | {'embedding_model'})
 
@@ -117,7 +118,7 @@ class TestContract:
         reference.available = False
         expected = reference.analyze_faces(_textured())
         analyzer, *_ = _analyzer(monkeypatch, [], 640)
-        assert analyzer.analyze_faces(_textured()) == expected
+        assert analyzer.analyze_faces(_textured()) == {**expected, 'face_quality_iqa': None}
 
     def test_class_attributes(self):
         assert PermissiveFaceAnalyzer.embedding_model == 'sface'
@@ -145,7 +146,8 @@ class TestAnalyze:
         assert result['face_area'] == 100 * 120 + 80 * 100
         assert result['is_group_portrait'] == 0
         assert result['face_quality'] == pytest.approx(round(0.7 * 8.0 + 0.3 * 8.5, 2), abs=0.02)
-        assert result['is_blink'] == 0
+        # no mesh -> blink was not measured: unknown (None), never "eyes open" (0)
+        assert result['is_blink'] is None
         for detail in result['face_details']:
             emb = np.frombuffer(detail['embedding'], dtype=np.float32)
             assert emb.shape == (128,)
@@ -196,7 +198,7 @@ class TestAnalyze:
         result = analyzer.analyze_faces(_textured())
         detail = result['face_details'][0]
         assert detail['eyes_open_score'] is None and detail['smile_score'] is None
-        assert result['is_blink'] == 0
+        assert result['is_blink'] is None
         assert result['raw_eye_sharpness'] > 0  # keypoint fallback patches
 
 
@@ -239,3 +241,9 @@ def test_real_models_smoke():
             assert np.linalg.norm(emb) == pytest.approx(1.0, abs=1e-4)
         found += result['face_count']
     assert found >= 1
+
+
+def test_default_blink_threshold_is_the_w8_measured_optimum():
+    from analyzers.face_permissive import DEFAULT_BLINK_THRESHOLD
+    # D33: base-rate-weighted choice (was 0.35, the unweighted max-F1 point)
+    assert DEFAULT_BLINK_THRESHOLD == 0.55

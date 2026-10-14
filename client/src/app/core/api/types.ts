@@ -25,3 +25,5 @@ export type DownloadOption = components['schemas']['DownloadOption'];
 export type LightroomImportResponse = components['schemas']['LightroomImportResponse'];
 
 export type LightroomManifest = components['schemas']['LightroomManifest'];
+
+export type MergeSuggestionsResponse = components['schemas']['MergeSuggestionsResponse'];

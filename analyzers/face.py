@@ -181,8 +181,12 @@ class FaceAnalyzer:
 
             # Eye sharpness using 106-point landmarks
             eye_score = 0
-            if hasattr(face, 'landmark_2d_106'):
-                l_eye, r_eye = face.landmark_2d_106[38], face.landmark_2d_106[92]
+            # hasattr is always True on an InsightFace Face (a dict whose missing
+            # keys read as None), so test the value: a face with no landmarks
+            # must score 0 here, not raise on None[38].
+            landmarks_106 = getattr(face, 'landmark_2d_106', None)
+            if landmarks_106 is not None:
+                l_eye, r_eye = landmarks_106[38], landmarks_106[92]
                 eye_dist = np.linalg.norm(l_eye - r_eye)
                 offset = int(eye_dist * 0.15)
 
@@ -479,7 +483,7 @@ class FaceAnalyzer:
         sufficiently turned (|yaw|>35° or |pitch|>35°), EAR becomes
         unreliable due to foreshortening — bail out instead of guessing.
         """
-        if not hasattr(face, 'landmark_2d_106'):
+        if getattr(face, 'landmark_2d_106', None) is None:
             return False
 
         if self.enable_3d_landmarks and hasattr(face, 'pose') and face.pose is not None:

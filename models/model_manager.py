@@ -75,13 +75,29 @@ def build_face_analyzer(config, device):
 
 def build_permissive_face_analyzer(config):
     """Build the permissive (commercial-safe) face analyzer, the commercial twin of
-    :func:`build_face_analyzer`.
+    :func:`build_face_analyzer` (YuNet + SFace + optional MediaPipe).
 
-    Commercial mode never builds InsightFace. Its replacement (YuNet + SFace +
-    MediaPipe) arrives in a later wave, so until then this refuses loudly: a
-    commercial scan with no face stage must stop, not write face-less rows.
+    The detection thresholds come from the same ``face_detection`` settings, so
+    both analyzers agree on what counts as a face. It reports
+    ``available = False`` rather than raising when OpenCV lacks the YuNet/SFace
+    classes.
     """
-    raise NotImplementedError("permissive face pipeline arrives in W5")
+    licensing.require('yunet')
+    from analyzers.face_permissive import PermissiveFaceAnalyzer
+
+    face_settings = config.get_face_detection_settings()
+    face_proc_settings = config.get_face_processing_settings()
+    blendshape_settings = face_settings.get('blendshapes', {})
+    return PermissiveFaceAnalyzer(
+        'cpu',
+        min_confidence=face_settings.get('min_confidence_percent', 70) / 100,
+        min_face_size=face_settings.get('min_face_size', 30),
+        thumbnail_size=face_proc_settings.get('face_thumbnail_size', 128),
+        thumbnail_quality=face_proc_settings.get('face_thumbnail_quality', 85),
+        min_faces_for_group=face_settings.get('min_faces_for_group', 4),
+        enable_blendshapes=blendshape_settings.get('enabled', True),
+        blendshape_min_crop=blendshape_settings.get('min_crop_size', 192),
+    )
 
 
 class ModelManager:
@@ -737,9 +753,9 @@ class ModelManager:
     def _load_faces_permissive(self):
         """Load the permissive face analyzer the commercial ``faces_permissive`` pass runs.
 
-        ``NotImplementedError`` from the factory is deliberately not swallowed:
-        a commercial scan with no face stage must stop, not return None and
-        record a retryable chunk failure.
+        A licence refusal is deliberately not swallowed: a commercial scan with
+        no face stage must stop, not return None and record a retryable chunk
+        failure.
         """
         licensing.require('yunet')
         if 'faces_permissive' in self.models:
@@ -750,7 +766,7 @@ class ModelManager:
             analyzer = build_permissive_face_analyzer(self.config)
             self.models['faces_permissive'] = analyzer
             return analyzer
-        except (LicenceError, NotImplementedError):
+        except LicenceError:
             raise
         except Exception as e:
             logger.error("Failed to load the permissive face analyzer: %s", e)

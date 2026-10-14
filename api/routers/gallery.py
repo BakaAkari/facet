@@ -1507,11 +1507,14 @@ def _find_similar_color(conn, source, photo_path, min_similarity, vis_sql, vis_p
 def _find_similar_person(conn, source, photo_path, min_similarity, vis_sql, vis_params, user_id=None):
     """Find photos containing the same person(s) via person_id or face embedding cosine."""
     import numpy as np
+    from db.embedding_space import (
+        active_embedding_model, expected_dim, model_filter_sql, tag_matches,
+    )
     from utils.embedding import bytes_to_normalized_embedding
 
     # Get faces for source photo
     faces = conn.execute(
-        "SELECT id, person_id, embedding FROM faces WHERE photo_path = ?",
+        "SELECT id, person_id, embedding, embedding_model FROM faces WHERE photo_path = ?",
         [photo_path],
     ).fetchall()
 
@@ -1539,10 +1542,17 @@ def _find_similar_person(conn, source, photo_path, min_similarity, vis_sql, vis_
         results.sort(key=lambda x: x.get('date_taken') or '', reverse=True)
         return results[:500], None
 
-    # Slow path: cosine similarity on face embeddings
+    # Slow path: cosine similarity on face embeddings. Only the active model's
+    # space is compared: a dot product across models is meaningless (and across
+    # lengths, an error).
+    model = active_embedding_model()
+    dim = expected_dim(model)
+    model_sql, model_params = model_filter_sql(model, 'f.embedding_model')
     src_embeddings = []
     for f in faces:
-        e = bytes_to_normalized_embedding(f['embedding'])
+        if not tag_matches(f['embedding_model'], model):
+            continue
+        e = bytes_to_normalized_embedding(f['embedding'], dim)
         if e is not None:
             src_embeddings.append(e)
 
@@ -1553,15 +1563,15 @@ def _find_similar_person(conn, source, photo_path, min_similarity, vis_sql, vis_
         SELECT f.photo_path as path, f.embedding, p.filename, p.date_taken, p.aggregate, p.aesthetic
         FROM faces f
         JOIN photos p ON p.path = f.photo_path
-        WHERE f.photo_path != ? AND f.embedding IS NOT NULL AND {p_vis_sql}
+        WHERE f.photo_path != ? AND f.embedding IS NOT NULL AND {model_sql} AND {p_vis_sql}
         LIMIT 50000
-    """, [photo_path] + p_vis_params).fetchall()
+    """, [photo_path] + model_params + p_vis_params).fetchall()
 
     # Group best similarity per photo
     photo_sims: dict = {}
     for r in all_faces:
         r = dict(r)
-        cand_emb = bytes_to_normalized_embedding(r['embedding'])
+        cand_emb = bytes_to_normalized_embedding(r['embedding'], dim)
         if cand_emb is None:
             continue
         best = max(float(np.dot(src_e, cand_emb)) for src_e in src_embeddings)

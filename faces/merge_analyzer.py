@@ -1,41 +1,28 @@
 """Analyze person clusters to find potential merge candidates."""
 import logging
 import numpy as np
-from db import get_connection, person_not_hidden_clause
+from db import get_connection
+from db.person_centroids import load_person_centroids
 from utils.union_find import UnionFind
 
 logger = logging.getLogger("facet.face_merge")
 
 
-def get_merge_groups(db_path, threshold=0.6):
+def get_merge_groups(db_path, threshold, embedding_model=None):
     """
     Group similar persons for potential merging using Union-Find.
+
+    Only persons whose centroid was built from ``embedding_model`` (default: the
+    active model) are compared.
 
     Returns list of dicts:
       - persons: list of {id, name, face_count}
       - min_similarity, max_similarity, avg_similarity
     """
-    # Load all persons with centroids. Hidden persons (is_hidden = 1) are
-    # excluded so they are never proposed for merging.
+    # Hidden persons (is_hidden = 1) are excluded so they are never proposed for
+    # merging; only persons built from `embedding_model` are comparable.
     with get_connection(db_path) as conn:
-        cursor = conn.execute(f"""
-            SELECT id, name, face_count, centroid
-            FROM persons
-            WHERE centroid IS NOT NULL
-              AND {person_not_hidden_clause()}
-            ORDER BY face_count DESC
-        """)
-        persons = []
-        for row in cursor.fetchall():
-            if row['centroid']:
-                centroid = np.frombuffer(row['centroid'], dtype=np.float32)
-                centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
-                persons.append({
-                    'id': row['id'],
-                    'name': row['name'],
-                    'face_count': row['face_count'],
-                    'centroid': centroid
-                })
+        persons = load_person_centroids(conn, embedding_model, include_hidden=False)
 
     if len(persons) < 2:
         return []
@@ -103,28 +90,11 @@ def get_merge_groups(db_path, threshold=0.6):
     return result
 
 
-def suggest_person_merges(db_path, threshold=0.6):
+def suggest_person_merges(db_path, threshold, embedding_model=None):
     """Find person pairs with similar centroids that might need merging."""
 
-    # Load all persons with centroids
     with get_connection(db_path) as conn:
-        cursor = conn.execute("""
-            SELECT id, name, face_count, centroid
-            FROM persons
-            WHERE centroid IS NOT NULL
-            ORDER BY face_count DESC
-        """)
-        persons = []
-        for row in cursor.fetchall():
-            if row['centroid']:
-                centroid = np.frombuffer(row['centroid'], dtype=np.float32)
-                centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
-                persons.append({
-                    'id': row['id'],
-                    'name': row['name'],
-                    'face_count': row['face_count'],
-                    'centroid': centroid
-                })
+        persons = load_person_centroids(conn, embedding_model)
 
     logger.info("Analyzing %d persons for potential merges...", len(persons))
     logger.info("Similarity threshold: %s", threshold)

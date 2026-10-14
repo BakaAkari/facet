@@ -10,7 +10,8 @@ import sqlite3
 import numpy as np
 
 from db.schema import init_database
-from faces.clusterer import ACTIVE_EMBEDDING_MODEL, FaceClusterer
+from db.embedding_space import ARCFACE_MODEL
+from faces.clusterer import FaceClusterer
 
 
 def _emb():
@@ -46,7 +47,7 @@ def test_schema_default_tags_new_faces(tmp_path):
     conn.commit()
     row = conn.execute("SELECT embedding_model FROM faces").fetchone()
     conn.close()
-    assert row[0] == ACTIVE_EMBEDDING_MODEL
+    assert row[0] == ARCFACE_MODEL
 
 
 def test_load_embeddings_excludes_foreign_space(tmp_path):
@@ -55,7 +56,7 @@ def test_load_embeddings_excludes_foreign_space(tmp_path):
     init_database(db)
     conn = sqlite3.connect(db)
     conn.execute("PRAGMA foreign_keys = ON")
-    _seed_face(conn, "p/active.jpg", ACTIVE_EMBEDDING_MODEL)
+    _seed_face(conn, "p/active.jpg", ARCFACE_MODEL)
     _seed_face(conn, "p/legacy.jpg", None)          # NULL == legacy ArcFace
     _seed_face(conn, "p/adaface.jpg", "adaface_test")  # incompatible space
     conn.commit()
@@ -72,7 +73,7 @@ def test_load_embeddings_warns_on_mixed_space(tmp_path, caplog):
     init_database(db)
     conn = sqlite3.connect(db)
     conn.execute("PRAGMA foreign_keys = ON")
-    _seed_face(conn, "p/active.jpg", ACTIVE_EMBEDDING_MODEL)
+    _seed_face(conn, "p/active.jpg", ARCFACE_MODEL)
     _seed_face(conn, "p/x1.jpg", "adaface_test")
     _seed_face(conn, "p/x2.jpg", "adaface_test")
     conn.commit()
@@ -111,7 +112,7 @@ def test_incremental_noise_face_stays_with_named_person(tmp_path):
         c = conn.execute(
             "INSERT INTO faces(photo_path, face_index, embedding, embedding_model, person_id) "
             "VALUES ('p/alice.jpg', ?, ?, ?, ?)",
-            (idx, emb, ACTIVE_EMBEDDING_MODEL, alice_id),
+            (idx, emb, ARCFACE_MODEL, alice_id),
         )
         face_ids.append(c.lastrowid)
     conn.execute(
@@ -166,4 +167,4 @@ def test_migration_backfills_existing_faces(tmp_path):
     conn = sqlite3.connect(db)
     row = conn.execute("SELECT embedding_model FROM faces").fetchone()
     conn.close()
-    assert row[0] == ACTIVE_EMBEDDING_MODEL
+    assert row[0] == ARCFACE_MODEL

@@ -7,6 +7,7 @@ Producer-consumer processor for parallel face operations.
 import logging
 from db import get_connection
 from licensing import LicenceError
+from db.embedding_space import active_embedding_model
 from db.schema import FACES_UPSERT_SQL, face_upsert_row
 import threading
 import queue
@@ -233,13 +234,14 @@ class FaceProcessor:
 
     def _write_batch(self, results):
         """Write a batch of results to the database."""
+        embedding_model = active_embedding_model()
         with get_connection(self.db_path, row_factory=False) as conn:
             for result in results:
                 if result['type'] == 'extract':
                     for face in result['face_details']:
                         if face.get('embedding'):
                             conn.execute(FACES_UPSERT_SQL,
-                                         face_upsert_row(result['photo_path'], face))
+                                         face_upsert_row(result['photo_path'], face, embedding_model))
                 elif result['type'] == 'refill':
                     conn.execute("""
                         UPDATE faces SET face_thumbnail = ? WHERE id = ?

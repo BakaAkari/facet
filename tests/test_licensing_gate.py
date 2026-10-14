@@ -196,10 +196,10 @@ class TestLoaderLayer:
             manager.load_model_only(name)
         assert poison.attempts == []
 
-    def test_permissive_face_loader_propagates_not_implemented(self, commercial, manager):
+    def test_permissive_face_loader_propagates_licence_error(self, commercial, manager):
         with mock.patch('models.model_manager.build_permissive_face_analyzer',
-                        side_effect=NotImplementedError('later')):
-            with pytest.raises(NotImplementedError):
+                        side_effect=LicenceError('refused')):
+            with pytest.raises(LicenceError):
                 manager.load_model_only('faces_permissive')
 
     def test_faces_permissive_refused_in_default_mode_is_still_loadable_name(self, manager):
@@ -356,8 +356,7 @@ class TestCli:
         cfg.write_text('{}', encoding='utf-8')
         assert facet._apply_licensing_policy(_args(config=str(cfg))).mode == 'default'
 
-    @pytest.mark.parametrize('flag', ['score_topiq', 'recompute_composition_gpu',
-                                      'extract_faces_gpu_incremental', 'extract_faces_gpu_force'])
+    @pytest.mark.parametrize('flag', ['score_topiq', 'recompute_composition_gpu'])
     def test_refused_flags(self, commercial, flag):
         import facet
         refused = facet._commercial_refusals(_args(**{flag: True}))
@@ -808,8 +807,8 @@ class TestStartupFailsFast:
         errors = []
         proc = _make_processor(scorer, on_error=lambda *a: errors.append(a))
         with mock.patch('models.model_manager.build_permissive_face_analyzer',
-                        side_effect=NotImplementedError('permissive face pipeline arrives in W5')):
-            with pytest.raises(NotImplementedError):
+                        side_effect=LicenceError('face pipeline refused')):
+            with pytest.raises(LicenceError):
                 proc.process_files(_tiny_jpegs(tmp_path, 3), show_metrics=False)
         assert scorer.aesthetic_calls == []          # no GPU work happened
         assert errors == []                           # no scan_failures rows
@@ -820,8 +819,8 @@ class TestStartupFailsFast:
         scorer = _startup_scorer_class()(tmp_path)
         paths = _tiny_jpegs(tmp_path, 3)
         with mock.patch('models.model_manager.build_permissive_face_analyzer',
-                        side_effect=NotImplementedError('later')):
-            with pytest.raises(NotImplementedError):
+                        side_effect=LicenceError("later")):
+            with pytest.raises(LicenceError):
                 _make_processor(scorer).process_stream(iter(paths), len(paths), show_metrics=False)
         assert scorer.aesthetic_calls == []
 

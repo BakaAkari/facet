@@ -1217,6 +1217,28 @@ def library_job_conflict_message(holder, lock_path=None):
     return f"{message} Lock file: {lock_path}" if lock_path else message
 
 
+def _warn_face_model_mismatch(db_path, config):
+    """Warn when stored faces were embedded by a model other than the active one.
+
+    Such faces are invisible to clustering, merge suggestions and similar-person
+    search until they are re-extracted, so a scan that adds faces in the new
+    space beside them should say so up front.
+    """
+    import sqlite3
+    from db.embedding_space import (
+        active_embedding_model, face_model_mismatch_message, mismatched_face_models,
+    )
+    active = active_embedding_model(config)
+    try:
+        with get_connection(db_path, row_factory=False) as conn:
+            rows = mismatched_face_models(conn, active)
+    except sqlite3.Error:
+        return  # fresh or unreadable database: nothing stored to mismatch
+    for model, count in rows:
+        logger.warning("Face embedding model mismatch: %s",
+                       face_model_mismatch_message(model, count, active))
+
+
 def scan_stale_seconds(config):
     """Heartbeat age past which a ``scan_runs`` row stops counting as live."""
     return config.get('processing', {}).get('scan_stale_seconds', DEFAULT_SCAN_STALE_SECONDS)
@@ -1435,9 +1457,6 @@ def _commercial_refusals(args):
         refused.append(('--recompute-composition-gpu',
                         "SAMP-Net is not permitted; use --recompute-composition-cpu, or set "
                         "licensing.allow_unclear."))
-    if args.extract_faces_gpu_incremental or args.extract_faces_gpu_force:
-        refused.append(('--extract-faces-gpu-*', "InsightFace is not permitted and the permissive "
-                                                 "face extraction is not available yet."))
     return refused
 
 
@@ -1509,6 +1528,7 @@ def _run_scan(args, resumed_run):
     use_multi_pass = not (args.dry_run or args.single_pass or config_single_pass)
     scorer = Facet(db_path=args.db, config_path=args.config, multi_pass=use_multi_pass)
     _log_scan_db_destination(scorer.db_path)
+    _warn_face_model_mismatch(scorer.db_path, scorer.config)
 
     # Initialise plugin manager for scoring events
     from plugins import init_global_plugin_manager
@@ -2399,7 +2419,7 @@ def main():
         from optimization.model_eval import evaluate
         candidates = [c.strip() for c in args.candidates.split(',') if c.strip()] if args.candidates else None
         evaluate(args.db or DEFAULT_DB_PATH, args.evaluate_models, candidates=candidates,
-                 out=args.eval_out, config_path=args.config)
+                 out=args.eval_out, config_path=args.config, limit=args.limit)
         exit()
 
     # Report unreviewed burst groups (read-only, no GPU)
@@ -2591,6 +2611,8 @@ def main():
         import socket
 
         threshold = args.merge_threshold
+        if threshold is None:
+            threshold = ScoringConfig(args.config).get_face_clustering_settings()['merge_threshold']
         port = int(os.environ.get('PORT', 5000))
         url = f"http://localhost:{port}/merge-suggestions?threshold={threshold}"
 

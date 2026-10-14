@@ -412,6 +412,7 @@ class BatchProcessor:
                     shutter_speed=exif_data.get('shutter_speed'),
                     quality_score=quality_score,
                     scoring_model=scoring_model,
+                    face_quality_iqa=face_res.get('face_quality_iqa'),
                     scoring_context=photo_override.get('scoring_context'),
                     category_override=photo_override.get('category_override'),
                 )
@@ -476,7 +477,7 @@ class BatchProcessor:
                     'composition_pattern': composition_pattern,
                     'topiq_score': None,
                     'aesthetic_iaa': None,
-                    'face_quality_iqa': None,
+                    'face_quality_iqa': face_res.get('face_quality_iqa'),
                     'liqe_score': None,
                     'subject_sharpness': None,
                     'subject_prominence': None,

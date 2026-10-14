@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from api import create_app
 from api.auth import CurrentUser, require_authenticated
+from db.schema import init_database
 
 _ROUTER = "api.routers.merge_suggestions"
 
@@ -108,11 +109,8 @@ class TestPairwiseSuggestions:
 
     def _seed(self, tmp_path):
         path = str(tmp_path / "pairs.db")
+        init_database(path)
         conn = sqlite3.connect(path)
-        conn.execute(
-            "CREATE TABLE persons (id INTEGER PRIMARY KEY, name TEXT, "
-            "face_count INTEGER, centroid BLOB, is_hidden INTEGER)"
-        )
         rows = [
             (1, "P1", 40, _planar(0)),
             (2, "P2", 30, _planar(10)),
@@ -120,7 +118,7 @@ class TestPairwiseSuggestions:
             (3, "P3", 10, _planar(90, plane=(2, 3))),  # orthogonal to the others
         ]
         conn.executemany(
-            "INSERT INTO persons VALUES (?, ?, ?, ?, 0)",
+            "INSERT INTO persons (id, name, face_count, centroid, is_hidden) VALUES (?, ?, ?, ?, 0)",
             [(i, n, fc, sqlite3.Binary(v.tobytes())) for i, n, fc, v in rows],
         )
         conn.commit()
@@ -163,3 +161,21 @@ class TestPairwiseSuggestions:
             s["person2"]["id"] for s in suggestions
         }
         assert 2 not in ids
+
+
+class TestReportedThreshold:
+    """The response names the threshold it applied, so the client need not know a per-model one."""
+
+    def test_reports_the_active_models_default_when_none_is_sent(self, client):
+        cfg = mock.Mock()
+        cfg.get_face_clustering_settings.return_value = {"merge_threshold": 0.45}
+        with mock.patch(f"{_ROUTER}.server_scoring_config", return_value=cfg), \
+                mock.patch(f"{_ROUTER}._pairwise_suggestions", return_value=[]) as pairwise:
+            body = client.get("/api/merge_suggestions").json()
+        assert body["threshold"] == 0.45
+        assert pairwise.call_args.args[0] == 0.45
+
+    def test_reports_the_callers_threshold_when_sent(self, client):
+        with mock.patch(f"{_ROUTER}._pairwise_suggestions", return_value=[]):
+            body = client.get("/api/merge_suggestions", params={"threshold": 0.7}).json()
+        assert body["threshold"] == 0.7

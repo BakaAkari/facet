@@ -142,6 +142,10 @@ class MergeSuggestion(BaseModel):
 
 class MergeSuggestionsResponse(BaseModel):
     suggestions: list[MergeSuggestion]
+    # The similarity threshold the list was computed at: the caller's, or the active
+    # embedding model's configured default when none was sent. The client seeds its
+    # slider from it, so it never has to know a per-model value.
+    threshold: float
 
 
 class ScenePhoto(BaseModel):

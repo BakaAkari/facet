@@ -237,3 +237,83 @@ def measure():
         if proc:
             rss.append(proc.memory_info().rss)
             stats['peak_rss_gb'] = max(rss) / (1024 ** 3)
+
+
+# ---------------------------------------------------------------------------
+# Face-slot helpers (detector match rate, pairwise same-person F1)
+# ---------------------------------------------------------------------------
+
+# Bucket edges are the bbox area as a share of the frame.
+SIZE_BUCKETS = ('<1%', '1-5%', '>5%')
+
+
+def size_bucket(bbox, frame_w, frame_h):
+    """``'<1%'`` / ``'1-5%'`` / ``'>5%'`` by the box's share of the frame area.
+
+    Lower edges are inclusive: exactly 1% falls in ``1-5%``, exactly 5% in ``>5%``.
+    """
+    x1, y1, x2, y2 = bbox[:4]
+    share = max(0.0, x2 - x1) * max(0.0, y2 - y1) / float(frame_w * frame_h)
+    if share < 0.01:
+        return SIZE_BUCKETS[0]
+    if share < 0.05:
+        return SIZE_BUCKETS[1]
+    return SIZE_BUCKETS[2]
+
+
+def iou(a, b):
+    """Intersection over union of two ``(x1, y1, x2, y2)`` boxes."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = ((a[2] - a[0]) * (a[3] - a[1])) + ((b[2] - b[0]) * (b[3] - b[1])) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def match_boxes(reference, detected, threshold=0.5):
+    """One-to-one greedy IoU matching; returns ``[(ref_idx, det_idx, iou)]``.
+
+    Candidate pairs are taken in descending IoU (ties broken by lower indices, so
+    the result is deterministic), each reference and each detection used once.
+    """
+    cands = []
+    for i, r in enumerate(reference):
+        for j, d in enumerate(detected):
+            v = iou(r, d)
+            if v >= threshold:
+                cands.append((-v, i, j))
+    cands.sort()
+    used_r, used_d, out = set(), set(), []
+    for neg, i, j in cands:
+        if i in used_r or j in used_d:
+            continue
+        used_r.add(i)
+        used_d.add(j)
+        out.append((i, j, -neg))
+    return out
+
+
+def pairwise_f1_grid(sim, labels, grid):
+    """Same-person precision / recall / F1 at each cosine threshold in ``grid``.
+
+    ``sim`` is an NxN similarity matrix, ``labels`` the reference person id per
+    row. Only the upper triangle (i < j) is scored; a pair is predicted "same"
+    when ``sim >= threshold``. F1 is 0.0 when precision + recall is 0.
+    """
+    sim = np.asarray(sim, dtype=np.float32)
+    labels = np.asarray(labels)
+    iu, ju = np.triu_indices(len(labels), k=1)
+    s = sim[iu, ju]
+    same = labels[iu] == labels[ju]
+    n_same = int(same.sum())
+    rows = []
+    for t in grid:
+        pred = s >= t
+        tp = int((pred & same).sum())
+        n_pred = int(pred.sum())
+        p = tp / n_pred if n_pred else 0.0
+        r = tp / n_same if n_same else 0.0
+        f1 = 2 * p * r / (p + r) if (p + r) else 0.0
+        rows.append({'threshold': round(float(t), 6), 'precision': p, 'recall': r, 'f1': f1,
+                     'tp': tp, 'n_pred': n_pred, 'n_same': n_same})
+    return rows

@@ -32,7 +32,7 @@ describe('MergeSuggestionsComponent', () => {
 
   beforeEach(() => {
     mockApi = {
-      get: vi.fn(() => of({ suggestions: [] })),
+      get: vi.fn(() => of({ suggestions: [], threshold: 0.6 })),
       post: vi.fn(() => of({})),
     };
     mockI18n = { t: vi.fn((key: string) => key) };
@@ -259,11 +259,11 @@ describe('MergeSuggestionsComponent', () => {
   describe('ngOnInit', () => {
     it('should load suggestions from API', async () => {
       const suggestions = [makeSuggestion(1, 'Alice', 10, 2, 'Bob', 5)];
-      mockApi.get.mockReturnValue(of({ suggestions }));
+      mockApi.get.mockReturnValue(of({ suggestions, threshold: 0.6 }));
 
       await component.ngOnInit();
 
-      expect(mockApi.get).toHaveBeenCalledWith('/merge_suggestions', { threshold: 0.6 });
+      expect(mockApi.get).toHaveBeenCalledWith('/merge_suggestions', {});
       expect(component.suggestions()).toEqual(suggestions);
     });
 
@@ -279,6 +279,32 @@ describe('MergeSuggestionsComponent', () => {
 
       expect(mockSnackBar.open).toHaveBeenCalledWith('persons.error_loading', '', { duration: 3000 });
       expect(component.loading()).toBe(false);
+    });
+  });
+
+  describe('per-model default threshold', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('sends no threshold on the first load and seeds the slider from the server default', async () => {
+      mockApi.get.mockReturnValue(of({ suggestions: [], threshold: 0.45 }));
+
+      expect(component.threshold()).toBeNull();
+      await component.ngOnInit();
+
+      expect(mockApi.get).toHaveBeenCalledWith('/merge_suggestions', {});
+      expect(component.threshold()).toBe(0.45);
+    });
+
+    it('sends the threshold only after the user moves the slider', async () => {
+      vi.useFakeTimers();
+      mockApi.get.mockReturnValue(of({ suggestions: [], threshold: 0.45 }));
+      await component.ngOnInit();
+
+      component.onThresholdChange(0.7);
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(mockApi.get).toHaveBeenLastCalledWith('/merge_suggestions', { threshold: 0.7 });
+      expect(component.threshold()).toBe(0.7);
     });
   });
 });

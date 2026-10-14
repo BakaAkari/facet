@@ -209,7 +209,7 @@ Embeddings power semantic tagging, duplicate detection, similar-photo search, an
 | Command | Description |
 |---------|-------------|
 | `python facet.py --extract-faces-gpu-incremental` | Extract faces for new photos (GPU, parallel) |
-| `python facet.py --extract-faces-gpu-force` | Delete all faces and re-extract (GPU) |
+| `python facet.py --extract-faces-gpu-force` | Delete all faces and re-extract (GPU; permissive extractor in commercial mode; named persons are carried over) |
 | `python facet.py --cluster-faces-incremental` | HDBSCAN clustering, preserves all persons (CPU) |
 | `python facet.py --cluster-faces-incremental-named` | Clustering, preserves only named persons (CPU) |
 | `python facet.py --cluster-faces-force` | Full re-clustering, deletes all persons (CPU) |
@@ -294,7 +294,7 @@ Read-only: it decodes a random sample straight from disk and prints the mean lum
 | `python facet.py --train-keeper --train-keeper-force` | Persist the keeper head even if its accuracy gate is not met (also honors `--ranker-category` and `--user`) |
 | `python facet.py --report-unreviewed-bursts` | Report how many burst groups remain unreviewed (read-only) |
 | `python facet.py --eval-iqa-srcc` | Report Spearman SRCC of each IQA/aesthetic metric vs your star ratings (read-only) |
-| `python facet.py --evaluate-models SLOT` | Rank candidate models for a slot (`aesthetic`, `quality`, `face-quality`, `end-to-end`) by how often they agree with your pairwise picks in the comparisons table; `--candidates a,b` (`stored:<column>` or a registered name) and `--eval-out PATH` (default `.facet_cache/eval/<slot>-<timestamp>.json`) refine it (read-only) |
+| `python facet.py --evaluate-models SLOT` | Rank candidate models for a slot (`aesthetic`, `quality`, `faces-detect`, `faces-recognize`, `faces-centroid`, `blink`, `face-quality`, `end-to-end`) by how often they agree with your pairwise picks in the comparisons table; `--candidates a,b` (`stored:<column>` or a registered name) and `--eval-out PATH` (default `.facet_cache/eval/<slot>-<timestamp>.json`) refine it (read-only). The face slots (`faces-detect`: `yunet`, `yunet@<conf>`, `blazeface`; `faces-recognize`: `sface`, `sface@<threshold>`; `faces-centroid`: tunes SFace `merge_threshold` / auto-merge at centroid level against the InsightFace persons; `blink`: sweeps the permissive analyzer's blink threshold against the stored InsightFace blink flags) instead measure agreement with the stored InsightFace faces on a seeded sample, so they apply to default-mode libraries only; `--limit N` caps the photos (default 600) or reference faces (default 1200) |
 | `python facet.py --mine-insights` | Data-mining report: label inventory, metric-label correlations, category distribution, percentile drift, comparison health |
 | `python facet.py --mine-insights report.json` | Same, also writes the full report as JSON |
 | `python calibrate.py --db <path> --ava-annotations AVA.txt` | Calibrate per-category scoring weights against the [AVA dataset](https://github.com/imfing/ava_downloader) by maximising SRCC vs AVA mean opinion scores (read-only; prints proposed weights) |
