@@ -190,7 +190,7 @@ class TestEnsureModelFile:
         monkeypatch.setattr(
             "analyzers.face_blendshapes.urllib.request.urlretrieve", fake_urlretrieve)
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ValueError):  # SHA-256 mismatch is refused
             scorer._ensure_model_file()
 
         assert not os.path.exists(model_path)

@@ -66,3 +66,20 @@ def download_weights(url: str, destination: Path, sha256: Optional[str] = None):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+# Permissive (commercial-mode) face pipeline weights, issue #185 W5. Pinned to the
+# opencv_zoo commit that last touched each file (not `main`) and SHA-256 checked.
+# Licences (verified against the repo LICENSE files): YuNet MIT, SFace Apache-2.0.
+YUNET_WEIGHTS_FILENAME = "face_detection_yunet_2023mar.onnx"
+YUNET_WEIGHTS_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/f12e12798e8314f7c074a6656816c048dcc95b7a/"
+    "models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+)
+YUNET_WEIGHTS_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+SFACE_WEIGHTS_FILENAME = "face_recognition_sface_2021dec.onnx"
+SFACE_WEIGHTS_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/ba91a3b91d00d76e86540d4013f944bd6b514e39/"
+    "models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
+)
+SFACE_WEIGHTS_SHA256 = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"

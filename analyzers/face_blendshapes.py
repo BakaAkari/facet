@@ -15,18 +15,22 @@ absence degrades silently to the geometric scores.
 import logging
 import os
 import threading
-import urllib.request
+import urllib.request  # noqa: F401  (tests patch urllib.request.urlretrieve, which weights.download_weights calls)
+from pathlib import Path
 
+from models.weights import download_weights, pretrained_model_path
 from utils.image_transforms import padded_face_bbox
 
 logger = logging.getLogger("facet.face_blendshapes")
 
+# Pinned to the versioned `float16/1` path (not `latest`) with a SHA-256, so a
+# Google-side republish can't silently change the bundle under a verified deploy.
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
-    "face_landmarker/float16/latest/face_landmarker.task"
+    "face_landmarker/float16/1/face_landmarker.task"
 )
-MODEL_PATH = "pretrained_models/face_landmarker.task"
-MIN_MODEL_BYTES = 1_000_000
+MODEL_SHA256 = "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
+MODEL_PATH = str(pretrained_model_path("face_landmarker.task"))
 
 DEFAULT_MIN_CROP_SIZE = 192
 CROP_PADDING = 0.6
@@ -92,16 +96,8 @@ class BlendshapeScorer:
     def _ensure_model_file(self):
         if os.path.exists(self.model_path):
             return
-        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
         logger.info("Downloading MediaPipe face landmarker to %s...", self.model_path)
-        try:
-            urllib.request.urlretrieve(MODEL_URL, self.model_path)
-            if os.path.getsize(self.model_path) < MIN_MODEL_BYTES:
-                raise RuntimeError("downloaded face landmarker bundle is too small")
-        except Exception:
-            if os.path.exists(self.model_path):
-                os.remove(self.model_path)
-            raise
+        download_weights(MODEL_URL, Path(self.model_path), MODEL_SHA256)
         logger.info("MediaPipe face landmarker download complete.")
 
     def _ensure_loaded(self):
@@ -136,11 +132,13 @@ class BlendshapeScorer:
                     "face scores. To enable: pip install mediapipe==0.10.35 --no-deps", e)
                 return False
 
-    def score_face_crop(self, bgr_crop):
-        """``(eyes_open_score, smile_score)`` for one face crop, or ``None``.
+    def analyze_face_crop(self, bgr_crop):
+        """``(eyes_open, smile, blendshapes, landmarks)`` for one face crop, or ``None``.
 
-        ``None`` (keep the geometric scores) when the crop is missing/too small,
-        MediaPipe is unavailable, or no face is found in the crop.
+        ``blendshapes`` is the raw ``{name: score}`` dict; ``landmarks`` is the
+        478-point mesh as an ``(478, 2)`` float32 array in crop pixel
+        coordinates (``None`` when the bundle returns no mesh). ``None`` under
+        the same conditions as :meth:`score_face_crop`.
         """
         if bgr_crop is None:
             return None
@@ -151,6 +149,7 @@ class BlendshapeScorer:
             return None
         try:
             import cv2
+            import numpy as np
             rgb = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2RGB)
             image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
             with self._lock:
@@ -158,10 +157,25 @@ class BlendshapeScorer:
             if not result.face_blendshapes:
                 return None
             names = {c.category_name: c.score for c in result.face_blendshapes[0]}
-            return blendshapes_to_scores(names)
+            eyes_open, smile = blendshapes_to_scores(names)
+            landmarks = None
+            if getattr(result, 'face_landmarks', None):
+                landmarks = np.array(
+                    [(p.x * w, p.y * h) for p in result.face_landmarks[0]],
+                    dtype=np.float32)
+            return eyes_open, smile, names, landmarks
         except Exception as e:
             logger.debug("Blendshape scoring failed: %s", e)
             return None
+
+    def score_face_crop(self, bgr_crop):
+        """``(eyes_open_score, smile_score)`` for one face crop, or ``None``.
+
+        ``None`` (keep the geometric scores) when the crop is missing/too small,
+        MediaPipe is unavailable, or no face is found in the crop.
+        """
+        analysis = self.analyze_face_crop(bgr_crop)
+        return None if analysis is None else analysis[:2]
 
 
 _scorer = None

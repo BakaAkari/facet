@@ -227,6 +227,10 @@ python facet.py --recompute-blinks
 
 Processa apenas fotos com rostos, sem necessidade de GPU.
 
+## Qualidade facial OFIQ opcional (modo comercial)
+
+No modo comercial o modelo restrito de qualidade facial não está disponível. Como substituto opcional, instale o `python-ofiq` (bindings da UNICEF sobre o OFIQ do BSI, ISO/IEC 29794-5; MIT; convive com numpy 2 e OpenCV 4.8+) com `pip install python-ofiq`. Só há wheels para Linux x86-64 e macOS arm64 (no Windows: WSL2 ou Docker). Os modelos OFIQ (cerca de 400 MB, MIT/Apache-2.0) nunca são incluídos: no primeiro uso o Facet os baixa, com SHA-256 fixado, para `pretrained_models/ofiq/`. Quando a ligação ao pipeline de rostos existir, a pontuação unificada do OFIQ (0-100) será dividida por 10 e guardada em `face_quality_iqa`; essa ligação ainda não existe. Sem `python-ofiq`, a coluna fica NULL e o seu peso é renormalizado.
+
 ## Sinais de expressão por rosto (olhos abertos + sorriso)
 
 Cada linha de rosto armazena dois sinais contínuos em escala 0-10 usados pelo painel de rostos da

@@ -227,6 +227,10 @@ python facet.py --recompute-blinks
 
 Ne traite que les photos comportant des visages, aucun GPU nécessaire.
 
+## Qualité de visage OFIQ optionnelle (mode commercial)
+
+En mode commercial, le modèle restreint de qualité de visage est indisponible. Comme remplacement optionnel, installez `python-ofiq` (liaisons UNICEF sur OFIQ du BSI, ISO/IEC 29794-5 ; MIT ; compatible avec numpy 2 et OpenCV 4.8+) avec `pip install python-ofiq`. Il ne fournit des wheels que pour Linux x86-64 et macOS arm64 (sous Windows : WSL2 ou Docker). Les modèles OFIQ (environ 400 Mo, MIT/Apache-2.0) ne sont jamais fournis : au premier usage, Facet les télécharge, SHA-256 épinglé, dans `pretrained_models/ofiq/`. Une fois le câblage du pipeline de visages en place, le score unifié OFIQ (0-100) sera divisé par 10 et stocké dans `face_quality_iqa` ; ce câblage n'existe pas encore. Sans `python-ofiq`, la colonne reste NULL et son poids est renormalisé.
+
 ## Signaux d'expression par visage (yeux ouverts + sourire)
 
 Chaque ligne de visage stocke deux signaux continus sur une échelle de 0 à 10, utilisés par le
