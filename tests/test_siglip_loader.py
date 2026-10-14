@@ -7,13 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-import torch
 
 from utils.siglip import load_siglip_model
 
 
 @pytest.fixture
 def fake_auto(monkeypatch):
+    pytest.importorskip('torch', reason='load_siglip_model imports torch')
     model = MagicMock()
     model.to.return_value = model
     model.eval.return_value = model
@@ -24,6 +24,7 @@ def fake_auto(monkeypatch):
 
 
 def test_cuda_requests_fp16(fake_auto):
+    torch = pytest.importorskip('torch')
     auto, model = fake_auto
     out = load_siglip_model('m', 'cuda')
     assert auto.from_pretrained.call_args.kwargs['dtype'] is torch.float16
