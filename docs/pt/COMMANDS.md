@@ -176,7 +176,7 @@ Três modelos PyIQA adicionais pontuam além da pontuação estética primária 
 - **Posicionamento do Sujeito**: pontuação de regra dos terços para o centroide do sujeito.
 - **Separação do Fundo**: diferença de gradiente de borda entre o contorno do sujeito e o fundo — qualidade do bokeh.
 
-Requer `transformers` (~3 GB de VRAM). Em CUDA, o tamanho do lote é derivado da VRAM livre (cerca de 2,4 GiB por imagem a 1024 px, entre 1 e 8 imagens) e é reduzido à metade após um erro de falta de memória, até chegar a uma única imagem. Uma foto cuja saliência ainda assim falha é registrada como ERROR e não grava nenhum valor: ela continua NULL se nunca foi pontuada (e pontua como neutra no agregado, como as fotos varridas antes de a saliência existir), mantém seus valores gravados se já tinha saliência, e `--recompute-saliency` a seleciona novamente. Veja [Dimensões de Saliência do Sujeito](SCORING.md#dimensões-de-saliência-do-sujeito).
+Requer `transformers` (~3 GB de VRAM). Em CUDA, o tamanho do lote é derivado da VRAM livre (cerca de 2,4 GiB por imagem a 1024 px, entre 1 e 8 imagens) e é reduzido à metade após um erro de falta de memória, até chegar a uma única imagem. Uma foto cuja saliência ainda assim falha é registrada como ERROR e não grava nenhum valor: ela continua NULL se nunca foi pontuada (e pontua como neutra no agregado, como as fotos varridas antes de a saliência existir), com `--recompute-saliency` e `--pass saliency` mantém seus valores gravados se já tinha saliência (uma nova varredura completa, por exemplo com `--force`, grava NULL para ela, como para uma foto nunca pontuada), e `--recompute-saliency` a seleciona novamente. Veja [Dimensões de Saliência do Sujeito](SCORING.md#dimensões-de-saliência-do-sujeito).
 
 ### Modelos de Marcação
 

@@ -114,8 +114,12 @@ class SaliencyScorer:
         have no fp16 path and fall back to an unvectorised one: measured in a
         container, a 256x256 forward takes 49.97s in fp16 against 1.10s in
         float32, and a single 1024x1024 forward ran for 28 minutes. Casting
-        doubles activation memory, which is why the batch size derived in
-        :meth:`_affordable_batch_size` is sized from the float32 slope.
+        raises the activation memory of a CPU forward (about 2.4 GiB per
+        image at 1024 px, the figure ``ACTIVATION_GB_PER_IMAGE`` is sized
+        from), which is why the batch size derived in
+        :meth:`_affordable_batch_size` is sized from the float32 slope. CUDA
+        keeps the checkpoint's fp16 and reserves about the same 2.4 GiB per
+        image at 1024 px.
         """
         if self._loaded:
             return
@@ -162,7 +166,8 @@ class SaliencyScorer:
             pil_img: PIL Image (RGB)
 
         Returns:
-            numpy.ndarray: Binary mask (H, W) with values 0 or 255
+            numpy.ndarray: Binary mask (H, W) with values 0 or 255, or
+            ``None`` when the single image cannot fit in memory even alone
         """
         return self.get_saliency_masks([pil_img])[0]
 
@@ -364,7 +369,20 @@ class SaliencyScorer:
                           subject_placement, bg_separation
         """
         mask = self.get_saliency_mask(pil_img)
+        if mask is None:
+            return self._failed_scores()
         return self._score_from_mask(mask, img_cv)
+
+    @staticmethod
+    def _failed_scores():
+        """The all-None result for a photo whose saliency could not be computed."""
+        return {
+            'subject_sharpness': None,
+            'subject_prominence': None,
+            'subject_placement': None,
+            'bg_separation': None,
+            'subject_bbox': None,
+        }
 
     def _score_from_mask(self, mask, img_cv):
         """Compute saliency metrics from a pre-computed binary mask.
@@ -499,13 +517,7 @@ class SaliencyScorer:
         if not self._loaded:
             self.load()
 
-        failed = {
-            'subject_sharpness': None,
-            'subject_prominence': None,
-            'subject_placement': None,
-            'bg_separation': None,
-            'subject_bbox': None,
-        }
+        failed = self._failed_scores()
         n = len(pil_images)
 
         # Batch mask generation (single GPU forward pass per sub-batch)

@@ -554,6 +554,13 @@ class TestOomRetry:
         failed = [all(v is None for v in r.values()) for r in results]
         assert failed == [False, False, True, False]
 
+    def test_score_image_returns_the_failure_dict_when_the_mask_is_none(self):
+        scorer = _fixed_batch(_oom_scorer(max_ok=0), 4)
+        img = Image.new("RGB", (16, 12), (255, 255, 255))
+        result = scorer.score_image(img, np.zeros((12, 16, 3), dtype=np.uint8))
+        assert result == {'subject_sharpness': None, 'subject_prominence': None,
+                          'subject_placement': None, 'bg_separation': None, 'subject_bbox': None}
+
     def test_non_oom_error_is_not_retried(self):
         scorer = _fixed_batch(_oom_scorer(max_ok=0, exc=ValueError("bad tensor")), 4)
         with pytest.raises(ValueError):

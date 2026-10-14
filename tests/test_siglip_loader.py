@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -39,8 +40,9 @@ def test_non_cuda_keeps_fp32(fake_auto, device):
 
 
 def test_all_siglip_sites_use_helper():
+    repo_root = Path(__file__).resolve().parent.parent
     out = subprocess.run(
         ['git', 'grep', '--untracked', '-ln', 'AutoModel.from_pretrained', '--', 'models/', 'processing/',
          'scripts/', 'utils/'],
-        capture_output=True, text=True).stdout.split()
+        capture_output=True, text=True, cwd=repo_root).stdout.split()
     assert out == ['utils/siglip.py']

@@ -72,6 +72,24 @@ def test_restricted_save_keeps_stored_values_over_a_failure(seeded):
     assert _saliency_row(db, path) == before
 
 
+def test_full_save_stores_null_over_a_failure_never_a_neutral_score(seeded):
+    """A full rescan (restricted=False, e.g. --force) is the one writer that overwrites.
+
+    The photo carries stored saliency; the rescan's saliency fails, so the full
+    UPSERT writes the honest NULL in all five columns -- never the old 5.0.
+    """
+    path, facet, db = seeded
+    _persist(_processor(facet, [['saliency']]), {path: dict(_SALIENCY)}, _images(path))
+    assert _saliency_row(db, path)['subject_sharpness'] == 7.0
+
+    full = _processor(facet, [['saliency']], restricted=False)
+    results = _run_pass(full, path, [dict(_FAILED)])
+    assert results[path] == {SALIENCY_FAILED_KEY: True}
+    full._save_results(results, _images(path))
+
+    assert _saliency_row(db, path) == _FAILED
+
+
 def test_a_photo_that_never_had_saliency_stays_null_after_a_failure(seeded):
     path, facet, db = seeded
     proc = _processor(facet, [['saliency']])

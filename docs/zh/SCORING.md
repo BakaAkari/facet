@@ -208,7 +208,7 @@
 
 人像／野生动物题材可使用 `subject_sharpness_percent` 和 `bg_separation_percent`；微距题材可使用 `subject_prominence_percent`。
 
-**显著性失败时。** 在 CUDA 上，显著性批大小由空闲显存推算（1024 px 下每张图片约 2.4 GiB，范围 1 至 8 张），遇到显存不足错误时减半，直至一张图片。如果某张照片的显著性仍然失败，则记录一条 ERROR 且不存入任何值：从未评分的照片，其五个显著性列（`subject_sharpness`、`subject_prominence`、`subject_placement`、`bg_separation`、`subject_bbox`）保持 NULL；已有显著性的照片则保留其已存储的值。Facet 绝不会用中性数值顶替失败的结果。在综合评分中，NULL 按中性（5.0）计算，与显著性功能出现之前扫描的照片完全一样，因此既不加分也不扣分。`--recompute-saliency` 会再次选中这类照片（见[主体显著性](COMMANDS.md#主体显著性)）。
+**显著性失败时。** 在 CUDA 上，显著性批大小由空闲显存推算（1024 px 下每张图片约 2.4 GiB，范围 1 至 8 张），遇到显存不足错误时减半，直至一张图片。如果某张照片的显著性仍然失败，则记录一条 ERROR 且不存入任何值：从未评分的照片，其五个显著性列（`subject_sharpness`、`subject_prominence`、`subject_placement`、`bg_separation`、`subject_bbox`）保持 NULL；`--recompute-saliency` 与 `--pass saliency` 在显著性失败时会保留照片已存储的值；对该照片进行完整重新扫描（例如 `--force`）则会为其存入 NULL，与从未评分的照片相同。Facet 绝不会用中性数值顶替失败的结果。在综合评分中，NULL 按中性（5.0）计算，与显著性功能出现之前扫描的照片完全一样，因此既不加分也不扣分。`--recompute-saliency` 会再次选中这类照片（见[主体显著性](COMMANDS.md#主体显著性)）。
 
 ## 补充 IQA 维度
 

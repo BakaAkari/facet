@@ -1,7 +1,9 @@
 """Shared SigLIP (transformers) model loader.
 
-One place builds the model so every load site (ModelManager, the legacy
-single-pass scorer, scripts) produces identical embeddings. On CUDA the
+One place builds the model so the scan's ModelManager, the single-pass
+scorer and ``scripts/compute_aesthetic_clip.py`` produce identical
+embeddings. Not covered: ``api/routers/search.py`` loads fp32 on purpose, and
+``tag_existing.py`` does not use this loader. On CUDA the
 weights are materialised straight into fp16, avoiding the fp32 transient
 (~5 GB) that ``from_pretrained`` + ``.half()`` allocated on the card.
 CPU and MPS keep fp32.

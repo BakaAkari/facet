@@ -539,6 +539,14 @@ class ModelManager:
                 if hasattr(attr, 'parameters') and hasattr(attr, 'cpu') and hasattr(attr, 'to'):
                     yield attr
 
+    @staticmethod
+    def _module_device(module):
+        """Device of a module's first parameter or buffer, or None if it has neither."""
+        for tensors in (module.parameters(), getattr(module, 'buffers', lambda: ())()):
+            for tensor in tensors:
+                return tensor.device
+        return None
+
     def _move_to_cpu(self, model, model_name: str):
         """Move a model's tensors to CPU for RAM caching.
 
@@ -559,8 +567,17 @@ class ModelManager:
         elif hasattr(model, 'model') and hasattr(model.model, 'cpu'):
             # Wrapper objects: PyIQAScorer, RAMTagger
             model.model.cpu()
+            # facexlib picks its own device (cuda if available, else cpu) and
+            # pyiqa never passes one, so a helper is NOT necessarily on
+            # self.device. Record where each one was and put it back THERE;
+            # one already on the CPU is left alone both ways.
+            origins = []
             for helper in self._unregistered_modules(model):
-                helper.cpu()
+                origin = self._module_device(helper)
+                if origin is not None and origin.type != 'cpu':
+                    origins.append((helper, origin))
+                    helper.cpu()
+            model._helper_origin_devices = origins
         elif isinstance(model, dict):
             # Dict-style: clip, clip_aesthetic
             for v in model.values():
@@ -585,8 +602,9 @@ class ModelManager:
                     model.saliency_detector.model.to(device)
         elif hasattr(model, 'model') and hasattr(model.model, 'to'):
             model.model.to(device)
-            for helper in self._unregistered_modules(model):
-                helper.to(device)
+            for helper, origin in getattr(model, '_helper_origin_devices', ()):
+                helper.to(origin)
+            model._helper_origin_devices = []
         elif isinstance(model, dict):
             for v in model.values():
                 if hasattr(v, 'to'):

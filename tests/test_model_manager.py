@@ -1360,22 +1360,22 @@ class TestWrapperHelperModulesFollowTheCache:
     """
 
     class _Mod:
-        def __init__(self):
-            self.where = 'cuda'
+        def __init__(self, where='cuda'):
+            self.where = where
 
         def parameters(self):
-            return iter(())
+            return iter([types.SimpleNamespace(device=types.SimpleNamespace(type=self.where))])
 
         def cpu(self):
             self.where = 'cpu'
             return self
 
         def to(self, device):
-            self.where = device
+            self.where = getattr(device, 'type', device)  # a recorded torch.device or a str
             return self
 
-    def _wrapper(self):
-        det, parse = self._Mod(), self._Mod()
+    def _wrapper(self, helper_at='cuda'):
+        det, parse = self._Mod(helper_at), self._Mod(helper_at)
         helper = types.SimpleNamespace(face_det=det, face_parse=parse, device='cuda')
         net = types.SimpleNamespace(face_helper=helper, crop_size=512)
         inner = self._Mod()
@@ -1397,6 +1397,16 @@ class TestWrapperHelperModulesFollowTheCache:
         manager._move_to_device(wrapper, 'topiq_nr_face')
 
         assert (inner.where, det.where, parse.where) == ('cuda', 'cuda', 'cuda')
+
+    def test_helper_on_cpu_is_restored_to_cpu_not_the_manager_device(self, manager):
+        """facexlib chooses its own device; an mps / FACET_DEVICE=cpu manager must not move it."""
+        wrapper, inner, det, parse = self._wrapper(helper_at='cpu')
+        manager._move_to_cpu(wrapper, 'topiq_nr_face')
+        manager.device = 'mps'
+
+        manager._move_to_device(wrapper, 'topiq_nr_face')
+
+        assert (inner.where, det.where, parse.where) == ('mps', 'cpu', 'cpu')
 
     def test_wrapper_without_a_net_is_unaffected(self, manager):
         inner = self._Mod()

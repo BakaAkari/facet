@@ -178,7 +178,7 @@ Three additional PyIQA models score beyond the primary TOPIQ aesthetic score. Th
 - **Subject Placement**: rule-of-thirds score for the subject centroid.
 - **Background Separation**: edge-gradient difference between subject boundary and background — bokeh quality.
 
-Requires `transformers` (~3 GB VRAM). On CUDA the batch size is derived from the free VRAM (about 2.4 GiB per image at 1024 px, between 1 and 8 images) and is halved after an out-of-memory error, down to one image. A photo whose saliency still fails is logged as an ERROR and stores no values: it stays NULL if it was never scored (and scores neutral in the aggregate, like photos scanned before saliency existed), it keeps its stored values if it already had saliency, and `--recompute-saliency` selects it again. See [Subject Saliency Dimensions](SCORING.md#subject-saliency-dimensions).
+Requires `transformers` (~3 GB VRAM). On CUDA the batch size is derived from the free VRAM (about 2.4 GiB per image at 1024 px, between 1 and 8 images) and is halved after an out-of-memory error, down to one image. A photo whose saliency still fails is logged as an ERROR and stores no values: it stays NULL if it was never scored (and scores neutral in the aggregate, like photos scanned before saliency existed), under `--recompute-saliency` and `--pass saliency` it keeps its stored values if it already had saliency (a full rescan of it, for example `--force`, stores NULL for it, as for a never-scored photo), and `--recompute-saliency` selects it again. See [Subject Saliency Dimensions](SCORING.md#subject-saliency-dimensions).
 
 ### Tagging Models
 
