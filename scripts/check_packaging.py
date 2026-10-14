@@ -124,6 +124,49 @@ def _pyproject_declared() -> tuple[set[str], set[str]]:
     return py_modules, packages
 
 
+# Packages under non-commercial licence terms. They must live only in the
+# restricted extras / requirements.restricted*.txt so a commercial install
+# (licensing.mode = commercial) can omit them. openai-clip and setuptools are
+# installed alongside pyiqa for pyiqa's sake; onnxruntime serves insightface alone.
+RESTRICTED_PACKAGES = {"insightface", "pyiqa", "openai-clip", "onnxruntime", "onnxruntime-gpu", "facexlib"}
+BASE_REQUIREMENT_FILES = ("requirements.txt", "requirements.lock.txt", "requirements.legacy.lock.txt")
+
+_REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _normalise(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _requirement_names(lines: list[str]) -> set[str]:
+    """Normalised package names of every non-comment requirement line."""
+    names = set()
+    for line in lines:
+        if line.lstrip().startswith("#"):
+            continue
+        m = _REQ_NAME_RE.match(line)
+        if m:
+            names.add(_normalise(m.group(1)))
+    return names
+
+
+def _restricted_in_base() -> list[str]:
+    """Failures for restricted packages found in core dependencies or base requirement files."""
+    failures = []
+    with PYPROJECT.open("rb") as f:
+        core = tomllib.load(f).get("project", {}).get("dependencies", [])
+    for name in sorted(_requirement_names(core) & RESTRICTED_PACKAGES):
+        failures.append(f"restricted package '{name}' is in pyproject.toml core dependencies (move it to an extra)")
+    for filename in BASE_REQUIREMENT_FILES:
+        path = REPO_ROOT / filename
+        if not path.exists():
+            continue
+        found = _requirement_names(path.read_text(encoding="utf-8").splitlines()) & RESTRICTED_PACKAGES
+        for name in sorted(found):
+            failures.append(f"restricted package '{name}' is in {filename} (move it to requirements.restricted*.txt)")
+    return failures
+
+
 def check() -> list[str]:
     """Return a list of human-readable failures, empty when everything is covered."""
     files = _git_tracked_files()

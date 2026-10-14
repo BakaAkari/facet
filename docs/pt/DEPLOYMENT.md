@@ -292,6 +292,8 @@ pesos de modelo que cada perfil baixa na primeira execução
 
 **Tags versionadas.** `:latest`, `:latest-cuda` e `:latest-cuda-legacy` avançam a cada release; fixe uma versão (`:1.7.2`, `:1.7`, `:1.7.2-cuda`, `:1.7.2-cuda-legacy`, …) em um NAS que você não quer que mude sozinho. As três variantes são compiladas a partir do mesmo `Dockerfile`, com os build args `BASE_IMAGE`, `STRIP_TORCH`, `INSTALL_CUML` e `REQUIREMENTS_LOCK`, definidos por variante em `.github/workflows/docker-publish.yml`. Esse workflow também aceita uma execução manual via `workflow_dispatch`, que republica `latest` / `latest-cuda` / `latest-cuda-legacy` a partir de `master` sem cortar uma release nem gerar uma tag versionada.
 
+**Build comercial.** Adicione `--build-arg FACET_LICENSING=commercial` (compose: `build.args.FACET_LICENSING: commercial`) para pular o lock restrito (`insightface`, `pyiqa` e o que só eles usam) e definir `FACET_LICENSING_MODE=commercial` na imagem. O padrão `FACET_LICENSING=default` o instala, então as imagens publicadas não mudam. O lock restrito é derivado de `REQUIREMENTS_LOCK` (`requirements.legacy.restricted.lock.txt` para o lock legacy). Veja [Instalação](INSTALLATION.md).
+
 Para um NAS apenas de visualização, no qual a imagem deve permanecer pequena (sem CUDA), compile uma imagem enxuta. Observe que a proteção de CI exige que toda origem `COPY` esteja versionada no git, então o contexto de compilação deve incluir os arquivos listados — por isso nenhum `scoring_config.json` é copiado: esse arquivo é um override específico da instalação, não versionado, e sua ausência apenas significa que o container roda com os padrões dentro de `config/`.
 
 ```dockerfile

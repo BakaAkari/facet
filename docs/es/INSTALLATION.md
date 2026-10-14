@@ -351,6 +351,23 @@ FACET_VRAM_PROFILE=8gb python facet.py /path/to/photos
 Los umbrales exactos que aplica `auto` están en
 [Configuración › Detección automática de VRAM](CONFIGURATION.md#detección-automática-de-vram).
 
+## Instalación comercial y paquetes restringidos
+
+`insightface` y `pyiqa` (con `openai-clip`, `facexlib` y `onnxruntime`, que solo ellos necesitan) incluyen pesos de modelos con condiciones no comerciales. Ya no forman parte de la instalación base: están en los extras `faces-insightface` e `iqa` y en `requirements.restricted.txt` (más `requirements.restricted.lock.txt` y `requirements.legacy.restricted.lock.txt` para Docker).
+
+> **Cambio incompatible.** `pip install -e .` y `pip install -r requirements.txt` por sí solos ya no incluyen insightface ni pyiqa. Para el comportamiento anterior usa `pip install -e .[all]` o `pip install -r requirements.txt -r requirements.restricted.txt`. `install.sh` y la imagen Docker por defecto instalan ambos, así que se comportan como antes.
+
+| Objetivo | Comando |
+|----------|---------|
+| Todo (por defecto) | `bash install.sh` o `pip install -e .[all]` |
+| Apto para uso comercial | `bash install.sh --commercial` |
+| Comercial, a mano | `pip install -r requirements.txt`, luego `pip install -e .[commercial]` y `pip install mediapipe==0.10.35 --no-deps` |
+| Comercial, Docker | `docker build --build-arg FACET_LICENSING=commercial .` |
+
+`mediapipe` debe instalarse siempre con `--no-deps`: su `opencv-contrib-python` incluido duplicaría el espacio de nombres `cv2`. El extra `commercial` declara solo sus dependencias de ejecución (`absl-py`, `flatbuffers`). `python-ofiq` (los bindings de calidad facial OFIQ) está en PyPI pero solo ofrece wheels para Linux x86-64 y macOS arm64, por lo que no forma parte del extra; instálelo a mano con `pip install python-ofiq` donde exista un wheel.
+
+Instalar en modo comercial no cambia el modo por sí solo. Configúralo en tu archivo de sobrescritura `scoring_config.json` (`{ "licensing": { "mode": "commercial" } }`); el argumento de compilación de Docker también fija `FACET_LICENSING_MODE=commercial` en la imagen. `python facet.py --doctor` muestra la situación de licencias activa.
+
 ## Instalación manual, sin install.sh
 
 Requiere Python 3.12 (3.10+ funciona) y Node.js 20+ para compilar la galería.
@@ -373,7 +390,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 # 3. Instala el resto de una vez, para que pip pueda resolver todo el grafo a la vez.
 #    requirements.txt ya incluye transformers y accelerate, necesarios para
 #    los modelos SigLIP/BiRefNet/VLM que usan los perfiles 8gb+.
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements.restricted.txt
 
 # 4. Instala UN ÚNICO ONNX Runtime para la detección de rostros (consulta la tabla siguiente)
 pip install onnxruntime-gpu>=1.17.0   # o bien: pip install onnxruntime>=1.15.0
@@ -409,6 +426,7 @@ Angular y verifica todas las importaciones.
 | `--cuda VERSION` | Anular la versión de CUDA detectada (p. ej. `--cuda 12.8`) |
 | `--skip-client` | Omitir la compilación del frontend de Angular |
 | `--no-uv` | Usar pip en lugar de uv |
+| `--commercial` | Instalación apta para uso comercial: omite insightface, pyiqa y ONNX Runtime, instala mediapipe con `--no-deps`; debes poner `licensing.mode` en `commercial` tú mismo |
 
 | Objetivo de Make | Ejecuta |
 |-------------|------|

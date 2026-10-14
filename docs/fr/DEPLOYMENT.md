@@ -285,6 +285,8 @@ téléchargement.
 
 **Tags versionnés.** `:latest`, `:latest-cuda` et `:latest-cuda-legacy` évoluent à chaque release ; épinglez une version (`:1.7.2`, `:1.7`, `:1.7.2-cuda`, `:1.7.2-cuda-legacy`, …) sur un NAS que vous ne voulez pas voir changer sans prévenir. Les trois variantes se compilent depuis le même `Dockerfile` via les arguments de compilation `BASE_IMAGE`, `STRIP_TORCH`, `INSTALL_CUML` et `REQUIREMENTS_LOCK`, définis par variante dans `.github/workflows/docker-publish.yml`. Ce workflow accepte aussi un déclenchement manuel `workflow_dispatch`, qui republie `latest` / `latest-cuda` / `latest-cuda-legacy` depuis `master` sans avoir à couper de release ni à créer de tag versionné.
 
+**Build commercial.** Ajoutez `--build-arg FACET_LICENSING=commercial` (compose : `build.args.FACET_LICENSING: commercial`) pour ignorer le lock restreint (`insightface`, `pyiqa` et ce qui ne sert qu'à eux) et définir `FACET_LICENSING_MODE=commercial` dans l'image. La valeur par défaut `FACET_LICENSING=default` l'installe, les images publiées ne changent donc pas. Le lock restreint est dérivé de `REQUIREMENTS_LOCK` (`requirements.legacy.restricted.lock.txt` pour le lock legacy). Voir [Installation](INSTALLATION.md).
+
 Pour un NAS dédié à la galerie web où l'image doit rester légère (sans CUDA), compilez plutôt une image allégée. Notez que le garde-fou de la CI exige que chaque source `COPY` soit suivie par git, donc le contexte de compilation doit inclure les fichiers listés — ce qui explique pourquoi aucun `scoring_config.json` n'est copié : c'est un fichier propre à l'installation, non suivi par git, et son absence signifie simplement que le conteneur tourne sur les valeurs par défaut situées dans `config/`.
 
 ```dockerfile

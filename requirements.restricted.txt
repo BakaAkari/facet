@@ -1,0 +1,21 @@
+# Facet RESTRICTED dependencies (non-commercial licence terms).
+# Install with: pip install -r requirements.txt -r requirements.restricted.txt
+# Skip this file for a commercial install (licensing.mode = commercial);
+# see docs/INSTALLATION.md.
+
+# Face Detection
+insightface>=0.7.0
+# ONNX Runtime — install.sh auto-detects nvidia-smi and installs the right
+# variant (onnxruntime-gpu for CUDA 11.8/12.x/13.x, plain onnxruntime on CPU).
+# If you bypass install.sh and pip install directly, pick ONE of:
+#   onnxruntime>=1.15.0           # CPU only
+#   onnxruntime-gpu>=1.17.0       # GPU acceleration for CUDA 12.x / 13.x
+#   onnxruntime-gpu>=1.15.0,<1.18 # GPU acceleration for CUDA 11.8
+
+# Quality Assessment (PyIQA models: TOPIQ, HyperIQA, DBCNN, MUSIQ).
+# >=0.1.16 also exposes Q-ReAlign (qrealign) — see models/pyiqa_scorer.py
+# PYIQA_MODELS for the registered models and their score ranges.
+pyiqa>=0.1.16
+# pyiqa's liqe/clipiqa archs depend on PyPI openai-clip, which still imports
+# pkg_resources at runtime (LIQE/CLIPIQA); setuptools 81 removed pkg_resources.
+setuptools<81

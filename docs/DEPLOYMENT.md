@@ -298,6 +298,8 @@ set per variant in `.github/workflows/docker-publish.yml`. That workflow also ac
 manual `workflow_dispatch` run, which republishes `latest` / `latest-cuda` /
 `latest-cuda-legacy` off `master` without cutting a release or minting a versioned tag.
 
+**Commercial build.** Add `--build-arg FACET_LICENSING=commercial` (compose: `build.args.FACET_LICENSING: commercial`) to skip the restricted lock (`insightface`, `pyiqa` and what only they need) and set `FACET_LICENSING_MODE=commercial` in the image. The default `FACET_LICENSING=default` installs it, so published images are unchanged. The restricted lock is derived from `REQUIREMENTS_LOCK` (`requirements.legacy.restricted.lock.txt` for the legacy lock). See [Installation](INSTALLATION.md#commercial-install-and-the-restricted-packages).
+
 For a viewer-only NAS where the image must stay small (no CUDA), build a slim image instead. Note the CI guard requires every `COPY` source to be git-tracked, so the build context must include the listed files — which is why no `scoring_config.json` is copied: that file is a per-install override, untracked, and its absence simply means the container runs on the defaults inside `config/`.
 
 ```dockerfile

@@ -28,22 +28,9 @@ pillow-heif>=1.5.0
 imagehash>=4.3.0
 rawpy>=0.18.0
 
-# Face Detection
-insightface>=0.7.0
-# ONNX Runtime — install.sh auto-detects nvidia-smi and installs the right
-# variant (onnxruntime-gpu for CUDA 11.8/12.x/13.x, plain onnxruntime on CPU).
-# If you bypass install.sh and pip install directly, pick ONE of:
-#   onnxruntime>=1.15.0           # CPU only
-#   onnxruntime-gpu>=1.17.0       # GPU acceleration for CUDA 12.x / 13.x
-#   onnxruntime-gpu>=1.15.0,<1.18 # GPU acceleration for CUDA 11.8
-
-# Quality Assessment (PyIQA models: TOPIQ, HyperIQA, DBCNN, MUSIQ).
-# >=0.1.16 also exposes Q-ReAlign (qrealign) — see models/pyiqa_scorer.py
-# PYIQA_MODELS for the registered models and their score ranges.
-pyiqa>=0.1.16
-# pyiqa's liqe/clipiqa archs depend on PyPI openai-clip, which still imports
-# pkg_resources at runtime (LIQE/CLIPIQA); setuptools 81 removed pkg_resources.
-setuptools<81
+# Face detection (insightface) and the PyIQA scorers (pyiqa) are RESTRICTED
+# (non-commercial licence) and live in requirements.restricted.txt. Default installs
+# use both files; licensing.mode = commercial installs this file only.
 
 # Extended IQA tier (OPTIONAL — see docs/CONFIGURATION.md "Extended IQA tier").
 # Enabled per-metric via scoring_config.json "iqa_extended". Only aesthetic_v25
@@ -51,8 +38,12 @@ setuptools<81
 # commented to keep the default install / Docker image lean. Uncomment (or
 # `pip install .[iqa-extended]`) if you enable it:
 #   aesthetic-predictor-v2-5   # iqa_extended.aesthetic_v25 (SigLIP aesthetic head, ~2GB)
-# (Q-ReAlign comes from pyiqa above and needs no quantisation backend;
+# (Q-ReAlign is a native transformers scorer and needs no quantisation backend;
 # DeQA-Score downloads via transformers.)
+
+# BiRefNet's remote code imports einops. pyiqa used to pull it in; a commercial
+# install without pyiqa would otherwise lose subject saliency silently.
+einops>=0.8.0
 
 # Scientific Computing
 numpy>=1.24.0
