@@ -368,6 +368,13 @@ class ScoringConfig:
     def _compute_version_hash(self):
         """Compute a hash of the config for tracking which version was used."""
         config_str = json.dumps(self.config, sort_keys=True)
+        # The effective mode (file value after the $FACET_LICENSING_MODE override)
+        # changes the scoring weights, so it must change the hash. Default mode
+        # appends nothing, which keeps every existing hash unchanged.
+        import licensing
+        mode = licensing.licensing_block(self.config)['mode']
+        if mode != licensing.MODE_DEFAULT:
+            config_str += f"|licensing_mode={mode}"
         return hashlib.md5(config_str.encode()).hexdigest()[:12]
 
     @staticmethod

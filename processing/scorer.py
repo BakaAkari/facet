@@ -481,7 +481,7 @@ SCORING_METRIC_KEYS = (
 )
 
 
-def build_metric_vector(m, cfg, category, weights=None, penalties=None):
+def build_metric_vector(m, cfg, category, weights=None, penalties=None, unavailable=()):
     """Build the per-metric 0-10 scoring vector (pre-weighting).
 
     Single source of truth for the metric values that feed the weighted
@@ -494,6 +494,9 @@ def build_metric_vector(m, cfg, category, weights=None, penalties=None):
              redistribution); defaults to cfg.get_weights(category).
     penalties: precomputed _calculate_scoring_penalties result, to avoid a second
                pass when the caller already has it.
+    unavailable: metric keys to leave out instead of substituting the neutral
+                 5.0 (commercial mode). Only scoring passes it; the optimizer
+                 keeps the default () and so sees every metric.
     """
     safe_float = _safe_float
     w = weights if weights is not None else (cfg.get_weights(category) if cfg else {})
@@ -600,7 +603,53 @@ def build_metric_vector(m, cfg, category, weights=None, penalties=None):
         if ext.get('deqa'):
             result['deqa'] = safe_float(m.get('deqa_score'), 5.0)
 
+    for key in unavailable:
+        result.pop(key, None)
     return result
+
+
+# Every key of a weights dict that names a scored metric (the rest are bonus,
+# penalty multipliers and underscore flags). 'quality' is folded into
+# 'aesthetic' by build_metric_vector but still carries weight.
+_WEIGHTED_METRIC_KEYS = frozenset(SCORING_METRIC_KEYS) | {
+    'quality', 'symmetry', 'balance', 'edge_entropy', 'fractal', 'color_harmony',
+    'qrealign', 'aesthetic_v25', 'deqa',
+}
+
+
+def unavailable_for_config(cfg):
+    """Metric keys this install cannot compute, memoised on the config object.
+
+    Keyed on the env override and the file's mode so a mode change is seen
+    without recomputing the policy per photo.
+    """
+    if cfg is None:
+        return frozenset()
+    import licensing
+    key = (os.environ.get(licensing.LICENSING_MODE_ENV, ''),
+           ((getattr(cfg, 'config', None) or {}).get('licensing') or {}).get('mode'))
+    cache = cfg.__dict__.setdefault('_unavailable_metrics_cache', {})
+    if key not in cache:
+        cache[key] = frozenset(licensing.unavailable_metrics(licensing.resolve_policy(cfg.config)))
+    return cache[key]
+
+
+def renormalise_weights(weights, unavailable):
+    """Scoring-time weights with ``unavailable`` metrics dropped and the rest summing to 1.
+
+    Returns a copy; ``weights`` (the raw config values) is never modified.
+    """
+    out = dict(weights)
+    for key in unavailable:
+        out[key] = 0.0
+    remaining = sum(v for k, v in out.items()
+                    if k in _WEIGHTED_METRIC_KEYS and isinstance(v, (int, float)) and v > 0)
+    if remaining > 0:
+        for k in list(out):
+            v = out[k]
+            if k in _WEIGHTED_METRIC_KEYS and isinstance(v, (int, float)) and v > 0:
+                out[k] = v / remaining
+    return out
 
 
 def build_scoring_metrics(
@@ -1247,12 +1296,16 @@ class Facet:
         # Determine photo category and load weights
         category = self._determine_photo_category(m, cfg)
         w = cfg.get_weights(category) if cfg else {}
+        unavailable = unavailable_for_config(cfg)
+        if unavailable:
+            w = renormalise_weights(w, unavailable)
 
         # =================================================================
         # DATA-DRIVEN SCORING: weighted sum over the shared metric vector
         # (same feature space used by the weight optimizer for training)
         # =================================================================
-        metric_values = build_metric_vector(m, cfg, category, weights=w, penalties=penalties)
+        metric_values = build_metric_vector(m, cfg, category, weights=w, penalties=penalties,
+                                            unavailable=unavailable)
 
         # Get category flags from config (with sensible defaults)
         # Face categories get blink penalty by default

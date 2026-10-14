@@ -136,6 +136,9 @@ def _report_model_licences(config_path, db_path, profile_name):
         return
     mode = pol.mode + (" (allow_unclear)" if pol.allow_unclear else "")
     _ok("Licensing mode", mode)
+    _info("Scoring drift",
+          f"scores are weighted for the '{pol.mode}' licensing mode; after changing the mode, "
+          "photos scored under the other one keep their old aggregate until --recompute-average is run")
     if profile_name is None:
         _info("Profile", "unknown — showing the legacy profile's components")
     for component_id in _components_in_use(cfg, profile_name):
