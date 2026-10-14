@@ -23,6 +23,7 @@ from typing import List, Dict, Any
 from tqdm import tqdm
 
 import licensing
+from db.person_centroids import flush_centroids_safely
 from db.scoring_overrides import get_photo_scoring_overrides
 from models.model_manager import UNIFIED_MEMORY_ACCELERATOR, ModelManager
 from processing.routing import (
@@ -377,11 +378,12 @@ class ChunkedMultiPassProcessor:
             if pbar:
                 pbar.close()
 
-            # Ensure all models are unloaded
-            self.model_manager.unload_all()
-
-            # Centroids of persons re-attached during the scan, rebuilt once.
-            self.scorer.flush_person_centroids()
+            # Ensure all models are unloaded. The centroid flush (persons re-attached
+            # during the scan, rebuilt once) runs even if this raises.
+            try:
+                self.model_manager.unload_all()
+            finally:
+                flush_centroids_safely(self.scorer)
 
         self.metrics['total_time'] = time.time() - start_time
         self._print_summary()

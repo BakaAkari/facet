@@ -7,8 +7,10 @@ Provides per-photo analysis: score breakdown, strengths, weaknesses, suggestions
 import asyncio
 import json
 import logging
+
 from typing import Optional
 
+import licensing
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.auth import CurrentUser, get_optional_user, is_edition_authenticated
@@ -579,5 +581,6 @@ def _get_vlm_critique(photo, rule_critique, thumbnail_bytes):
         return response or None
 
     except Exception:
+        licensing.reraise_if_refused()
         logger.exception("VLM critique failed")
         return None

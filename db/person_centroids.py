@@ -6,9 +6,30 @@ carries ``centroid_model`` for that reason, and a library that holds both
 ArcFace (512-d) and SFace (128-d) faces never averages across them.
 """
 
+import logging
+import sys
+
 import numpy as np
 
 from db.embedding_space import ARCFACE_MODEL, active_embedding_model, expected_dim, tag_matches
+
+logger = logging.getLogger("facet.person_centroids")
+
+
+def flush_centroids_safely(scorer):
+    """Run ``scorer.flush_person_centroids()`` from a scan's ``finally`` block.
+
+    When an exception is already propagating, a failing flush is logged and
+    swallowed so the original error is not masked; otherwise the flush error
+    is raised.
+    """
+    in_flight = sys.exc_info()[1] is not None
+    try:
+        scorer.flush_person_centroids()
+    except Exception:
+        if not in_flight:
+            raise
+        logger.exception("Person-centroid flush failed while another error was propagating")
 
 
 def person_centroid_model(conn, person_id, active=None):

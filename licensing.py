@@ -54,7 +54,14 @@ def reraise_if_refused() -> None:
         if isinstance(exc, LicenceError):
             raise exc
         seen.add(id(exc))
-        exc = exc.__cause__ or exc.__context__
+        # ``raise X from None`` sets __suppress_context__: the implicit context was
+        # deliberately cut, so it is not followed (an explicit __cause__ still is).
+        if exc.__cause__ is not None:
+            exc = exc.__cause__
+        elif exc.__suppress_context__:
+            exc = None
+        else:
+            exc = exc.__context__
 
 
 @dataclass(frozen=True)

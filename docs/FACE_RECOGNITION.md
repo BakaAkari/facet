@@ -295,7 +295,7 @@ to the geometric scores.
   Set `false` to force geometry-only.
 - `min_crop_size` (default `192`): faces whose padded crop is smaller than this
   (px, shorter side) fall back to geometry rather than upscale a tiny face.
-- `blink_pose_gate_deg` (default `null` = off): commercial-mode (MediaPipe) analyzer only. A face whose |yaw| or |pitch| (degrees, from the Face Landmarker's facial transformation matrix) exceeds this value gets no blink verdict and no eyes-open / smile score (NULL = unknown), because a turned head reads as closed eyes. It stays off by default: on a held-out half of a real library, no cutoff between 20° and 45° improved blink detection (each lost more true blinks than false ones), so none ships; set it only if your library has many strongly turned faces; it applies to newly scanned photos, existing `is_blink` values change only on rescan.
+- `blink_pose_gate_deg` (default `null` = off): commercial-mode (MediaPipe) analyzer only. A face whose |yaw| or |pitch| (degrees, from the Face Landmarker's facial transformation matrix) exceeds this value gets no blink verdict and no eyes-open / smile score (NULL = unknown), because a turned head reads as closed eyes. It stays off by default: on a held-out half of a real library, no cutoff between 20° and 45° improved blink detection (each lost more true blinks than false ones), so none ships; set it only if your library has many strongly turned faces; it applies to newly scanned photos, existing `is_blink` values change only on rescan. Must be a positive number of degrees: 0 or a negative value is rejected at startup; `null` = off.
 
 ### Recompute
 

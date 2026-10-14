@@ -20,6 +20,7 @@ from tqdm import tqdm
 from analyzers import CompositionAnalyzer, ImageCache
 from db.scoring_overrides import get_photo_scoring_overrides
 import licensing
+from db.person_centroids import flush_centroids_safely
 from processing.scorer import build_scoring_metrics
 from utils import (
     load_image_from_path, get_tag_params, detect_silhouette,
@@ -609,7 +610,7 @@ class BatchProcessor:
             self.resource_monitor.stop()
             self._stop_exif_prefetch()
             # After the joins: the GPU thread is the only saver, and it is done.
-            self.scorer.flush_person_centroids()
+            flush_centroids_safely(self.scorer)
 
         self.scorer.commit()
 
@@ -769,7 +770,7 @@ class BatchProcessor:
             self.resource_monitor.stop()
             self._stop_exif_prefetch()
             # After the joins: the GPU thread is the only saver, and it is done.
-            self.scorer.flush_person_centroids()
+            flush_centroids_safely(self.scorer)
 
         self.scorer.commit()
         return None

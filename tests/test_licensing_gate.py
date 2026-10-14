@@ -501,10 +501,12 @@ RESTRICTED_CALLS = {
     '_run_model_pass', '_restore_from_cache', 'download_weights',
     # public ModelManager loaders and the analyzer pass call (restricted in commercial mode)
     'load_model_only', 'load_aesthetic_model', 'load_composition_model', 'analyze_faces',
+    # api/ lazy singleton that builds a (restricted) VLM tagger
+    'get_or_load_vlm_tagger',
 }
 # ``_load_*`` helpers that read an image from disk, not a model.
 IMAGE_LOADERS = {'_load_one'}
-SCAN_ROOTS = ('models', 'processing', 'analyzers', 'faces', 'facet.py')
+SCAN_ROOTS = ('models', 'processing', 'analyzers', 'faces', 'api', 'facet.py')
 
 
 def _scan_files():
@@ -600,6 +602,15 @@ class TestSwallowers:
         monkeypatch.setitem(globals(), 'ROOT', tmp_path)
         bad, seen = _tree_unprotected()
         assert seen == 1 and bad == [('models/new.py', 6)]
+
+    def test_tree_scan_covers_api_vlm_loader(self, tmp_path, monkeypatch):
+        (tmp_path / 'api').mkdir()
+        (tmp_path / 'api' / 'new.py').write_text(
+            "def route():\n    try:\n        t = get_or_load_vlm_tagger(cfg)\n"
+            "    except Exception:\n        return None\n", encoding='utf-8')
+        monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+        bad, seen = _tree_unprotected()
+        assert seen == 1 and bad == [('api/new.py', 4)]
 
 
 @pytest.mark.parametrize('call', [

@@ -252,3 +252,42 @@ class TestBatchProcessorStopEvent:
         calls_after_unwind = inference_calls["n"]
         time.sleep(1.5)
         assert inference_calls["n"] == calls_after_unwind
+
+
+class _FlushCountingScorer(FakeScorer):
+    """FakeScorer whose flush counts calls and can fail, to prove the scan path flushes."""
+    flush_calls = 0
+    flush_error = None
+
+    def flush_person_centroids(self):
+        self.flush_calls += 1
+        if self.flush_error:
+            raise self.flush_error
+        return 0
+
+
+class TestBatchProcessorFlushesCentroids:
+    @pytest.mark.timeout(30)
+    def test_process_files_flushes_exactly_once_at_the_end(self, tmp_path):
+        scorer = _FlushCountingScorer(tmp_path)
+        _make_processor(scorer).process_files(_tiny_jpegs(tmp_path, 5), show_metrics=False)
+        assert scorer.flush_calls == 1
+        assert scorer.committed
+
+    @pytest.mark.timeout(30)
+    def test_process_stream_flushes_exactly_once_at_the_end(self, tmp_path):
+        paths = _tiny_jpegs(tmp_path, 5)
+        scorer = _FlushCountingScorer(tmp_path)
+        _make_processor(scorer).process_stream(iter(paths), len(paths), show_metrics=False)
+        assert scorer.flush_calls == 1
+        assert scorer.committed
+
+    @pytest.mark.timeout(30)
+    def test_a_failing_flush_does_not_mask_a_scan_error(self, tmp_path):
+        scorer = _FlushCountingScorer(tmp_path)
+        scorer.flush_error = ValueError("flush died")
+        proc = _make_processor(scorer)
+        with mock.patch.object(scorer, 'save_photos_batch', side_effect=RuntimeError("scan died")):
+            with pytest.raises(RuntimeError, match="scan died"):
+                proc.process_files(_tiny_jpegs(tmp_path, 3), show_metrics=False)
+        assert scorer.flush_calls == 1

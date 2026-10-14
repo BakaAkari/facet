@@ -554,7 +554,7 @@ def is_photo_tags_available(conn=None):
 # init_database (or a CLI upgrade) can create it while the server is up. Table
 # existence is the whole check -- no row count -- so a manual-only library and a
 # first-ever write are both seen at once.
-_manual_tags_present = set()
+_manual_tags_present: set[str] = set()
 
 
 def is_manual_tags_available(conn=None):

@@ -327,6 +327,29 @@ class TestReraiseIfRefused:
                     return e
         assert self._handled(make) == 'refused'
 
+    def test_raise_from_none_cuts_the_implicit_context(self):
+        """``raise X from None`` deliberately hides the context, so a refusal behind it is not followed."""
+        def make():
+            try:
+                raise licensing.LicenceError('no')
+            except licensing.LicenceError:
+                try:
+                    raise ValueError('cut') from None
+                except ValueError as e:
+                    return e
+        assert self._handled(make) == 'swallowed'
+
+    def test_an_explicit_cause_is_followed_even_with_suppressed_context(self):
+        def make():
+            try:
+                raise licensing.LicenceError('no')
+            except licensing.LicenceError as inner:
+                try:
+                    raise ValueError('wrapped') from inner
+                except ValueError as e:
+                    return e
+        assert self._handled(make) == 'refused'
+
     def test_an_unrelated_error_is_left_for_the_handler(self):
         assert self._handled(lambda: ValueError('boom')) == 'swallowed'
 
