@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from analyzers import CompositionAnalyzer, ImageCache
 from db.scoring_overrides import get_photo_scoring_overrides
-from licensing import LicenceError
+import licensing
 from processing.scorer import build_scoring_metrics
 from utils import (
     load_image_from_path, get_tag_params, detect_silhouette,
@@ -290,9 +290,8 @@ class BatchProcessor:
 
             # Use shared batch method for aesthetic/quality scoring
             aesthetic_results = self.scorer.get_aesthetic_and_quality_batch(pil_images, clip_inputs)
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.exception("Batch inference failed for %d images", len(batch))
             for item in batch:
                 self.result_queue.put({'path': item['path'], 'error': f'batch inference failed: {e}'})
@@ -490,9 +489,8 @@ class BatchProcessor:
 
                 self.result_queue.put({'result': res, 'pil_img': pil_img})
 
-            except LicenceError:
-                raise
             except Exception as e:
+                licensing.reraise_if_refused()
                 self.result_queue.put({'path': item['path'], 'error': str(e)})
 
     def process_files(self, photo_paths, show_metrics=True):
@@ -610,6 +608,8 @@ class BatchProcessor:
                 w.join()
             self.resource_monitor.stop()
             self._stop_exif_prefetch()
+            # After the joins: the GPU thread is the only saver, and it is done.
+            self.scorer.flush_person_centroids()
 
         self.scorer.commit()
 
@@ -768,6 +768,8 @@ class BatchProcessor:
                 w.join()
             self.resource_monitor.stop()
             self._stop_exif_prefetch()
+            # After the joins: the GPU thread is the only saver, and it is done.
+            self.scorer.flush_person_centroids()
 
         self.scorer.commit()
         return None

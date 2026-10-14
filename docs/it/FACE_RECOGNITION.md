@@ -282,7 +282,8 @@ ripiega sui punteggi geometrici.
   "face_detection": {
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -293,6 +294,7 @@ ripiega sui punteggi geometrici.
   su `false` per forzare la sola geometria.
 - `min_crop_size` (predefinito `192`): i volti il cui ritaglio con padding è più piccolo di questo
   valore (px, lato più corto) ripiegano sulla geometria invece di ingrandire un volto minuscolo.
+- `blink_pose_gate_deg` (predefinito `null` = disattivato): solo l'analizzatore MediaPipe della modalità commerciale. Un volto con |yaw| o |pitch| (gradi, dalla matrice di trasformazione del Face Landmarker) oltre questo valore non riceve verdetto di ammiccamento né punteggio occhi aperti / sorriso (NULL = sconosciuto), perché una testa girata sembra avere gli occhi chiusi. Disattivato per impostazione predefinita: su una metà riservata di una libreria reale, nessuna soglia tra 20° e 45° ha migliorato il rilevamento degli ammiccamenti (ognuna perdeva più veri ammiccamenti che falsi), quindi non ne viene fornita alcuna; impostala solo se la tua libreria contiene molti volti fortemente girati; vale per le foto scansionate di nuovo, i valori `is_blink` esistenti cambiano solo con una nuova scansione.
 
 ### Ricalcolo
 
@@ -482,9 +484,9 @@ validato senza dati reali. Per farlo correttamente è necessario:
 ### Librerie miste, ri-estrazione e valori sconosciuti
 
 - **Librerie miste.** Una libreria può contenere insieme volti ArcFace (512-d) e SFace (128-d). Il clustering, i suggerimenti di unione, la ricerca di persona simile e i centroidi delle persone usano ciascuno un solo modello alla volta (`persons.centroid_model` indica quale); le modalità di clustering incrementale e «solo persone con nome» non toccano i volti né le persone dell'altro modello, ma `--cluster-faces-force` azzera tutte le assegnazioni volto→persona ed elimina tutte le persone, comprese quelle con nome, qualunque sia il loro modello. Per portare una libreria sul modello attivo, esegui `--extract-faces-gpu-force` (in modalità commerciale usa l'estrattore permissivo; le persone con nome vengono conservate) e poi `--cluster-faces-incremental`.
-- **Avvisi.** Una scansione registra un avviso quando esistono volti salvati di un modello diverso da quello attivo, e `--doctor` segnala la stessa discrepanza rispetto al modello attivo.
-- **Le persone con nome sopravvivono alla ri-estrazione.** Prima che `--extract-faces-gpu-force` elimini le righe dei volti, Facet memorizza il riquadro di ogni volto di una persona con nome; poi ogni volto rilevato di nuovo torna alla persona il cui vecchio riquadro lo sovrappone con IoU >= 0,5 (uno a uno, prima la sovrapposizione migliore) e i centroidi vengono ricalcolati per modello. Un volto senza vecchio riquadro corrispondente resta non assegnato fino al prossimo clustering. I riquadri memorizzati sono salvati nella tabella `face_reextract_snapshot` nella stessa transazione dell'eliminazione, quindi un'esecuzione interrotta viene ripresa dall'estrazione successiva. Ri-scansionare una foto conserva le sue persone con nome allo stesso modo.
-- **Sconosciuto non è zero.** Senza MediaPipe l'analizzatore permissivo non può misurare occhi, sorriso e ammiccamenti; questi valori sono salvati come NULL (non 0 e non «ammicca»). Il filtro e la penalità di ammiccamento trattano NULL come «non è un ammiccamento». I lettori dei 106 punti di riferimento saltano i volti senza punti.
+- **Avvisi.** Una scansione registra un avviso quando esistono volti salvati di un modello diverso da quello attivo, e `--doctor` segnala la stessa discrepanza rispetto al modello attivo. In modalità commerciale `--doctor` elenca i componenti che una scansione caricherebbe davvero (YuNet, SFace, Q-ReAlign, più OFIQ quando `python-ofiq` è installato), non quelli che il profilo VRAM si limita a nominare; TOPIQ, LIQE e InsightFace non compaiono quindi più come avvisi.
+- **Le persone con nome sopravvivono alla ri-estrazione.** Prima che `--extract-faces-gpu-force` elimini le righe dei volti, Facet memorizza il riquadro di ogni volto di una persona con nome; poi ogni volto rilevato di nuovo torna alla persona il cui vecchio riquadro lo sovrappone con IoU >= 0,5 (uno a uno, prima la sovrapposizione migliore) e i centroidi vengono ricalcolati per modello. Un volto senza vecchio riquadro corrispondente resta non assegnato fino al prossimo clustering. I riquadri memorizzati sono salvati nella tabella `face_reextract_snapshot` nella stessa transazione dell'eliminazione, quindi un'esecuzione interrotta viene ripresa dall'estrazione successiva. Ri-scansionare una foto conserva le sue persone con nome allo stesso modo. I centroidi delle persone che una nuova scansione ha lasciato obsoleti vengono ricostruiti una sola volta al termine della scansione (anche se interrotta), non una volta per batch; i conteggi e i volti rappresentativi continuano a essere aggiornati per batch.
+- **Sconosciuto non è zero.** Senza MediaPipe l'analizzatore permissivo non può misurare occhi, sorriso e ammiccamenti; questi valori sono salvati come NULL (non 0 e non «ammicca»). Il filtro e la penalità di ammiccamento trattano NULL come «non è un ammiccamento». I lettori dei 106 punti di riferimento saltano i volti senza punti. Una foto la cui passata sui volti fallisce viene salvata con `face_count`, `face_ratio` e `is_group_portrait` a NULL (sconosciuto), non a 0, e i suoi volti salvati vengono mantenuti; il punteggio la tratta come senza volti finché non viene riscansionata.
 
 ## Risoluzione dei problemi
 

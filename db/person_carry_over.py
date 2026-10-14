@@ -134,7 +134,8 @@ def snapshot_named_person_faces(conn, photo_paths=None):
     return [(r[0], (r[1], r[2], r[3], r[4]), r[5]) for r in rows]
 
 
-def reattach_named_persons(conn, snapshot, min_iou=CARRY_OVER_MIN_IOU, extra_person_ids=()):
+def reattach_named_persons(conn, snapshot, min_iou=CARRY_OVER_MIN_IOU, extra_person_ids=(),
+                           defer_centroids=None):
     """Give re-detected faces back to the named persons they belonged to.
 
     Within each photo, old and new boxes are paired by :func:`match_boxes`, so two
@@ -146,6 +147,13 @@ def reattach_named_persons(conn, snapshot, min_iou=CARRY_OVER_MIN_IOU, extra_per
 
     ``extra_person_ids`` are persons (typically unnamed) that merely lost faces
     and need their count and representative refreshed too.
+
+    ``defer_centroids`` is an optional ``set``: when given, the persons whose
+    centroid needs rebuilding are added to it and NOT recomputed here, so a scan
+    that re-attaches the same person across many batches rebuilds each centroid
+    once, at the end (``Facet.flush_person_centroids``), instead of re-reading
+    every one of the person's embeddings per batch. Counts and representatives
+    are still refreshed immediately.
 
     Returns ``{'reattached': n, 'unmatched': n}`` (unmatched = old faces that
     found no partner).
@@ -172,19 +180,24 @@ def reattach_named_persons(conn, snapshot, min_iou=CARRY_OVER_MIN_IOU, extra_per
     # named person left with none must not keep a count or a representative that
     # point at deleted rows.
     touched = {entry[2] for entry in snapshot}
-    for person_id in touched:
-        recompute_person_centroid(conn, person_id)
+    if defer_centroids is None:
+        for person_id in touched:
+            recompute_person_centroid(conn, person_id)
+    else:
+        defer_centroids.update(touched)
     refresh_person_counts(conn, touched | set(extra_person_ids))
     return {'reattached': reattached, 'unmatched': len(snapshot) - reattached}
 
 
-def replace_photo_faces(conn, photo_paths, face_records, insert_sql):
+def replace_photo_faces(conn, photo_paths, face_records, insert_sql, defer_centroids=None):
     """Replace the stored faces of ``photo_paths`` and keep their named persons.
 
     Snapshot, delete, insert ``face_records`` (rows for ``insert_sql``), then
     re-attach by overlap, all on ``conn``'s open transaction. Persons that lost
     faces (named or not) get a fresh ``face_count`` and representative. The caller
     commits. Returns the re-attach stats.
+
+    ``defer_centroids`` is forwarded to :func:`reattach_named_persons`.
     """
     photo_paths = list(photo_paths)
     snapshot = snapshot_named_person_faces(conn, photo_paths)
@@ -199,7 +212,8 @@ def replace_photo_faces(conn, photo_paths, face_records, insert_sql):
         conn.executemany(insert_sql, face_records)
     if not affected:
         return {'reattached': 0, 'unmatched': 0}
-    return reattach_named_persons(conn, snapshot, extra_person_ids=affected)
+    return reattach_named_persons(conn, snapshot, extra_person_ids=affected,
+                                  defer_centroids=defer_centroids)
 
 
 def persist_named_snapshot(conn):

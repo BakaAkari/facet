@@ -28,6 +28,7 @@ from db import init_database, get_connection
 from db.render_version import DISPLAY_RENDER_VERSION
 from db.embedding_space import SFACE_MODEL, active_embedding_model
 from db.person_carry_over import replace_photo_faces
+from db.person_centroids import recompute_person_centroid
 from db.schema import FACES_UPSERT_SQL, face_upsert_row
 from db.scoring_overrides import get_photo_scoring_overrides
 from db.vec import sync_vec_batch
@@ -108,6 +109,7 @@ logging.getLogger('exifread').setLevel(logging.ERROR)
 
 # Import config module (lightweight, no cv2/torch dependency)
 from config import ScoringConfig
+from config.category_filter import with_face_defaults
 
 logger = logging.getLogger("facet.scorer")
 
@@ -789,6 +791,9 @@ class Facet:
         self.db_path = db_path
         self.lightweight = lightweight
         self._face_analyzer = None
+        # Named persons whose centroid a rescan batch left stale; rebuilt once per
+        # scan by flush_person_centroids() instead of once per batch.
+        self._pending_centroid_persons = set()
 
         # Load scoring configuration
         self.config = ScoringConfig(config_path)
@@ -834,9 +839,8 @@ class Facet:
                         self.vlm_composition = create_composition_analyzer(self.model_manager)
                         if self.vlm_composition:
                             logger.info("Qwen2-VL composition analyzer initialized")
-                    except LicenceError:
-                        raise
                     except Exception as e:
+                        licensing.reraise_if_refused()
                         logger.info("Qwen2-VL not available: %s", e)
                         self.vlm_composition = None
                 else:
@@ -855,9 +859,8 @@ class Facet:
                         # Eagerly load U2-Net-P saliency model to avoid loading during batch workers
                         self.samp_scorer.ensure_loaded()
                         logger.info("SAMP-Net composition scorer initialized")
-                    except LicenceError:
-                        raise
                     except Exception as e:
+                        licensing.reraise_if_refused()
                         logger.info("SAMP-Net not available: %s", e)
                         self.samp_scorer = None
                 else:
@@ -994,6 +997,10 @@ class Facet:
                 self._face_analyzer = build_permissive_face_analyzer(self.config)
         return self._face_analyzer
 
+    @face_analyzer.setter
+    def face_analyzer(self, analyzer):
+        self._face_analyzer = analyzer
+
     def preflight_models(self):
         """Resolve the lazily built scan models once, before any per-image work.
 
@@ -1013,10 +1020,6 @@ class Facet:
                 "Stopping the scan: it would otherwise record every photo as having no faces.")
         if licensing.is_commercial() and self.aesthetic_head is None:
             self._commercial_aesthetic_scorer()
-
-    @face_analyzer.setter
-    def face_analyzer(self, analyzer):
-        self._face_analyzer = analyzer
 
     @property
     def uses_transformers_backend(self):
@@ -1247,7 +1250,7 @@ class Facet:
                 return category_override
 
         # Build photo_data dict for config-driven category determination
-        photo_data = {
+        photo_data = with_face_defaults({
             'tags': m.get('tags', '') or '',
             'face_count': int(safe_float(m.get('face_count'), 0)),
             'face_ratio': safe_float(m.get('face_ratio'), 0),
@@ -1259,7 +1262,7 @@ class Facet:
             'shutter_speed': self._parse_shutter_speed(m.get('shutter_speed')),
             'focal_length': m.get('focal_length'),
             'f_stop': m.get('f_stop'),
-        }
+        })
         scoring_context = m.get('scoring_context')
 
         # Delegate to config-driven category determination
@@ -1578,9 +1581,8 @@ class Facet:
             res.update(exif_data)
 
             return res
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Error scoring %s: %s", original_path, e)
             return None
 
@@ -2590,7 +2592,8 @@ class Facet:
                 conn,
                 [res['path'] for res, _ in results_with_images
                  if not ('face_details' in res and res['face_details'] is None)],
-                face_records, FACES_UPSERT_SQL)
+                face_records, FACES_UPSERT_SQL,
+                defer_centroids=self._pending_centroid_persons)
 
             # Sync clip embeddings to photos_vec for vector search
             vec_records = [
@@ -2663,7 +2666,8 @@ class Facet:
                     conn,
                     [res['path'] for res, _, _ in batch
                      if not ('face_details' in res and res['face_details'] is None)],
-                    face_records, FACES_UPSERT_SQL)
+                    face_records, FACES_UPSERT_SQL,
+                    defer_centroids=self._pending_centroid_persons)
 
             sync_vec_batch(conn, [
                 (res['path'], res['clip_embedding'])
@@ -2703,6 +2707,25 @@ class Facet:
     def commit(self):
         with get_connection(self.db_path, row_factory=False) as conn:
             conn.commit()
+
+    def flush_person_centroids(self):
+        """Rebuild the centroid of every person a rescan batch re-attached faces to.
+
+        ``save_photos_batch`` / ``save_photos_partial`` defer this (a person with
+        thousands of faces would otherwise have every embedding re-read per
+        batch). Call it once when the scan ends, in a ``finally`` and after the
+        worker threads are joined. Returns the number of persons rebuilt.
+        """
+        pending = self._pending_centroid_persons
+        if not pending:
+            return 0
+        person_ids = sorted(pending)
+        with get_connection(self.db_path, row_factory=False) as conn:
+            for person_id in person_ids:
+                recompute_person_centroid(conn, person_id)
+            conn.commit()
+        pending.difference_update(person_ids)
+        return len(person_ids)
 
 
 # ============================================
@@ -2864,7 +2887,6 @@ def process_single_photo(photo_path, scorer):
         # Run the scoring (The AI parts will still use the GPU lock)
         res = scorer.score_photo_from_pil(current_pil, img_cv, str(photo_path))
         return res, current_pil
-    except LicenceError:
-        raise
     except Exception as e:
+        licensing.reraise_if_refused()
         return None, str(e)

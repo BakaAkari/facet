@@ -7523,6 +7523,8 @@ export interface components {
             edition_authenticated: boolean;
             /** Edition Enabled */
             edition_enabled: boolean;
+            /** Face Merge Threshold */
+            face_merge_threshold?: number | null;
             /** Features */
             features: {
                 [key: string]: unknown;

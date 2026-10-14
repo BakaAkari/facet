@@ -74,6 +74,7 @@ def seeded(tmp_path):
     db = str(tmp_path / "single_pass.db")
     init_database(db)
     facet = Facet.__new__(Facet)  # bypass heavy __init__; only db_path/config used
+    facet._pending_centroid_persons = set()
     facet.db_path = db
     facet.config = SimpleNamespace(version_hash='v1')
     # Resolved the same way production's _base_record (multi_pass.py) resolves
@@ -261,7 +262,7 @@ def test_full_save_without_aesthetic_or_face_pass_stores_unknown(seeded):
         ).fetchone()
         assert row['aesthetic'] is None          # no aesthetic pass ran: unknown, stored NULL (was 5.0)
         assert row['tags'] is None
-        assert row['face_count'] == 0
+        assert row['face_count'] is None         # no face pass ran: unknown, stored NULL (was 0)
         assert row['subject_sharpness'] == 7.0
         assert conn.execute(
             "SELECT COUNT(*) FROM faces WHERE photo_path=?", (path,)

@@ -86,42 +86,64 @@ def _registry_id(name):
     return None
 
 
-def _components_in_use(cfg, profile_name):
-    """Registry ids the active profile would load, in a stable order."""
+def _components_in_use(cfg, profile_name, pol):
+    """Registry ids a scan under ``pol`` would load for the profile, in a stable order.
+
+    The set comes from :func:`processing.routing.route_models`, the function the
+    scan queue itself calls, so the doctor reports what is routed rather than
+    what is merely configured (a commercial install never loads TOPIQ or
+    InsightFace, and does load YuNet, SFace and Q-ReAlign). The VRAM fit of a
+    VLM tagger is reported by the VRAM section, so every tagger counts as fitting
+    here. Only configuration is read; no model is loaded.
+    """
+    import importlib.util
+
+    import licensing
+    from processing.routing import resolve_selected_quality, route_models
+
     profile_name = profile_name or 'legacy'
-    models = cfg.get('models', {})
-    profile = models.get('profiles', {}).get(profile_name, {})
-    ids = []
+    profile = cfg.get('models', {}).get('profiles', {}).get(profile_name, {})
+    extended_cfg = cfg.get('iqa_extended', {})
+    qrealign = extended_cfg.get('qrealign', 'auto')
+    if isinstance(qrealign, str) and qrealign.strip().lower() == 'auto':
+        qrealign = profile_name != 'legacy'
+    extended = {'qrealign': bool(qrealign),
+                'aesthetic_v25': bool(extended_cfg.get('aesthetic_v25', False)),
+                'deqa': bool(extended_cfg.get('deqa', False))}
 
-    def add(component_id):
-        if component_id and component_id not in ids:
-            ids.append(component_id)
+    loaders = route_models(cfg, profile, extended, lambda _gb: True, pol)
+    routed = set()
+    # The primary quality model is not itself a queue entry when it is the CLIP head.
+    routed.add(licensing.component_for_loader(resolve_selected_quality(cfg, profile, pol)))
+    blendshapes = cfg.get('face_detection', {}).get('blendshapes', {}).get('enabled', True)
+    for loader in loaders:
+        if loader == 'clip':
+            routed.add('siglip2' if profile.get('clip_config') == 'clip' else 'clip')
+        elif loader == 'faces_permissive':
+            routed.update(('yunet', 'sface'))
+            if importlib.util.find_spec('ofiq') is not None:
+                routed.add('ofiq')
+            if blendshapes:
+                routed.add('mediapipe_face_landmarker')
+        else:
+            routed.add(licensing.component_for_loader(loader))
+            if loader == 'insightface' and blendshapes:
+                routed.add('mediapipe_face_landmarker')
+            if loader == 'samp_net':
+                routed.add('u2netp')
 
-    add(_registry_id(profile.get('aesthetic_model', 'clip-mlp')))
-    add('siglip2' if profile.get('clip_config') == 'clip' else 'clip')
-    tagging = profile.get('tagging_model', 'clip')
-    if tagging != 'clip':
-        add(_registry_id(tagging))
-    for name in profile.get('supplementary_pyiqa', []):
-        add(_registry_id(name))
-    composition = profile.get('composition_model', 'rule-based')
-    if composition != 'rule-based':
-        add(_registry_id(composition))
-        if composition == 'samp-net':
-            add('u2netp')
-    if profile.get('saliency_enabled', True):
-        add('birefnet')
-    add('insightface')
-    if cfg.get('face_detection', {}).get('blendshapes', {}).get('enabled', True):
-        add('mediapipe_face_landmarker')
-    extended = cfg.get('iqa_extended', {})
-    qrealign = extended.get('qrealign', 'auto')
-    if qrealign is True or (qrealign == 'auto' and profile_name != 'legacy'):
-        add('qrealign_native')
-    for name in ('aesthetic_v25', 'deqa'):
-        if extended.get(name):
-            add(name)
-    return ids
+    # Stable display order: the profile's own listing order, then anything routed beyond it.
+    order = []
+    for candidate in (
+            _registry_id(profile.get('aesthetic_model', 'clip-mlp')), 'siglip2', 'clip',
+            _registry_id(profile.get('tagging_model', 'clip')),
+            *(_registry_id(n) for n in profile.get('supplementary_pyiqa', [])),
+            'samp_net', 'u2netp', 'birefnet', 'insightface', 'mediapipe_face_landmarker',
+            'qrealign_native', 'aesthetic_v25', 'deqa', 'yunet', 'sface', 'ofiq'):
+        if candidate in routed and candidate not in order:
+            order.append(candidate)
+    order.extend(sorted(routed - set(order)))
+    return order
 
 
 def _report_model_licences(config_path, db_path, profile_name):
@@ -142,7 +164,7 @@ def _report_model_licences(config_path, db_path, profile_name):
           "photos scored under the other one keep their old aggregate until --recompute-average is run")
     if profile_name is None:
         _info("Profile", "unknown — showing the legacy profile's components")
-    for component_id in _components_in_use(cfg, profile_name):
+    for component_id in _components_in_use(cfg, profile_name, pol):
         comp = licensing.COMPONENTS[component_id]
         label = f"{comp.name} ({component_id})"
         if not licensing.allowed(component_id, pol):

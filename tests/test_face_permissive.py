@@ -247,3 +247,79 @@ def test_default_blink_threshold_is_the_w8_measured_optimum():
     from analyzers.face_permissive import DEFAULT_BLINK_THRESHOLD
     # D33: base-rate-weighted choice (was 0.35, the unweighted max-F1 point)
     assert DEFAULT_BLINK_THRESHOLD == 0.55
+
+
+class _PoseStubBlendshapes:
+    """Scorer stub that supports the pose variant; ``analyze_face_crop`` is the pre-pose 4-tuple."""
+
+    def __init__(self, names, pose):
+        self.names, self.pose = names, pose
+        self.calls = []
+
+    def analyze_face_crop(self, crop):
+        self.calls.append('plain')
+        return 8.0, 6.0, dict(self.names), None
+
+    def analyze_face_crop_pose(self, crop):
+        self.calls.append('pose')
+        return 8.0, 6.0, dict(self.names), None, self.pose
+
+
+class TestBlinkPoseGate:
+    def _run(self, monkeypatch, pose, gate, names=NAMES_BLINK):
+        stub = _PoseStubBlendshapes(names, pose)
+        analyzer, *_ = _analyzer(monkeypatch, [_row(100, 100, 120, 140, 0.95)], 640,
+                                 blendshapes=stub, blink_pose_gate_deg=gate)
+        analyzer.enable_ofiq = False
+        return analyzer.analyze_faces(_textured()), stub
+
+    def test_turned_head_blink_is_unknown(self, monkeypatch):
+        result, _ = self._run(monkeypatch, (50.0, 0.0, 0.0), 35)
+        assert result['is_blink'] is None
+        detail = result['face_details'][0]
+        assert detail['eyes_open_score'] is None and detail['smile_score'] is None
+
+    def test_pitch_beyond_gate_also_unknown(self, monkeypatch):
+        result, _ = self._run(monkeypatch, (2.0, -40.0, 0.0), 35)
+        assert result['is_blink'] is None
+
+    def test_frontal_face_still_blinks(self, monkeypatch):
+        result, _ = self._run(monkeypatch, (10.0, 5.0, 0.0), 35)
+        assert result['is_blink'] == 1
+        assert result['face_details'][0]['eyes_open_score'] == 8.0
+
+    def test_gate_off_ignores_pose_and_keeps_the_pre_pose_call(self, monkeypatch):
+        result, stub = self._run(monkeypatch, (50.0, 0.0, 0.0), None)
+        assert result['is_blink'] == 1
+        assert stub.calls == ['plain']          # gate off => the exact pre-pose scorer call
+
+    def test_gate_off_equals_unpatched_analyzer(self, monkeypatch):
+        gated_off, _ = self._run(monkeypatch, (50.0, 0.0, 0.0), None)
+        plain_stub = _StubBlendshapes([NAMES_BLINK])
+        analyzer, *_ = _analyzer(monkeypatch, [_row(100, 100, 120, 140, 0.95)], 640, blendshapes=plain_stub)
+        analyzer.enable_ofiq = False
+        plain = analyzer.analyze_faces(_textured())
+        for key in ('is_blink', 'face_quality', 'eye_sharpness', 'face_count'):
+            assert gated_off[key] == plain[key]
+        assert gated_off['face_details'][0]['eyes_open_score'] == plain['face_details'][0]['eyes_open_score']
+
+    def test_missing_pose_is_not_gated(self, monkeypatch):
+        result, _ = self._run(monkeypatch, None, 35)
+        assert result['is_blink'] == 1
+
+    def test_scorer_without_pose_support_is_not_gated(self, monkeypatch):
+        analyzer, *_ = _analyzer(monkeypatch, [_row(100, 100, 120, 140, 0.95)], 640,
+                                 blendshapes=_StubBlendshapes([NAMES_BLINK]), blink_pose_gate_deg=35)
+        analyzer.enable_ofiq = False
+        assert analyzer.analyze_faces(_textured())['is_blink'] == 1
+
+    def test_one_turned_face_keeps_photo_unknown_even_if_other_open(self, monkeypatch):
+        class Two(_PoseStubBlendshapes):
+            def analyze_face_crop_pose(self, crop):
+                pose = (60.0, 0.0, 0.0) if len(self.calls) == 0 else (0.0, 0.0, 0.0)
+                self.calls.append('pose')
+                return 8.0, 6.0, dict(NAMES_OPEN), None, pose
+        analyzer, *_ = _analyzer(monkeypatch, [_row(50, 50, 100, 100, 0.9), _row(300, 150, 80, 100, 0.8)], 640,
+                                 blendshapes=Two(NAMES_OPEN, None), blink_pose_gate_deg=35)
+        analyzer.enable_ofiq = False
+        assert analyzer.analyze_faces(_textured())['is_blink'] is None

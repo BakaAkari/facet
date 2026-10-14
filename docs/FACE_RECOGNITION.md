@@ -283,7 +283,8 @@ to the geometric scores.
   "face_detection": {
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -294,6 +295,7 @@ to the geometric scores.
   Set `false` to force geometry-only.
 - `min_crop_size` (default `192`): faces whose padded crop is smaller than this
   (px, shorter side) fall back to geometry rather than upscale a tiny face.
+- `blink_pose_gate_deg` (default `null` = off): commercial-mode (MediaPipe) analyzer only. A face whose |yaw| or |pitch| (degrees, from the Face Landmarker's facial transformation matrix) exceeds this value gets no blink verdict and no eyes-open / smile score (NULL = unknown), because a turned head reads as closed eyes. It stays off by default: on a held-out half of a real library, no cutoff between 20° and 45° improved blink detection (each lost more true blinks than false ones), so none ships; set it only if your library has many strongly turned faces; it applies to newly scanned photos, existing `is_blink` values change only on rescan.
 
 ### Recompute
 
@@ -484,9 +486,9 @@ validated without real data. Doing it correctly requires:
 ### Mixed libraries, re-extraction and unknown values
 
 - **Mixed libraries.** A library may hold ArcFace (512-d) and SFace (128-d) faces at once. The clusterer, merge suggestions, the similar-person search and person centroids each use one model at a time (`persons.centroid_model` records which one built a centroid); the incremental and named-only clustering modes leave faces and persons of the other model untouched, but `--cluster-faces-force` clears every face assignment and deletes every person, named ones included, whatever their model. To move a library to the active model, run `--extract-faces-gpu-force` (in commercial mode it uses the permissive extractor; named persons are carried over) and then `--cluster-faces-incremental`.
-- **Warnings.** A scan logs a warning when stored faces belong to a model other than the active one, and `--doctor` reports the same mismatch against the active model.
-- **Named persons survive re-extraction.** Before `--extract-faces-gpu-force` deletes the face rows, Facet remembers the box of every face belonging to a named person; afterwards each re-detected face is given back to the person whose old box overlaps it by IoU >= 0.5 (one-to-one, best overlap first), and centroids are rebuilt per model. A face that matches no old box stays unassigned for the next clustering run. The remembered boxes are stored in the `face_reextract_snapshot` table in the same transaction as the delete, so an interrupted run is replayed by the next extraction. Rescanning a photo keeps its named persons the same way.
-- **Unknown is not zero.** Without MediaPipe the permissive analyzer cannot measure eyes, smile or blinks, so those values are stored as NULL (not 0, and not "blinking"); the blink filter and the blink penalty treat NULL as "not a blink". The 106-point landmark readers skip faces without landmarks.
+- **Warnings.** A scan logs a warning when stored faces belong to a model other than the active one, and `--doctor` reports the same mismatch against the active model. In commercial mode `--doctor` lists the components a scan would actually load (YuNet, SFace, Q-ReAlign, plus OFIQ when `python-ofiq` is installed), not those the VRAM profile merely names, so TOPIQ, LIQE and InsightFace no longer appear as warnings.
+- **Named persons survive re-extraction.** Before `--extract-faces-gpu-force` deletes the face rows, Facet remembers the box of every face belonging to a named person; afterwards each re-detected face is given back to the person whose old box overlaps it by IoU >= 0.5 (one-to-one, best overlap first), and centroids are rebuilt per model. A face that matches no old box stays unassigned for the next clustering run. The remembered boxes are stored in the `face_reextract_snapshot` table in the same transaction as the delete, so an interrupted run is replayed by the next extraction. Rescanning a photo keeps its named persons the same way. Person centroids that a rescan left stale are rebuilt once when the scan ends (even if it is interrupted), not once per batch; counts and representative faces are still updated per batch.
+- **Unknown is not zero.** Without MediaPipe the permissive analyzer cannot measure eyes, smile or blinks, so those values are stored as NULL (not 0, and not "blinking"); the blink filter and the blink penalty treat NULL as "not a blink". The 106-point landmark readers skip faces without landmarks. A photo whose face pass fails is stored with `face_count`, `face_ratio` and `is_group_portrait` as NULL (unknown), not 0, and its stored faces are kept; scoring treats it as having no face until it is rescanned.
 
 ## Troubleshooting
 

@@ -35,6 +35,7 @@ from optimization.eval_common import (
     partial_path,
     ro_connection,
     size_bucket,
+    split_halves,
     stratified_sample_rows,
     SIZE_BUCKETS,
     pairwise_f1_grid,
@@ -539,8 +540,9 @@ def _parse_variant(name, arg):
 def _ofiq_unavailable_message():
     import importlib.util
     if importlib.util.find_spec('ofiq') is None:
-        return ("face-quality candidate 'ofiq' skipped: python-ofiq is not installed "
-                "(it is not on PyPI; see the commercial install notes)")
+        return ("face-quality candidate 'ofiq' skipped: python-ofiq is not installed. "
+                "It is on PyPI (`pip install python-ofiq`) but ships wheels for Linux x86-64 and "
+                "macOS arm64 only; on Windows use WSL2 or Docker (docs/FACE_RECOGNITION.md, commercial mode)")
     return "face-quality candidate 'ofiq': ofiq is importable but no adapter is wired yet (UNVERIFIED)"
 
 
@@ -1067,6 +1069,97 @@ def stored_arcface(conn, keys):
     return out
 
 
+CENTROID_N_BOOT = 1000
+
+
+def split_persons(labels, seed):
+    """Seeded 50/50 split of face indices BY PERSON, stratified by the person's face-count tercile.
+
+    Never by face: a person with faces on both sides would leak identity into the held-out half.
+    """
+    labels = np.asarray(labels)
+    ids, counts = np.unique(labels, return_counts=True)
+    order = np.argsort(counts, kind='stable')
+    tercile = {}
+    for rank, j in enumerate(order):
+        tercile[ids[j].item()] = min(2, rank * 3 // max(1, len(ids)))
+    strata = [tercile[x] for x in labels.tolist()]
+    return split_halves(len(labels), seed, strata=strata, groups=labels.tolist())
+
+
+def centroid_bootstrap(emb, labels, threshold, seed, n_boot=CENTROID_N_BOOT):
+    """Person-level bootstrap 95% CIs of half-centroid ``same_recall`` and ``false_merge_rate`` at ``threshold``."""
+    A, B, ids = half_centroids(emb, labels, seed)
+    n = len(ids)
+    if n < 2:
+        return {'n_persons': n, 'n_boot': n_boot}
+    S = A @ B.T
+    same = np.diag(S) >= threshold
+    rng = np.random.default_rng(seed + 13)
+    recalls, rates = [], []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        distinct = idx[:, None] != idx[None, :]
+        if not distinct.any():
+            continue
+        recalls.append(float(same[idx].mean()))
+        rates.append(float(((S[np.ix_(idx, idx)] >= threshold) & distinct).sum()) / float(distinct.sum()))
+    out = {'n_persons': n, 'n_boot': n_boot}
+    for key, vals in (('same_recall', recalls), ('false_merge_rate', rates)):
+        if vals:
+            lo, hi = np.percentile(vals, [2.5, 97.5])
+            out[key] = {'ci_low': float(lo), 'ci_high': float(hi)}
+    return out
+
+
+def _safe_choose(chooser, rows, ref_rows):
+    try:
+        return chooser(rows, ref_rows)
+    except StopIteration:  # the reference grid has no row at the reference point (empty half)
+        return None
+
+
+def centroid_heldout(sface, arcface, labels, seed, n_boot=CENTROID_N_BOOT):
+    """Choose the merge threshold / auto-merge distance on person half A, report them on person half B.
+
+    ``sface`` / ``arcface`` are ``(N, D)`` embeddings aligned with ``labels``. The choice uses ONLY A's
+    rows (ArcFace's target rate at its reference threshold is also taken from A); B is scored at the
+    chosen point afterwards, with a person-level bootstrap CI.
+    """
+    labels = np.asarray(labels)
+    a, b = split_persons(labels, seed)
+    sweeps = {}
+    for part, idx in (('A', a), ('B', b)):
+        sweeps[part] = {name: (centroid_sweep(e[idx], labels[idx], centroid_threshold_grid(), seed)['grid'],
+                               face_distance_sweep(e[idx], labels[idx], centroid_distance_grid()))
+                        for name, e in (('sface', sface), ('arcface', arcface))}
+    thr = _safe_choose(choose_centroid_threshold, sweeps['A']['sface'][0], sweeps['A']['arcface'][0])
+    dist = _safe_choose(choose_auto_merge_distance, sweeps['A']['sface'][1], sweeps['A']['arcface'][1])
+    persons_a, persons_b = np.unique(labels[a]), np.unique(labels[b])
+    assert not set(persons_a.tolist()) & set(persons_b.tolist())
+    selection = {'split': 'A', 'n_faces': int(len(a)), 'n_persons': int(len(persons_a)), 'seed': seed,
+                 'chosen': {'merge_threshold': thr, 'auto_merge_distance': dist}}
+    held = {'split': 'B', 'n_faces': int(len(b)), 'n_persons': int(len(persons_b)), 'n_boot': n_boot,
+            'metric': 'same_recall and false_merge_rate at the threshold chosen on A (half-centroid pairs); '
+                      'auto-merge: false_merge_rate / same_recall of face pairs at the chosen distance'}
+    if thr and thr['threshold'] is not None:
+        t = thr['threshold']
+        row = next((r for r in sweeps['B']['sface'][0] if abs(r['threshold'] - t) < 1e-9), None)
+        arc_ref = next((r for r in sweeps['B']['arcface'][0]
+                        if abs(r['threshold'] - CENTROID_ARCFACE_REFERENCE_THRESHOLD) < 1e-9), None)
+        held['merge_threshold'] = {'threshold': t, 'row': row, 'arcface_reference_row': arc_ref,
+                                   'ci': centroid_bootstrap(sface[b], labels[b], t, seed, n_boot)}
+    else:
+        held['merge_threshold'] = None
+    if dist and dist['distance'] is not None:
+        d = dist['distance']
+        held['auto_merge_distance'] = {
+            'distance': d, 'row': next((r for r in sweeps['B']['sface'][1] if abs(r['distance'] - d) < 1e-9), None)}
+    else:
+        held['auto_merge_distance'] = None
+    return selection, held
+
+
 def _run_faces_centroid(conn, names, loader, device, seed, limit):
     photos = sample_recognize_faces(conn, limit, seed)
     cand = resolve_candidate('faces-recognize', 'sface')
@@ -1093,6 +1186,7 @@ def _run_faces_centroid(conn, names, loader, device, seed, limit):
     have = np.array([v is not None for v in arc], dtype=bool)
     spaces = {'sface': emb, 'arcface': np.stack([v for v in arc if v is not None]) if have.any() else emb[:0]}
     results = {}
+    held_inputs = None
     for scope, mask in (('all_persons', np.ones(len(pids), bool)), ('named_persons_only', named)):
         m = mask & have
         keep = _usable(pids, m)
@@ -1108,6 +1202,9 @@ def _run_faces_centroid(conn, names, loader, device, seed, limit):
                 'n_faces': int(keep.sum()),
                 'centroid': centroid_sweep(e, lab, centroid_threshold_grid(), seed),
                 'face_distance': face_distance_sweep(e, lab, centroid_distance_grid())}
+            if scope == 'all_persons':
+                held_inputs = held_inputs or {'labels': lab}
+                held_inputs[model] = e
         results[scope] = scope_res
     allres = results['all_persons']
     chosen = {
@@ -1116,10 +1213,17 @@ def _run_faces_centroid(conn, names, loader, device, seed, limit):
         'auto_merge_distance': choose_auto_merge_distance(allres['sface']['face_distance'],
                                                            allres['arcface']['face_distance'])}
     for k, v in chosen.items():
-        logger.info("faces-centroid %s: sface=%s (ArcFace target rate %.5f)", k,
+        logger.info("faces-centroid %s (full sample, selection-biased): sface=%s (ArcFace target rate %.5f)", k,
                     v.get('threshold', v.get('distance')), v['arcface_target_rate'])
+    selection = held = None
+    if held_inputs and len(held_inputs['labels']) and len(held_inputs.get('arcface', ())):
+        selection, held = centroid_heldout(held_inputs['sface'], held_inputs['arcface'], held_inputs['labels'], seed)
+        logger.info("faces-centroid held-out (split B): %s", held.get('merge_threshold'))
     return dict(stats, n_reference_faces=sum(len(v) for v in photos.values()), n_photos=len(photos),
-                results=results, chosen=chosen)
+                results=results, selection=selection, report=held,
+                full_sample_selection_biased={
+                    'note': 'thresholds chosen AND scored on the same persons (optimistic); kept so D34 is reproducible',
+                    'chosen': chosen})
 
 
 # ---------------------------------------------------------------------------
@@ -1199,25 +1303,218 @@ def sweep_blink(scores, labels, grid, seed, n_boot=1000):
                          threshold_ci_low=float(tlo), threshold_ci_high=float(thi))}
 
 
+POSE_CUTOFFS = (None, 45, 40, 35, 30, 25, 20)
+POSE_MAX_GATED_SHARE = 0.15
+BLINK_N_BOOT = 1000
+SHIPPED_BLINK_THRESHOLD = 0.55
+
+# Written BEFORE the first measurement run (issue #185, item 6/7). Verbatim in every report.
+PRE_REGISTERED_POSE_RULE = (
+    "Faces are split 50/50 by seed, stratified by label (split A selects, split B reports; B is never "
+    "seen during selection). At the blink threshold t_A chosen on A (maximum library-weighted F1 on A, "
+    "ties to the larger threshold), where gated faces count as unflagged (a gated true positive is a lost "
+    "recall), choose among the pose cutoffs {none, 45, 40, 35, 30, 25, 20} degrees (applied to "
+    "max(|yaw|, |pitch|)) the cutoff that maximises library-weighted F1 on A, provided it gates <= 15% of "
+    "the meshed faces of A; ties go to the larger cutoff (none is the largest). Adopt that cutoff only if on "
+    "B it also gates <= 15% of meshed faces AND its library-weighted F1 on B is strictly greater than the "
+    "ungated library-weighted F1 on B; otherwise ship no gate and record the null result. Library weighting: "
+    "negatives are reweighted by (n_pos/n_neg of the split) * ((1 - base_rate)/base_rate), base_rate read "
+    "from the DB (single-face photos with a stored is_blink).")
+PRE_REGISTERED_THRESHOLD_RULE = (
+    "The blink threshold is chosen on split A as the grid point with the highest library-weighted F1 "
+    "(ties to the larger threshold) and reported on split B with a seeded bootstrap CI over B faces.")
+
+
+def library_blink_rate(conn):
+    """``(n_positive, n_total, rate)`` over single-face photos with a stored ``is_blink`` (the sample's population)."""
+    n_pos, n_tot = conn.execute(
+        "SELECT COALESCE(SUM(p.is_blink), 0), COUNT(*) FROM photos p JOIN faces f ON f.photo_path = p.path "
+        "WHERE p.is_blink IN (0, 1) AND f.embedding_model = ? AND f.bbox_x1 IS NOT NULL "
+        "AND (SELECT COUNT(*) FROM faces g WHERE g.photo_path = p.path AND g.embedding_model = ?) = 1",
+        (REFERENCE_EMBEDDING_MODEL, REFERENCE_EMBEDDING_MODEL)).fetchone()
+    return int(n_pos), int(n_tot), (n_pos / n_tot if n_tot else None)
+
+
+def weighted_prf(tp, fp, fn, n_pos, n_neg, base_rate):
+    """Library-weighted ``(precision, recall, f1)``: false positives scaled by the negative weight, or None."""
+    if not n_pos or not n_neg or not base_rate or not 0 < base_rate < 1:
+        return None
+    w = (n_pos / n_neg) * ((1 - base_rate) / base_rate)
+    fpw = fp * w
+    p = tp / (tp + fpw) if tp + fpw else 0.0
+    r = tp / (tp + fn) if tp + fn else 0.0
+    return p, r, (2 * p * r / (p + r) if p + r else 0.0)
+
+
+def _counts(pred, labels):
+    return (int(np.sum(pred & labels)), int(np.sum(pred & ~labels)), int(np.sum(~pred & labels)))
+
+
+def blink_weighted_grid(scores, labels, grid, base_rate, gate_mask=None):
+    """Per threshold: unweighted and library-weighted precision / recall / F1 of ``score >= t``.
+
+    ``gate_mask`` (bool per face, True = gated) forces the prediction to "not blinking".
+    """
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=bool)
+    n_pos, n_neg = int(labels.sum()), int((~labels).sum())
+    rows = []
+    for t in grid:
+        pred = scores >= t
+        if gate_mask is not None:
+            pred = pred & ~np.asarray(gate_mask, dtype=bool)
+        tp, fp, fn = _counts(pred, labels)
+        p = tp / (tp + fp) if tp + fp else 0.0
+        r = tp / (tp + fn) if tp + fn else 0.0
+        wp = weighted_prf(tp, fp, fn, n_pos, n_neg, base_rate)
+        rows.append({'threshold': t, 'precision': p, 'recall': r,
+                     'f1': 2 * p * r / (p + r) if p + r else 0.0, 'tp': tp, 'fp': fp, 'fn': fn,
+                     'weighted_precision': None if wp is None else wp[0],
+                     'weighted_recall': None if wp is None else wp[1],
+                     'weighted_f1': None if wp is None else wp[2]})
+    return rows
+
+
+def choose_blink_threshold(scores, labels, grid, base_rate):
+    """Pre-registered: highest library-weighted F1 on the given rows, ties to the larger threshold.
+
+    Falls back to the unweighted F1 when no base rate is available. None when ``labels`` has no positive.
+    """
+    labels = np.asarray(labels, dtype=bool)
+    if not len(labels) or not labels.any():
+        return None
+    rows = blink_weighted_grid(scores, labels, grid, base_rate)
+    key = 'weighted_f1' if rows[0]['weighted_f1'] is not None else 'f1'
+    return max(rows, key=lambda r: (r[key], r['threshold']))
+
+
+def blink_bootstrap_ci(scores, labels, threshold, base_rate, seed, n_boot=BLINK_N_BOOT, gate_mask=None):
+    """Percentile 95% CIs of F1 / precision / recall / weighted F1 at ``threshold`` over resampled faces."""
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels, dtype=bool)
+    n = len(labels)
+    out = {'n_boot': n_boot}
+    if n == 0 or not labels.any():
+        return out
+    mask = np.zeros(n, bool) if gate_mask is None else np.asarray(gate_mask, dtype=bool)
+    pred_all = (scores >= threshold) & ~mask
+    rng = np.random.default_rng(seed + 11)
+    acc = {'f1': [], 'precision': [], 'recall': [], 'weighted_f1': []}
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        lab, pred = labels[idx], pred_all[idx]
+        if not lab.any():
+            continue
+        tp, fp, fn = _counts(pred, lab)
+        p = tp / (tp + fp) if tp + fp else 0.0
+        r = tp / (tp + fn) if tp + fn else 0.0
+        acc['precision'].append(p)
+        acc['recall'].append(r)
+        acc['f1'].append(2 * p * r / (p + r) if p + r else 0.0)
+        wp = weighted_prf(tp, fp, fn, int(lab.sum()), int((~lab).sum()), base_rate)
+        if wp is not None:
+            acc['weighted_f1'].append(wp[2])
+    for k, vals in acc.items():
+        if vals:
+            lo, hi = np.percentile(vals, [2.5, 97.5])
+            out[k] = {'ci_low': float(lo), 'ci_high': float(hi)}
+    return out
+
+
+def pose_gate_table(scores, labels, poses, threshold, base_rate, cutoffs=POSE_CUTOFFS):
+    """Per cutoff: gated share of faces and the metrics at ``threshold`` with gated faces unflagged.
+
+    ``poses`` is the per-face ``max(|yaw|, |pitch|)`` in degrees (NaN = no pose, never gated).
+    """
+    poses = np.asarray(poses, dtype=float)
+    labels = np.asarray(labels, dtype=bool)
+    n = len(labels)
+    table = []
+    for c in cutoffs:
+        gated = np.zeros(n, bool) if c is None else np.nan_to_num(poses, nan=-1.0) > c
+        row = blink_weighted_grid(scores, labels, [threshold], base_rate, gate_mask=gated)[0]
+        row.pop('threshold')
+        table.append(dict(row, cutoff=c, n_gated=int(gated.sum()), gated_share=float(gated.mean()) if n else 0.0))
+    return table
+
+
+def _cutoff_rank(c):
+    return float('inf') if c is None else float(c)
+
+
+def choose_pose_cutoff(table_a, table_b, max_share=POSE_MAX_GATED_SHARE):
+    """Apply :data:`PRE_REGISTERED_POSE_RULE`: select on A's table, confirm on B's."""
+    def value(r):
+        return r['weighted_f1'] if r['weighted_f1'] is not None else r['f1']
+
+    eligible = [r for r in table_a if r['gated_share'] <= max_share]
+    best = max(eligible, key=lambda r: (value(r), _cutoff_rank(r['cutoff'])))
+    cutoff = best['cutoff']
+    b_by = {r['cutoff']: r for r in table_b}
+    b_best, b_none = b_by[cutoff], b_by[None]
+    adopt = (cutoff is not None and b_best['gated_share'] <= max_share and value(b_best) > value(b_none))
+    return {'selected_on_a': cutoff, 'adopt': bool(adopt), 'cutoff': cutoff if adopt else None,
+            'b_weighted_f1_selected': value(b_best), 'b_weighted_f1_ungated': value(b_none),
+            'b_gated_share_selected': b_best['gated_share'],
+            'verdict': (f"adopt blink_pose_gate_deg={cutoff}" if adopt else "ship no gate (null result)")}
+
+
 def _blink_scorer_factory():
-    """``score(img, bbox) -> (left, right) | None`` through PermissiveFaceAnalyzer's own crop + mesh path."""
+    """``score(img, bbox) -> (left, right, yaw, pitch) | None`` through PermissiveFaceAnalyzer's own crop + mesh path.
+
+    ``yaw`` / ``pitch`` are degrees, or None when the bundle returned no transformation matrix.
+    """
     from analyzers.face_permissive import PermissiveFaceAnalyzer
     an = PermissiveFaceAnalyzer(enable_blendshapes=True)
 
     def score(img, bbox):
-        res = an._mesh_analysis(img, np.asarray(bbox).astype(int))
+        res = an._mesh_analysis_pose(img, np.asarray(bbox).astype(int))
         if res is None:
             return None
         names = res[2]
-        return float(names['eyeBlinkLeft']), float(names['eyeBlinkRight'])
+        pose = res[4] if len(res) > 4 else None
+        yaw, pitch = (None, None) if pose is None else (float(pose[0]), float(pose[1]))
+        return float(names['eyeBlinkLeft']), float(names['eyeBlinkRight']), yaw, pitch
     return score
+
+
+def blink_heldout(mx, labels, poses, base_rate, seed, grid):
+    """Split-A selection / split-B report for the max-blink score and the pose-gate cutoff."""
+    labels = np.asarray(labels, dtype=bool)
+    mx = np.asarray(mx, dtype=float)
+    a, b = split_halves(len(labels), seed, strata=labels.astype(int).tolist())
+    out = {'seed': seed, 'n_a': int(len(a)), 'n_b': int(len(b)), 'base_rate': base_rate,
+           'rule_threshold': PRE_REGISTERED_THRESHOLD_RULE, 'rule_pose': PRE_REGISTERED_POSE_RULE}
+    chosen = choose_blink_threshold(mx[a], labels[a], grid, base_rate)
+    out['selection'] = {'split': 'A', 'n': int(len(a)), 'seed': seed,
+                        'chosen': None if chosen is None else {'threshold': chosen['threshold'], 'row': chosen}}
+    if chosen is None or not len(b) or not labels[b].any():
+        out['report'] = {'split': 'B', 'n': int(len(b)), 'metric': None}
+        out['pose_gate'] = None
+        return out
+    t = chosen['threshold']
+    out['report'] = {
+        'split': 'B', 'n': int(len(b)), 'n_positive': int(labels[b].sum()), 'threshold': t,
+        'metric': blink_weighted_grid(mx[b], labels[b], [t], base_rate)[0],
+        'at_shipped_threshold': blink_weighted_grid(mx[b], labels[b], [SHIPPED_BLINK_THRESHOLD], base_rate)[0],
+        'ci': blink_bootstrap_ci(mx[b], labels[b], t, base_rate, seed),
+        'n_boot': BLINK_N_BOOT}
+    poses = np.asarray(poses, dtype=float)
+    out['pose_gate'] = {
+        'n_with_pose': int(np.isfinite(poses).sum()),
+        'threshold': t,
+        'split_a': pose_gate_table(mx[a], labels[a], poses[a], t, base_rate),
+        'split_b': pose_gate_table(mx[b], labels[b], poses[b], t, base_rate),
+        'shipped_threshold_split_b': pose_gate_table(mx[b], labels[b], poses[b], SHIPPED_BLINK_THRESHOLD, base_rate)}
+    out['pose_gate']['decision'] = choose_pose_cutoff(out['pose_gate']['split_a'], out['pose_gate']['split_b'])
+    return out
 
 
 def _run_blink(conn, loader, seed, limit, scorer=None):
     samples = sample_blink_faces(conn, limit, seed)
     scorer = scorer or _blink_scorer_factory()
     logger.info("blink: %d faces (%d blink-positive)", len(samples), sum(s[2] for s in samples))
-    mx, mean, labels = [], [], []
+    mx, mean, labels, faces = [], [], [], []
     unknown = unreadable = 0
     for i, (path, bbox, label) in enumerate(samples):
         if i % 50 == 0:
@@ -1230,18 +1527,33 @@ def _run_blink(conn, loader, seed, limit, scorer=None):
         if res is None:
             unknown += 1
             continue
-        mx.append(max(res))
-        mean.append(float(np.mean(res)))
+        yaw, pitch = (res[2], res[3]) if len(res) >= 4 else (None, None)
+        mx.append(max(res[:2]))
+        mean.append(float(np.mean(res[:2])))
         labels.append(label)
+        faces.append({'path': path, 'label': label, 'max_blink': mx[-1], 'mean_blink': mean[-1],
+                      'yaw': yaw, 'pitch': pitch})
     grid = blink_threshold_grid()
+    n_pos_lib, n_lib, rate = library_blink_rate(conn)
+    poses = [float('nan') if f['yaw'] is None or f['pitch'] is None else max(abs(f['yaw']), abs(f['pitch']))
+             for f in faces]
     out = {'n_sampled': len(samples), 'n_mesh_failed': unknown, 'n_unreadable': unreadable,
            'sampling': 'all blink-positive single-face photos (capped by limit) + equal negatives, stratified',
            'reference_note': 'photo-level is_blink on single-face photos (faces table has no blink label)',
-           'max_blink': sweep_blink(mx, labels, grid, seed),
-           'mean_blink': sweep_blink(mean, labels, grid, seed)}
+           'library': {'n_positive': n_pos_lib, 'n_single_face': n_lib, 'blink_rate': rate},
+           'faces': faces,
+           'held_out': blink_heldout(mx, labels, poses, rate, seed, grid) if labels else None,
+           'full_sample_selection_biased': {
+               'note': 'threshold chosen AND scored on the same faces (optimistic); kept so D33 is reproducible',
+               'max_blink': sweep_blink(mx, labels, grid, seed),
+               'mean_blink': sweep_blink(mean, labels, grid, seed)}}
+    biased = out['full_sample_selection_biased']
     for key in ('max_blink', 'mean_blink'):
-        for r in out[key]['grid']:
+        for r in biased[key]['grid']:
             logger.info("%s t=%.2f P %.3f R %.3f F1 %.3f", key, r['threshold'], r['precision'], r['recall'], r['f1'])
+    held = out['held_out']
+    if held and held['pose_gate']:
+        logger.info("pose gate: %s", held['pose_gate']['decision']['verdict'])
     return out
 
 

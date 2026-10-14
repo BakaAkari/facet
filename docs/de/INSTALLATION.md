@@ -369,7 +369,7 @@ Die genauen Schwellenwerte, die `auto` anwendet, finden Sie unter
 
 `mediapipe` muss immer mit `--no-deps` installiert werden: Das mitgelieferte `opencv-contrib-python` würde sonst den `cv2`-Namensraum doppelt installieren. Das Extra `commercial` deklariert nur dessen Laufzeitabhängigkeiten (`absl-py`, `flatbuffers`). `python-ofiq` (die OFIQ-Gesichtsqualitäts-Bindings) liegt auf PyPI, bietet aber nur Wheels für Linux x86-64 und macOS arm64 und ist daher nicht Teil des Extras; installieren Sie es dort, wo ein Wheel existiert, manuell mit `pip install python-ofiq`.
 
-Eine kommerzielle Installation schaltet den Modus nicht von selbst um. Setzen Sie ihn in Ihrer `scoring_config.json`-Überschreibung (`{ "licensing": { "mode": "commercial" } }`); das Docker-Build-Argument setzt zusätzlich `FACET_LICENSING_MODE=commercial` im Image. `python facet.py --doctor` zeigt die aktive Lizenzlage.
+Eine kommerzielle Installation schaltet den Modus nicht von selbst um. Setzen Sie ihn in Ihrer `scoring_config.json`-Überschreibung (`{ "licensing": { "mode": "commercial" } }`); das Docker-Build-Argument setzt zusätzlich `FACET_LICENSING_MODE=commercial` im Image. `python facet.py --doctor` zeigt die aktive Lizenzlage. Im kommerziellen Modus listet es die Komponenten auf, die ein Scan tatsächlich lädt (YuNet, SFace, Q-ReAlign), nicht die, die das Profil lediglich nennt.
 
 ## Manuelle Installation ohne install.sh
 

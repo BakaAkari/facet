@@ -321,6 +321,7 @@ def download_calls(monkeypatch):
         return trip
 
     monkeypatch.setattr(urllib.request, 'urlretrieve', tripwire('urlretrieve'))
+    monkeypatch.setattr(urllib.request, 'urlopen', tripwire('urlopen'))
     for module, name in ((weights, 'download_weights'), (samp_net, 'download_weights'),
                          (aesthetic_head, 'download_weights'),
                          (huggingface_hub, 'hf_hub_download'), (huggingface_hub, 'snapshot_download'),
@@ -337,7 +338,7 @@ class TestDownloadTripwire:
         scorer.model_path = str(tmp_path / 'missing.pth')
         with pytest.raises(RuntimeError):   # the tripped error surfaces as the install hint
             scorer._download_weights()
-        # caught at the name samp_net bound, not only further down at urlretrieve
+        # caught at the name samp_net bound, not only further down at urlopen
         assert download_calls == ['models.samp_net.download_weights']
 
     def test_commercial_loaders_never_download(self, commercial, poison, download_calls):
@@ -454,8 +455,24 @@ def _handler_names(handler):
     return {ast.unparse(e) for e in elts}
 
 
+def _is_reraise_call(stmt):
+    """True for a bare ``reraise_if_refused()`` / ``licensing.reraise_if_refused()`` statement."""
+    if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+        return False
+    return ast.unparse(stmt.value.func).split('.')[-1] == 'reraise_if_refused'
+
+
+def _handler_is_guarded(handler):
+    """A broad handler is guarded iff its FIRST statement is the shared re-raise helper."""
+    return bool(handler.body) and _is_reraise_call(handler.body[0])
+
+
+def _broad_handlers(try_node):
+    return [h for h in try_node.handlers if _handler_names(h) & {'Exception', 'BaseException', '<bare>'}]
+
+
 def _unprotected_broad_handlers(path, func_name):
-    """Broad ``except Exception`` handlers in ``func_name`` with no earlier LicenceError re-raise."""
+    """Broad ``except Exception`` handlers in ``func_name`` not starting with ``reraise_if_refused()``."""
     markers = SWALLOW_MARKERS.get((path, func_name))
     tree = ast.parse((ROOT / path).read_text(encoding='utf-8'))
     funcs = [n for n in ast.walk(tree)
@@ -468,22 +485,65 @@ def _unprotected_broad_handlers(path, func_name):
                 continue
             if markers and not any(m in ast.unparse(ast.Module(node.body, [])) for m in markers):
                 continue
-            guarded = False
-            for h in node.handlers:
-                names = _handler_names(h)
-                if any(n.split('.')[-1] == 'LicenceError' for n in names) and any(isinstance(s, ast.Raise) and s.exc is None
-                                                   for s in h.body):
-                    guarded = True
-                if names & {'Exception', 'BaseException', '<bare>'}:
-                    broad_seen += 1
-                    if not guarded:
-                        bad.append((path, func_name, h.lineno))
+            for h in _broad_handlers(node):
+                broad_seen += 1
+                if not _handler_is_guarded(h):
+                    bad.append((path, func_name, h.lineno))
     return bad, broad_seen
+
+
+# Names that mark a try block as wrapping a restricted-component load or pass. A call to any of
+# these (or to a ``_load_*`` helper) inside a ``try`` makes that try's broad handlers need the guard.
+RESTRICTED_CALLS = {
+    'require', 'build_face_analyzer', 'build_permissive_face_analyzer', 'create_samp_scorer',
+    'create_composition_analyzer', 'SAMPNetScorer', 'FaceAnalyzer', 'process_single_photo',
+    'get_aesthetic_and_quality_batch', '_download_weights', 'load_model', 'load_model_for_pass',
+    '_run_model_pass', '_restore_from_cache', 'download_weights',
+    # public ModelManager loaders and the analyzer pass call (restricted in commercial mode)
+    'load_model_only', 'load_aesthetic_model', 'load_composition_model', 'analyze_faces',
+}
+# ``_load_*`` helpers that read an image from disk, not a model.
+IMAGE_LOADERS = {'_load_one'}
+SCAN_ROOTS = ('models', 'processing', 'analyzers', 'faces', 'facet.py')
+
+
+def _scan_files():
+    for entry in SCAN_ROOTS:
+        target = ROOT / entry
+        if not target.exists():
+            continue
+        if target.is_dir():
+            yield from sorted(target.rglob('*.py'))
+        else:
+            yield target
+
+
+def _try_calls_restricted(node):
+    for sub in ast.walk(ast.Module(node.body, [])):
+        if isinstance(sub, ast.Call):
+            name = ast.unparse(sub.func).split('.')[-1]
+            if name in RESTRICTED_CALLS or (name.startswith('_load_') and name not in IMAGE_LOADERS):
+                return True
+    return False
+
+
+def _tree_unprotected():
+    """(unguarded handlers, broad handlers found) over every try that wraps a restricted call."""
+    bad, seen = [], 0
+    for file in _scan_files():
+        tree = ast.parse(file.read_text(encoding='utf-8'))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try) and _try_calls_restricted(node):
+                for h in _broad_handlers(node):
+                    seen += 1
+                    if not _handler_is_guarded(h):
+                        bad.append((file.relative_to(ROOT).as_posix(), h.lineno))
+    return bad, seen
 
 
 class TestSwallowers:
     @pytest.mark.parametrize('path,func', SWALLOW_SITES)
-    def test_licence_error_handler_precedes_every_broad_handler(self, path, func):
+    def test_every_broad_handler_starts_with_the_reraise_helper(self, path, func):
         bad, _ = _unprotected_broad_handlers(path, func)
         assert bad == []
 
@@ -492,6 +552,30 @@ class TestSwallowers:
         total = sum(_unprotected_broad_handlers(p, f)[1] for p, f in SWALLOW_SITES)
         assert total >= 15
 
+    def test_no_broad_handler_around_a_restricted_call_is_unguarded_anywhere(self):
+        """Whole-tree scan over SCAN_ROOTS: a NEW function wrapping a call named in RESTRICTED_CALLS
+        (or a ``_load_*`` helper) in an unguarded broad handler fails. A restricted call under a name
+        not listed there is NOT detected; extend RESTRICTED_CALLS when adding a new entry point."""
+        bad, seen = _tree_unprotected()
+        assert bad == []
+        assert seen >= 8
+
+    def test_the_explicit_site_list_is_a_subset_of_what_the_tree_scan_covers(self):
+        """The listed sites are a floor: each must hold at least one guarded broad handler."""
+        for path, func in SWALLOW_SITES:
+            _, seen = _unprotected_broad_handlers(path, func)
+            assert seen >= 1, f"{path}:{func} lists no broad handler -- stale site entry"
+
+    def test_the_legacy_two_line_guard_is_gone(self):
+        offenders = []
+        for file in _scan_files():
+            tree = ast.parse(file.read_text(encoding='utf-8'))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ExceptHandler) and any(
+                        n.split('.')[-1] == 'LicenceError' for n in _handler_names(node)):
+                    offenders.append((file.name, node.lineno))
+        assert offenders == []
+
     def test_scan_detects_a_missing_guard(self, tmp_path, monkeypatch):
         src = tmp_path / 'm.py'
         src.write_text("def f():\n    try:\n        pass\n    except Exception:\n        pass\n",
@@ -499,6 +583,37 @@ class TestSwallowers:
         monkeypatch.setitem(globals(), 'ROOT', tmp_path)
         bad, seen = _unprotected_broad_handlers('m.py', 'f')
         assert seen == 1 and len(bad) == 1
+
+    def test_a_guard_that_is_not_first_does_not_count(self, tmp_path, monkeypatch):
+        src = tmp_path / 'm.py'
+        src.write_text("def f():\n    try:\n        pass\n    except Exception:\n"
+                       "        log()\n        licensing.reraise_if_refused()\n", encoding='utf-8')
+        monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+        bad, _ = _unprotected_broad_handlers('m.py', 'f')
+        assert len(bad) == 1
+
+    def test_tree_scan_detects_a_new_unguarded_function(self, tmp_path, monkeypatch):
+        (tmp_path / 'models').mkdir()
+        (tmp_path / 'models' / 'new.py').write_text(
+            "import licensing\n\ndef brand_new():\n    try:\n        licensing.require('x')\n"
+            "    except Exception:\n        pass\n", encoding='utf-8')
+        monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+        bad, seen = _tree_unprotected()
+        assert seen == 1 and bad == [('models/new.py', 6)]
+
+
+@pytest.mark.parametrize('call', [
+    "mm.load_model_only('insightface')", "mm.load_aesthetic_model()",
+    "mm.load_composition_model()", "fa.analyze_faces(img)",
+])
+def test_tree_scan_detects_public_loader_and_analyzer_shapes(tmp_path, monkeypatch, call):
+    (tmp_path / 'processing').mkdir()
+    (tmp_path / 'processing' / 'newmod.py').write_text(
+        f"def f(mm, fa, img):\n    try:\n        {call}\n    except Exception:\n        return None\n",
+        encoding='utf-8')
+    monkeypatch.setitem(globals(), 'ROOT', tmp_path)
+    bad, seen = _tree_unprotected()
+    assert seen == 1 and bad == [('processing/newmod.py', 4)]
 
 
 # ---------------------------------------------------------------------------
@@ -579,7 +694,11 @@ class TestNullHonestFaces:
         for key in ('face_quality', 'eye_sharpness', 'face_sharpness', 'is_blink',
                     'raw_eye_sharpness', 'face_confidence', 'face_details'):
             assert r[key] is None, key
-        assert r['face_count'] == 0 and r['face_ratio'] == 0 and r['isolation_bonus'] == 1.0
+        # Unknown, not "no face": stored NULL. Scoring reads these as 0 (see multi_pass).
+        for key in ('face_count', 'face_ratio', 'is_group_portrait'):
+            assert r[key] is None, key
+        assert r['isolation_bonus'] == 1.0
+        assert r['_face_failed'] is True
 
     def test_face_pass_failure_does_not_swallow_a_licence_error(self):
         class Boom:
@@ -606,6 +725,7 @@ class TestNullHonestFaces:
 
         facet = Facet.__new__(Facet)
         facet.db_path = db_path
+        facet._pending_centroid_persons = set()
         res = _base_result(path, 7.0)
         res['face_details'] = face_details
         with mock.patch('processing.scorer.generate_photo_thumbnail', return_value=b'thumb'), \
@@ -1114,6 +1234,7 @@ class TestMultiPassSuccessPathGoldens:
         init_database(db)
         facet = Facet.__new__(Facet)
         facet.db_path = db
+        facet._pending_centroid_persons = set()
         facet.config = ScoringConfig(defaults_path(), validate=False)
         proc = ChunkedMultiPassProcessor.__new__(ChunkedMultiPassProcessor)
         proc.scorer, proc.restricted, proc.pass_groups, proc.on_error = facet, False, [['clip']], None

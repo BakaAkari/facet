@@ -9,7 +9,6 @@ import logging
 from typing import Dict, List
 
 import licensing
-from licensing import LicenceError
 from utils.system_memory import BYTES_PER_GB
 
 logger = logging.getLogger("facet.models")
@@ -97,6 +96,7 @@ def build_permissive_face_analyzer(config):
         min_faces_for_group=face_settings.get('min_faces_for_group', 4),
         enable_blendshapes=blendshape_settings.get('enabled', True),
         blendshape_min_crop=blendshape_settings.get('min_crop_size', 192),
+        blink_pose_gate_deg=blendshape_settings.get('blink_pose_gate_deg'),
     )
 
 
@@ -331,9 +331,8 @@ class ModelManager:
             logger.info("CLIP+MLP aesthetic loaded: %s", model_name)
             return self.models['clip_aesthetic']
 
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Failed to load CLIP+MLP: %s", e)
             return None
 
@@ -601,9 +600,8 @@ class ModelManager:
             self.models[model_name] = model
             self._cache_hits += 1
             return model
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.warning("Failed to restore %s from cache: %s", model_name, e)
             del model
             import gc
@@ -713,9 +711,8 @@ class ModelManager:
             logger.info("SAMP-Net loaded: %s", model_path)
             return scorer
 
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Failed to load SAMP-Net: %s", e)
             return None
 
@@ -744,9 +741,8 @@ class ModelManager:
             logger.info("InsightFace loaded")
             return analyzer
 
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Failed to load InsightFace: %s", e)
             return None
 
@@ -779,9 +775,8 @@ class ModelManager:
                 return None
             self.models['faces_permissive'] = analyzer
             return analyzer
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Failed to load the permissive face analyzer: %s", e)
             return None
 
@@ -808,9 +803,8 @@ class ModelManager:
             scorer.load()
             self.models[name] = scorer
             return scorer
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Failed to load native Q-ReAlign: %s", e)
             return None
 
@@ -884,9 +878,8 @@ class ModelManager:
             logger.info("PyIQA %s loaded", model_name)
             return scorer
 
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Failed to load PyIQA %s: %s", model_name, e)
             return None
 
@@ -902,9 +895,8 @@ class ModelManager:
             self.models['aesthetic_v25'] = scorer
             logger.info("Aesthetic Predictor V2.5 loaded")
             return scorer
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Failed to load Aesthetic Predictor V2.5: %s", e)
             return None
 
@@ -927,9 +919,8 @@ class ModelManager:
             self.models['deqa'] = scorer
             logger.info("DeQA-Score loaded")
             return scorer
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Failed to load DeQA-Score: %s", e)
             return None
 

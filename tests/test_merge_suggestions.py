@@ -179,3 +179,22 @@ class TestReportedThreshold:
         with mock.patch(f"{_ROUTER}._pairwise_suggestions", return_value=[]):
             body = client.get("/api/merge_suggestions", params={"threshold": 0.7}).json()
         assert body["threshold"] == 0.7
+
+
+class TestConfigAdvertisesMergeThreshold:
+    """/api/config seeds the slider before the first /merge_suggestions response."""
+
+    def test_reports_the_active_models_threshold(self, client):
+        cfg = mock.Mock()
+        cfg.get_face_clustering_settings.return_value = {"merge_threshold": 0.65}
+        with mock.patch("api.config.server_scoring_config", return_value=cfg):
+            body = client.get("/api/config").json()
+        assert body["face_merge_threshold"] == 0.65
+        assert isinstance(body["face_merge_threshold"], float)
+
+    def test_omits_the_field_when_the_model_has_no_entry(self, client):
+        cfg = mock.Mock()
+        cfg.get_face_clustering_settings.side_effect = ValueError("no entry")
+        with mock.patch("api.config.server_scoring_config", return_value=cfg):
+            body = client.get("/api/config").json()
+        assert "face_merge_threshold" not in body

@@ -448,7 +448,10 @@ def test_blink_slot_stub_scorer_and_db_unchanged(eval_db, tmp_path, monkeypatch)
     rep = me.evaluate(eval_db, 'blink', out=str(tmp_path / 'b.json'), seed=42)
     assert _sha(eval_db) == before
     assert rep['n_sampled'] == 6 and rep['n_mesh_failed'] == 0
-    assert rep['max_blink']['best']['f1'] == 1.0 and rep['max_blink']['base_rate'] == 0.5
+    biased = rep['full_sample_selection_biased']['max_blink']
+    assert biased['best']['f1'] == 1.0 and biased['base_rate'] == 0.5
+    assert rep['held_out']['selection']['split'] == 'A' and rep['held_out']['report']['split'] == 'B'
+    assert len(rep['faces']) == 6 and rep['faces'][0]['yaw'] is None
 
 
 def test_centroid_sweep_known_half_centroid_outcomes():
@@ -496,6 +499,6 @@ def test_faces_centroid_slot_runs_and_leaves_db_untouched(eval_db, tmp_path, mon
     assert _sha(eval_db) == before
     sf = rep['results']['all_persons']['sface']['centroid']
     assert sf['n_persons'] == 2 and sf['grid'][0]['same_recall'] == 1.0
-    assert rep['chosen']['merge_threshold']['threshold'] == 0.3
+    assert rep['full_sample_selection_biased']['chosen']['merge_threshold']['threshold'] == 0.3
     assert rep['results']['named_persons_only']['sface']['centroid']['n_persons'] == 1
     assert json.load(open(tmp_path / 'c.json'))['slot'] == 'faces-centroid'

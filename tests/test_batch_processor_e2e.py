@@ -113,6 +113,9 @@ class FakeScorer:
     def commit(self):
         self.committed = True
 
+    def flush_person_centroids(self):
+        return 0
+
     def preflight_models(self):
         pass
 

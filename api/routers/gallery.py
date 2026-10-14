@@ -1734,7 +1734,7 @@ def _render_migration_status():
 @router.get("/api/config", response_model=ViewerConfigResponse, response_model_exclude_unset=True)
 def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
     """Get viewer configuration for Angular client initialization."""
-    from api.config import is_multi_user_enabled
+    from api.config import is_multi_user_enabled, server_scoring_config
     from api.auth import is_edition_enabled, is_edition_authenticated
     from api.raw_processing import get_cull_styles
     from api.routers.search import search_threshold_default
@@ -1766,7 +1766,7 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
         except sqlite3.OperationalError:
             features['show_albums'] = False
 
-    return {
+    config = {
         'sort_options': sort_options,
         'sort_options_grouped': sort_options_grouped,
         'unavailable_metrics': unavailable_columns(),
@@ -1791,3 +1791,10 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
         'edition_authenticated': is_edition_authenticated(user),
         'render_migration': _render_migration_status(),
     }
+    try:
+        config['face_merge_threshold'] = server_scoring_config().get_face_clustering_settings()['merge_threshold']
+    except ValueError:
+        # No thresholds_by_model entry for the active model: omit the field and let the
+        # client wait for the first /merge_suggestions response rather than guess a default.
+        logger.warning("No merge threshold for the active face model; omitting face_merge_threshold")
+    return config

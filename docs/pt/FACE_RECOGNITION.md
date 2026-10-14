@@ -281,7 +281,8 @@ pontuações geométricas.
   "face_detection": {
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -292,6 +293,7 @@ pontuações geométricas.
   Defina como `false` para forçar apenas geometria.
 - `min_crop_size` (padrão `192`): rostos cujo recorte com margem seja menor que este valor (px,
   lado mais curto) recorrem à geometria em vez de ampliar um rosto minúsculo.
+- `blink_pose_gate_deg` (padrão `null` = desativado): apenas o analisador MediaPipe do modo comercial. Um rosto cujo |yaw| ou |pitch| (graus, a partir da matriz de transformação do Face Landmarker) ultrapasse este valor não recebe veredito de piscadela nem pontuação de olhos abertos / sorriso (NULL = desconhecido), porque uma cabeça virada parece ter os olhos fechados. Desativado por padrão: numa metade reservada de uma biblioteca real, nenhum limite entre 20° e 45° melhorou a detecção de piscadas (cada um perdia mais piscadas reais do que falsas), então nenhum é fornecido; defina-o apenas se a sua biblioteca tiver muitos rostos bastante virados; aplica-se a fotos recém-escaneadas e os valores `is_blink` existentes só mudam ao reescanear.
 
 ### Recálculo
 
@@ -480,9 +482,9 @@ validado sem dados reais. Fazê-lo corretamente exige:
 ### Bibliotecas mistas, reextração e valores desconhecidos
 
 - **Bibliotecas mistas.** Uma biblioteca pode conter rostos ArcFace (512-d) e SFace (128-d) ao mesmo tempo. O agrupador, as sugestões de fusão, a pesquisa de pessoa semelhante e os centroides de pessoas usam cada um apenas um modelo (`persons.centroid_model` regista qual); os modos de agrupamento incremental e «só pessoas com nome» não tocam nos rostos nem nas pessoas do outro modelo, mas `--cluster-faces-force` limpa todas as atribuições rosto→pessoa e apaga todas as pessoas, incluindo as com nome, seja qual for o seu modelo. Para passar uma biblioteca ao modelo ativo, execute `--extract-faces-gpu-force` (no modo comercial usa o extrator permissivo; as pessoas com nome são preservadas) e depois `--cluster-faces-incremental`.
-- **Avisos.** Uma varredura regista um aviso quando há rostos guardados de um modelo diferente do ativo, e `--doctor` indica a mesma discrepância face ao modelo ativo.
-- **As pessoas com nome sobrevivem à reextração.** Antes de `--extract-faces-gpu-force` apagar as linhas de rostos, o Facet memoriza a caixa de cada rosto de uma pessoa com nome; depois, cada rosto redetetado volta à pessoa cuja caixa antiga o sobrepõe com IoU >= 0,5 (um para um, maior sobreposição primeiro) e os centroides são recalculados por modelo. Um rosto sem caixa antiga correspondente fica por atribuir até ao próximo agrupamento. As caixas memorizadas ficam na tabela `face_reextract_snapshot`, na mesma transação que a eliminação, pelo que uma execução interrompida é retomada pela extração seguinte. Reescanear uma foto preserva as suas pessoas com nome da mesma forma.
-- **Desconhecido não é zero.** Sem MediaPipe o analisador permissivo não consegue medir olhos, sorriso nem piscar de olhos; esses valores são guardados como NULL (não 0 nem «a piscar»). O filtro e a penalização de piscar tratam NULL como «não é um piscar». Os leitores dos 106 pontos de referência ignoram os rostos sem pontos.
+- **Avisos.** Uma varredura regista um aviso quando há rostos guardados de um modelo diferente do ativo, e `--doctor` indica a mesma discrepância face ao modelo ativo. No modo comercial, `--doctor` lista os componentes que uma varredura realmente carregaria (YuNet, SFace, Q-ReAlign, mais OFIQ quando `python-ofiq` está instalado), e não os que o perfil de VRAM apenas nomeia; assim, TOPIQ, LIQE e InsightFace deixam de aparecer como avisos.
+- **As pessoas com nome sobrevivem à reextração.** Antes de `--extract-faces-gpu-force` apagar as linhas de rostos, o Facet memoriza a caixa de cada rosto de uma pessoa com nome; depois, cada rosto redetetado volta à pessoa cuja caixa antiga o sobrepõe com IoU >= 0,5 (um para um, maior sobreposição primeiro) e os centroides são recalculados por modelo. Um rosto sem caixa antiga correspondente fica por atribuir até ao próximo agrupamento. As caixas memorizadas ficam na tabela `face_reextract_snapshot`, na mesma transação que a eliminação, pelo que uma execução interrompida é retomada pela extração seguinte. Reescanear uma foto preserva as suas pessoas com nome da mesma forma. Os centroides de pessoas que uma nova varredura deixou desatualizados são reconstruídos uma única vez no fim da varredura (mesmo que seja interrompida), e não uma vez por lote; as contagens e os rostos representativos continuam a ser atualizados por lote.
+- **Desconhecido não é zero.** Sem MediaPipe o analisador permissivo não consegue medir olhos, sorriso nem piscar de olhos; esses valores são guardados como NULL (não 0 nem «a piscar»). O filtro e a penalização de piscar tratam NULL como «não é um piscar». Os leitores dos 106 pontos de referência ignoram os rostos sem pontos. Uma foto cuja passagem de rostos falha é guardada com `face_count`, `face_ratio` e `is_group_portrait` a NULL (desconhecido), e não a 0, e os seus rostos guardados são mantidos; a pontuação trata-a como sem rostos até ser novamente varrida.
 
 ## Solução de problemas
 

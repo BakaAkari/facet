@@ -26,7 +26,7 @@ Facet itself is MIT-licensed, but several of the models it downloads and runs ca
 | [TOPIQ IAA](https://github.com/chaofengc/IQA-PyTorch) (`topiq_iaa`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | no | aesthetic_iaa (supplementary) | - |
 | [TOPIQ NR-Face](https://github.com/chaofengc/IQA-PyTorch) (`topiq_nr_face`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | no | face_quality_iqa (supplementary) | `ofiq` |
 | [LIQE](https://github.com/chaofengc/IQA-PyTorch) (`liqe`) | PolyForm-NC 1.0.0 (pyiqa 0.1.16) | CC BY-NC-SA 4.0 (IQA-PyTorch-Weights) | no | quality + distortion diagnosis (supplementary) | - |
-| [Q-ReAlign Mini/Lite/Pro (transformers)](https://huggingface.co/q-future) (`qrealign_native`) | MIT | Apache-2.0 | yes | qrealign_score (extended IQA); aesthetic / quality_score (commercial mode) | - |
+| [Q-ReAlign Mini/Lite (transformers)](https://huggingface.co/q-future) (`qrealign_native`) | MIT | Apache-2.0 | yes | qrealign_score (extended IQA); aesthetic / quality_score (commercial mode) | - |
 | [InsightFace buffalo_l](https://github.com/deepinsight/insightface) (`insightface`) | MIT (package) | Non-commercial research only | no | face detection, recognition, 106-point landmarks | `yunet` |
 | [YuNet (opencv_zoo)](https://github.com/opencv/opencv_zoo) (`yunet`) | MIT | MIT | yes | face detection (commercial mode) | - |
 | [SFace (opencv_zoo)](https://github.com/opencv/opencv_zoo) (`sface`) | Apache-2.0 | Apache-2.0 | yes | face recognition (commercial mode) | - |

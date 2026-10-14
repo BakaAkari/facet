@@ -126,3 +126,91 @@ def test_required_model_load_failure_records_instead_of_aborting(tmp_path, monke
     assert scorer.saved == []
     failed = set(get_failed_paths(db_path, "last"))
     assert failed == set(paths)
+
+
+class _FaceStubScorer(_StubScorer):
+    """Records the metrics the aggregate saw and every restricted save."""
+
+    def __init__(self, db_path):
+        super().__init__(db_path)
+        self.metrics = []
+        self.partial = []
+
+    def calculate_aggregate_logic(self, metrics):
+        self.metrics.append(dict(metrics))
+        return 7.5, "default"
+
+    def save_photos_partial(self, batch, refresh_faces):
+        self.partial.extend(batch)
+
+
+class _FaceAnalyzer:
+    def __init__(self, fail):
+        self.fail = fail
+
+    def analyze_faces(self, img_cv):
+        if self.fail:
+            raise ValueError("simulated face failure")
+        return {
+            "face_count": 0, "face_quality": None, "eye_sharpness": None,
+            "face_sharpness": None, "is_blink": None, "is_group_portrait": 0,
+            "face_details": [], "face_area": 0,
+        }
+
+
+def _run_face_chunk(tmp_path, monkeypatch, fail, restricted=False):
+    db_path = str(tmp_path / "scan.db")
+    init_database(db_path)
+    scorer = _FaceStubScorer(db_path)
+    proc = ChunkedMultiPassProcessor(scorer, _StubModelManager(), {})
+    proc.pass_groups = [["insightface"]]
+    paths = [str(tmp_path / "a.jpg")]
+    monkeypatch.setattr(proc, "_load_images", lambda p: {x: _img_data() for x in p})
+    analyzer = _FaceAnalyzer(fail)
+    monkeypatch.setattr(proc, "_run_model_pass",
+                        lambda name, model, images, results: proc._pass_insightface(analyzer, images, results))
+    if restricted:
+        monkeypatch.setattr(proc, "_save_results", proc._save_results_restricted)
+    proc._process_chunk(paths, 0, 1)
+    return scorer
+
+
+@pytest.mark.timeout(30)
+def test_face_pass_exception_stores_unknown_not_no_face(tmp_path, monkeypatch):
+    scorer = _run_face_chunk(tmp_path, monkeypatch, fail=True)
+    row = scorer.saved[0][0]
+    assert row["face_count"] is None
+    assert row["face_ratio"] is None
+    assert row["is_group_portrait"] is None
+    assert row["face_details"] is None  # stored faces are kept
+
+
+@pytest.mark.timeout(30)
+def test_face_pass_exception_scores_exactly_like_a_zero_face_result(tmp_path, monkeypatch):
+    failed = _run_face_chunk(tmp_path, monkeypatch, fail=True)
+    clean = _run_face_chunk(tmp_path, monkeypatch, fail=False)
+    for key in ("face_count", "face_ratio", "is_group_portrait"):
+        assert failed.metrics[0][key] == clean.metrics[0][key] == 0
+    assert failed.metrics[0] == clean.metrics[0]
+    assert failed.saved[0][0]["aggregate"] == clean.saved[0][0]["aggregate"]
+    assert failed.saved[0][0]["category"] == clean.saved[0][0]["category"]
+    # The clean zero-face result is a real "no face" and stays 0.
+    assert clean.saved[0][0]["face_count"] == 0
+
+
+@pytest.mark.timeout(30)
+def test_restricted_save_leaves_the_face_columns_out_after_a_failed_face_pass(tmp_path, monkeypatch):
+    scorer = _run_face_chunk(tmp_path, monkeypatch, fail=True, restricted=True)
+    res, _pil, columns = scorer.partial[0]
+    for key in ("face_count", "face_ratio", "is_group_portrait", "face_quality", "is_blink",
+                "isolation_bonus"):
+        assert key not in columns
+        assert key not in res
+    assert "_face_failed" not in columns
+
+
+@pytest.mark.timeout(30)
+def test_restricted_save_writes_the_face_columns_when_the_pass_succeeds(tmp_path, monkeypatch):
+    scorer = _run_face_chunk(tmp_path, monkeypatch, fail=False, restricted=True)
+    _res, _pil, columns = scorer.partial[0]
+    assert "face_count" in columns and "face_ratio" in columns

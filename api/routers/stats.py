@@ -970,7 +970,7 @@ async def api_stats_categories_overlap(user: Optional[CurrentUser] = Depends(get
     vis, vp = _vis_where(user)
 
     async def compute():
-        from config.category_filter import CategoryFilter
+        from config.category_filter import CategoryFilter, with_face_defaults
 
         config = server_scoring_config()
         cat_configs = config.get_categories()
@@ -1035,7 +1035,7 @@ async def api_stats_categories_overlap(user: Optional[CurrentUser] = Depends(get
                 # Test all filters
                 matched = []
                 for cf in cat_filters:
-                    if cf['filter'].matches(photo_data):
+                    if cf['filter'].matches(with_face_defaults(photo_data)):
                         matched.append(cf['name'])
                         match_counts[cf['name']] += 1
 

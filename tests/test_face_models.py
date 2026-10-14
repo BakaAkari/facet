@@ -579,8 +579,10 @@ class TestExplicitModelWrite:
 
         facet = Facet.__new__(Facet)
         facet.db_path = db
+        facet._pending_centroid_persons = set()
         res = Res(path=path, filename=Path(path).name, face_details=faces)
         facet.save_photos_batch([(res, Image.new('RGB', (32, 32)))])
+        facet.flush_person_centroids()  # what every scan does when it ends
 
     @staticmethod
     def _stored_models(db):
@@ -774,6 +776,99 @@ class TestRescanKeepsNames:
         with sqlite3.connect(db) as conn:
             assert conn.execute("SELECT face_count, representative_face_id FROM persons").fetchone() \
                 == (0, None)
+
+
+class TestCentroidsAreRebuiltOncePerScan:
+    """A named person re-attached across many batches is recomputed once, at the flush."""
+
+    @staticmethod
+    def _facet(db):
+        from processing.scorer import Facet
+        facet = Facet.__new__(Facet)
+        facet.db_path = db
+        facet._pending_centroid_persons = set()
+        return facet
+
+    @staticmethod
+    def _save(facet, photo, bbox, vec):
+        from PIL import Image
+
+        class Res(dict):
+            def __missing__(self, key):
+                return None
+
+        face = {'index': 0, 'embedding': vec.tobytes(), 'bbox': list(bbox)}
+        facet.save_photos_batch(
+            [(Res(path=photo, filename=Path(photo).name, face_details=[face]),
+              Image.new('RGB', (32, 32)))])
+
+    def _library(self, tmp_path, name):
+        db = _db(tmp_path, name)
+        photos = [str(tmp_path / f"{name}-{i}.jpg") for i in range(2)]
+        with sqlite3.connect(db) as conn:
+            alice = _add_person(conn, "Alice", _vec(512, 0), ARCFACE_MODEL)
+            for i, photo in enumerate(photos):
+                _add_face(conn, photo, 0, _vec(512, i), ARCFACE_MODEL, alice, (0, 0, 100, 100))
+        return db, photos, alice
+
+    @staticmethod
+    def _centroid(db, person):
+        with sqlite3.connect(db) as conn:
+            return conn.execute("SELECT centroid, centroid_model FROM persons WHERE id = ?",
+                                (person,)).fetchone()
+
+    def test_two_batches_recompute_each_person_once_and_match_a_direct_recompute(
+            self, tmp_path, monkeypatch, commercial):
+        import db.person_carry_over as carry
+        import processing.scorer as scorer_mod
+        from db.person_centroids import recompute_person_centroid
+
+        calls = []
+        real = recompute_person_centroid
+
+        def counting(conn, person_id, active=None):
+            calls.append(person_id)
+            return real(conn, person_id, active)
+
+        monkeypatch.setattr(carry, 'recompute_person_centroid', counting)
+        monkeypatch.setattr(scorer_mod, 'recompute_person_centroid', counting)
+
+        db, photos, alice = self._library(tmp_path, "deferred")
+        facet = self._facet(db)
+        for i, photo in enumerate(photos):
+            self._save(facet, photo, (4, 4, 104, 104), _vec(128, i + 3))
+        assert calls == []                              # nothing recomputed per batch
+        assert facet._pending_centroid_persons == {alice}
+        with sqlite3.connect(db) as conn:               # counts are still kept current
+            assert conn.execute("SELECT face_count FROM persons WHERE id = ?",
+                                (alice,)).fetchone()[0] == 2
+
+        assert facet.flush_person_centroids() == 1
+        assert calls == [alice]                         # exactly once, after both batches
+        assert facet._pending_centroid_persons == set()
+        assert facet.flush_person_centroids() == 0      # nothing left to do
+
+        # Reference: the same two batches with a recompute after each (the old behaviour).
+        monkeypatch.undo()
+        db2, photos2, alice2 = self._library(tmp_path, "eager")
+        facet2 = self._facet(db2)
+        for i, photo in enumerate(photos2):
+            self._save(facet2, photo, (4, 4, 104, 104), _vec(128, i + 3))
+            facet2.flush_person_centroids()
+        assert self._centroid(db, alice) == self._centroid(db2, alice2)
+        assert self._centroid(db, alice)[0] is not None
+
+    def test_the_default_still_recomputes_immediately(self, tmp_path, monkeypatch):
+        import db.person_carry_over as carry
+
+        calls = []
+        real = carry.recompute_person_centroid
+        monkeypatch.setattr(carry, 'recompute_person_centroid',
+                            lambda conn, pid, active=None: (calls.append(pid), real(conn, pid, active))[1])
+        db, photos, alice = self._library(tmp_path, "immediate")
+        with sqlite3.connect(db) as conn:
+            carry.replace_photo_faces(conn, [photos[0]], [], FACES_UPSERT_SQL)
+        assert calls == [alice]
 
 
 # ---------------------------------------------------------------------------

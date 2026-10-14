@@ -1331,7 +1331,8 @@ InsightFace 人脸检测设置。
     "poor_expression_min": 4.0,
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -1348,6 +1349,7 @@ InsightFace 人脸检测设置。
 | `poor_expression_min` | `4.0` | 单张人脸的微笑/表情评分（0–10），低于此值时暗房会标记表情欠佳。它驱动表情人脸圈和对应滑块（原本是硬编码常量） |
 | `blendshapes.enabled` | `true` | 当 MediaPipe 及 `face_landmarker.task` 模型包可用时，使用基于外观的 MediaPipe 混合形状评分来得到单张人脸的 `eyes_open_score` / `smile_score`；为 true 时它们会取代基于关键点几何的评分，否则会自动运行几何回退方案。这是可选依赖 — 请用 `pip install mediapipe==0.10.35 --no-deps` 安装（切勿直接 `pip install mediapipe`）。见 [FACE_RECOGNITION.md](FACE_RECOGNITION.md#逐张人脸的表情信号睁眼--微笑)。 |
 | `blendshapes.min_crop_size` | `192` | 若人脸带留白的裁切图短边小于此值（像素），则回退到几何评分，而不是把一张很小的人脸放大 |
+| `blendshapes.blink_pose_gate_deg` | `null` | 仅适用于商业模式的 MediaPipe 分析器。头部姿态阈值（度）：|yaw| 或 |pitch| 超过该值的人脸不给出眨眼判定，也不给出睁眼 / 微笑评分（NULL，未知），因为转头会让眼睛看起来像闭着。`null`（默认）= 不启用；默认保持关闭：在真实图库的留出一半数据上，20° 到 45° 之间的任何阈值都没有改善眨眼检测（每个阈值漏掉的真实眨眼都多于消除的误判），因此不提供默认值；仅当你的图库中有大量明显转头的人脸时才设置。仅对新扫描的照片生效；已有的 `is_blink` 值只有在重新扫描时才会改变。 |
 
 ---
 

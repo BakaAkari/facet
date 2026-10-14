@@ -1373,7 +1373,8 @@ Impostazioni di rilevamento dei volti InsightFace.
     "poor_expression_min": 4.0,
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -1390,6 +1391,7 @@ Impostazioni di rilevamento dei volti InsightFace.
 | `poor_expression_min` | `4.0` | Punteggio di sorriso/espressione per singolo volto (0–10) sotto il quale la camera oscura segnala un'espressione debole. Comanda l'anello dell'espressione attorno al volto e il relativo cursore (spostato da una costante fissa nel codice) |
 | `blendshapes.enabled` | `true` | Usa i punteggi blendshape di MediaPipe (basati sull'aspetto) per `eyes_open_score` / `smile_score` per singolo volto quando MediaPipe e il pacchetto `face_landmarker.task` sono disponibili; se `true` sostituiscono i punteggi di geometria dei punti di riferimento, altrimenti il fallback geometrico si attiva automaticamente. Dipendenza opzionale — installare con `pip install mediapipe==0.10.35 --no-deps` (mai un semplice `pip install mediapipe`). Vedi [FACE_RECOGNITION.md](FACE_RECOGNITION.md#segnali-di-espressione-per-volto-occhi-aperti--sorriso). |
 | `blendshapes.min_crop_size` | `192` | I volti il cui ritaglio con padding è più piccolo di questo valore (px, lato più corto) ripiegano sul punteggio geometrico invece di ingrandire un volto minuscolo |
+| `blendshapes.blink_pose_gate_deg` | `null` | Solo l'analizzatore MediaPipe della modalità commerciale. Soglia della posa della testa in gradi: un volto con |yaw| o |pitch| oltre la soglia non riceve verdetto di ammiccamento né punteggio occhi aperti / sorriso (NULL, sconosciuto), perché una testa girata sembra avere gli occhi chiusi. `null` (predefinito) = nessun filtro; resta disattivato per impostazione predefinita: su una metà riservata di una libreria reale, nessuna soglia tra 20° e 45° ha migliorato il rilevamento degli ammiccamenti (ognuna perdeva più veri ammiccamenti che falsi), quindi non ne viene fornita alcuna; impostala solo se la tua libreria contiene molti volti fortemente girati. Vale per le foto scansionate di nuovo; i valori `is_blink` esistenti cambiano solo con una nuova scansione. |
 
 ---
 

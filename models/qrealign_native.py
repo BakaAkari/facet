@@ -13,7 +13,6 @@ WEIGHTS = (1.0, 0.75, 0.5, 0.25, 0.0)
 MODELS = {
     'mini': 'q-future/Q-ReAlign-Mini-0.8B',
     'lite': 'q-future/Q-ReAlign-Lite-4B',
-    'pro': 'q-future/Q-ReAlign-Pro-9B',
 }
 
 # task -> (user question, assistant answer stem)
@@ -44,7 +43,7 @@ def levels_to_score(level_logits) -> float:
 
 
 class QReAlignNativeScorer:
-    """Q-ReAlign Mini/Lite/Pro scorer on plain transformers."""
+    """Q-ReAlign Mini/Lite scorer on plain transformers."""
 
     def __init__(self, size='mini', device='cuda', dtype='auto'):
         if size not in MODELS:

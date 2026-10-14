@@ -132,8 +132,9 @@ def _build_category_trail(photo, matched_category, sc):
     Only includes categories where the rejection is non-trivial (not just
     'no matching tags for a tag-only category').
     """
-    from config.category_filter import CategoryFilter
+    from config.category_filter import CategoryFilter, with_face_defaults
 
+    photo = with_face_defaults(photo)
     rejected = []
     for cat in sc.get_categories():
         name = cat.get('name')

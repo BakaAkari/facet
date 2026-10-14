@@ -369,7 +369,7 @@ Les seuils exacts appliqués par `auto` se trouvent dans
 
 `mediapipe` doit toujours être installé avec `--no-deps` : son `opencv-contrib-python` embarqué installerait sinon l'espace de noms `cv2` en double. L'extra `commercial` ne déclare que ses dépendances d'exécution (`absl-py`, `flatbuffers`). `python-ofiq` (les liaisons OFIQ de qualité de visage) est publié sur PyPI mais ne fournit des wheels que pour Linux x86-64 et macOS arm64 ; il ne fait donc pas partie de l'extra, à installer à la main avec `pip install python-ofiq` là où un wheel existe.
 
-Une installation commerciale ne bascule pas le mode toute seule. Réglez-le dans votre surcharge `scoring_config.json` (`{ "licensing": { "mode": "commercial" } }`) ; l'argument de build Docker définit aussi `FACET_LICENSING_MODE=commercial` dans l'image. `python facet.py --doctor` affiche la situation de licence active.
+Une installation commerciale ne bascule pas le mode toute seule. Réglez-le dans votre surcharge `scoring_config.json` (`{ "licensing": { "mode": "commercial" } }`) ; l'argument de build Docker définit aussi `FACET_LICENSING_MODE=commercial` dans l'image. `python facet.py --doctor` affiche la situation de licence active. En mode commercial, il liste les composants qu'un scan chargerait réellement (YuNet, SFace, Q-ReAlign), et non ceux que le profil se contente de nommer.
 
 ## Installation manuelle, sans install.sh
 

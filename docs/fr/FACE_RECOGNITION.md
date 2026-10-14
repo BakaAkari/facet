@@ -282,7 +282,8 @@ et revient aux scores géométriques.
   "face_detection": {
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -294,6 +295,7 @@ et revient aux scores géométriques.
 - `min_crop_size` (défaut `192`) : les visages dont le recadrage rembourré est plus petit que
   cette valeur (px, côté le plus court) retombent sur la géométrie plutôt que d'agrandir un visage
   minuscule.
+- `blink_pose_gate_deg` (défaut `null` = désactivé) : analyseur MediaPipe du mode commercial uniquement. Un visage dont |yaw| ou |pitch| (degrés, issus de la matrice de transformation du Face Landmarker) dépasse cette valeur n'a ni verdict de clignement ni score yeux ouverts / sourire (NULL = inconnu), car une tête tournée ressemble à des yeux fermés. Désactivé par défaut : sur une moitié réservée d'une vraie bibliothèque, aucun seuil entre 20° et 45° n'a amélioré la détection des clignements (chacun perdait plus de vrais clignements que de faux), donc aucun n'est fourni ; ne le définissez que si votre bibliothèque contient beaucoup de visages très tournés ; s'applique aux photos nouvellement analysées, les valeurs `is_blink` existantes ne changent qu'au rescan.
 
 ### Recalcul
 
@@ -483,9 +485,9 @@ validée sans données réelles. La réaliser correctement nécessite :
 ### Bibliothèques mixtes, ré-extraction et valeurs inconnues
 
 - **Bibliothèques mixtes.** Une bibliothèque peut contenir à la fois des visages ArcFace (512-d) et SFace (128-d). Le clustering, les suggestions de fusion, la recherche de personne similaire et les centroïdes de personnes n'utilisent chacun qu'un modèle à la fois (`persons.centroid_model` indique lequel) ; les modes de regroupement incrémental et « personnes nommées seulement » ne touchent ni les visages ni les personnes de l'autre modèle, mais `--cluster-faces-force` efface toutes les affectations visage→personne et supprime toutes les personnes, nommées comprises, quel que soit leur modèle. Pour faire passer une bibliothèque au modèle actif, lancez `--extract-faces-gpu-force` (en mode commercial, il utilise l'extracteur permissif ; les personnes nommées sont conservées) puis `--cluster-faces-incremental`.
-- **Avertissements.** Un scan journalise un avertissement quand des visages stockés appartiennent à un autre modèle que l'actif, et `--doctor` signale le même écart par rapport au modèle actif.
-- **Les personnes nommées survivent à la ré-extraction.** Avant que `--extract-faces-gpu-force` ne supprime les lignes de visages, Facet retient la boîte de chaque visage d'une personne nommée ; ensuite chaque visage re-détecté est rendu à la personne dont l'ancienne boîte le recouvre avec une IoU >= 0,5 (un pour un, meilleur recouvrement d'abord), et les centroïdes sont recalculés par modèle. Un visage sans ancienne boîte correspondante reste non assigné jusqu'au prochain clustering. Les boîtes mémorisées sont stockées dans la table `face_reextract_snapshot`, dans la même transaction que la suppression : une exécution interrompue est donc reprise par l'extraction suivante. Rescanner une photo conserve ses personnes nommées de la même façon.
-- **Inconnu n'est pas zéro.** Sans MediaPipe, l'analyseur permissif ne peut pas mesurer les yeux, le sourire ni les clignements ; ces valeurs sont stockées à NULL (ni 0, ni « clignement »). Le filtre et la pénalité de clignement traitent NULL comme « pas un clignement ». Les lecteurs des 106 points de repère ignorent les visages sans repères.
+- **Avertissements.** Un scan journalise un avertissement quand des visages stockés appartiennent à un autre modèle que l'actif, et `--doctor` signale le même écart par rapport au modèle actif. En mode commercial, `--doctor` liste les composants qu'un scan chargerait réellement (YuNet, SFace, Q-ReAlign, plus OFIQ lorsque `python-ofiq` est installé), et non ceux que le profil VRAM se contente de nommer ; TOPIQ, LIQE et InsightFace n'apparaissent donc plus comme avertissements.
+- **Les personnes nommées survivent à la ré-extraction.** Avant que `--extract-faces-gpu-force` ne supprime les lignes de visages, Facet retient la boîte de chaque visage d'une personne nommée ; ensuite chaque visage re-détecté est rendu à la personne dont l'ancienne boîte le recouvre avec une IoU >= 0,5 (un pour un, meilleur recouvrement d'abord), et les centroïdes sont recalculés par modèle. Un visage sans ancienne boîte correspondante reste non assigné jusqu'au prochain clustering. Les boîtes mémorisées sont stockées dans la table `face_reextract_snapshot`, dans la même transaction que la suppression : une exécution interrompue est donc reprise par l'extraction suivante. Rescanner une photo conserve ses personnes nommées de la même façon. Les centroïdes de personnes qu'un nouveau scan a laissés obsolètes sont reconstruits une seule fois à la fin du scan (même s'il est interrompu), et non une fois par lot ; les compteurs et les visages représentatifs restent mis à jour par lot.
+- **Inconnu n'est pas zéro.** Sans MediaPipe, l'analyseur permissif ne peut pas mesurer les yeux, le sourire ni les clignements ; ces valeurs sont stockées à NULL (ni 0, ni « clignement »). Le filtre et la pénalité de clignement traitent NULL comme « pas un clignement ». Les lecteurs des 106 points de repère ignorent les visages sans repères. Une photo dont la passe visages échoue est stockée avec `face_count`, `face_ratio` et `is_group_portrait` à NULL (inconnu), et non à 0, et ses visages stockés sont conservés ; le scoring la traite comme sans visage jusqu'à ce qu'elle soit rescannée.
 
 ## Dépannage
 

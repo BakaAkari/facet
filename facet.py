@@ -1694,9 +1694,8 @@ def _run_scan(args, resumed_run):
                     logger.info("OK (aggregate: %.2f)", result.get('aggregate', 0))
                 else:
                     logger.warning("FAILED")
-            except licensing.LicenceError:
-                raise
             except Exception as e:
+                licensing.reraise_if_refused()
                 logger.error("ERROR: %s", e)
 
         # Print results table and exit non-zero if every sample failed (issue #15).

@@ -258,3 +258,40 @@ def test_photos_schema_has_extended_iqa_columns(tmp_path):
     assert {"aesthetic_v25", "qrealign_score", "deqa_score"} <= cols
     # Q-Align was replaced by Q-ReAlign: a fresh DB must not carry its column.
     assert "qalign_score" not in cols
+
+
+def test_qrealign_sizes_match_the_schema_and_each_has_a_budget():
+    """A size must be configurable (schema) AND budgeted (ModelManager) AND loadable (MODELS).
+
+    The stale 'pro' entry was loadable but neither configurable nor budgeted: a 9B model
+    that would have been planned as the 0.8B Mini.
+    """
+    import json
+    from pathlib import Path
+
+    from models.model_manager import ModelManager
+    from models.qrealign_native import MODELS
+
+    schema = json.loads((Path(__file__).resolve().parent.parent / "config"
+                         / "scoring_config.schema.json").read_text(encoding="utf-8"))
+
+    def find(node):
+        if isinstance(node, dict):
+            if "qrealign_size" in node:
+                return node["qrealign_size"]
+            for value in node.values():
+                hit = find(value)
+                if hit is not None:
+                    return hit
+        elif isinstance(node, list):
+            for value in node:
+                hit = find(value)
+                if hit is not None:
+                    return hit
+        return None
+
+    assert set(MODELS) == set(find(schema)["enum"])
+    # mini uses the table entry, every other size needs its own budget constant.
+    assert {s for s in MODELS if s != "mini"} == {"lite"}
+    assert ModelManager.QREALIGN_LITE_VRAM_GB > ModelManager.MODEL_VRAM_REQUIREMENTS["qrealign"]
+    assert ModelManager.QREALIGN_LITE_RAM_GB > ModelManager.MODEL_RAM_REQUIREMENTS["qrealign"]

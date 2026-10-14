@@ -709,3 +709,31 @@ class TestLoadImagesFreesHsv:
         for entry in images.values():
             assert entry['cache'].hsv is None
             assert entry['cache'].gray is not None
+
+
+class TestScanFlushesPersonCentroids:
+    """A scan rebuilds the centroids its batches deferred, even when it dies."""
+
+    def _run(self, chunk_side_effect):
+        proc = _make(_config(chunk=10))
+        proc.scorer = mock.MagicMock()
+        proc.model_manager = mock.MagicMock(_cache_hits=0, _cache_misses=0)
+        proc.pass_groups = [['clip']]
+        with mock.patch("processing.multi_pass._ensure_imports"), \
+                mock.patch("processing.resource_monitor.MultiPassResourceMonitor"), \
+                mock.patch.object(proc, '_process_chunk', side_effect=chunk_side_effect):
+            try:
+                proc.process_directory(['/a.jpg', '/b.jpg'], show_progress=False)
+            except RuntimeError:
+                pass
+        return proc.scorer
+
+    def test_a_finished_scan_flushes_once(self):
+        scorer = self._run(lambda *a, **k: None)
+        scorer.flush_person_centroids.assert_called_once_with()
+
+    def test_an_aborted_scan_still_flushes(self):
+        def boom(*a, **k):
+            raise RuntimeError("scan died")
+        scorer = self._run(boom)
+        scorer.flush_person_centroids.assert_called_once_with()

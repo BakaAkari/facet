@@ -1379,7 +1379,8 @@ InsightFace-Einstellungen zur Gesichtserkennung.
     "poor_expression_min": 4.0,
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -1396,6 +1397,7 @@ InsightFace-Einstellungen zur Gesichtserkennung.
 | `poor_expression_min` | `4.0` | Lächel-/Ausdrucks-Score pro Gesicht (0–10), unter dem die Dunkelkammer einen schwachen Ausdruck markiert. Steuert den Ausdrucks-Gesichtsring und den Schieberegler (von einer fest codierten Konstante verschoben) |
 | `blendshapes.enabled` | `true` | Verwendet erscheinungsbasierte MediaPipe-Blendshape-Scores für `eyes_open_score` / `smile_score` pro Gesicht, wenn MediaPipe und das `face_landmarker.task`-Bündel verfügbar sind; bei `true` ersetzen sie die Landmark-Geometrie-Scores, andernfalls läuft automatisch der Geometrie-Fallback. Optionale Abhängigkeit — installieren mit `pip install mediapipe==0.10.35 --no-deps` (niemals ein einfaches `pip install mediapipe`). Siehe [FACE_RECOGNITION.md](FACE_RECOGNITION.md#ausdruckssignale-pro-gesicht-augen-offen--lächeln). |
 | `blendshapes.min_crop_size` | `192` | Gesichter, deren gepolsterter Ausschnitt kleiner als dieser Wert ist (px, kürzere Seite), fallen auf den geometrischen Score zurück, statt ein winziges Gesicht hochzuskalieren |
+| `blendshapes.blink_pose_gate_deg` | `null` | Nur der MediaPipe-Analyzer des kommerziellen Modus. Kopfpose-Grenzwert in Grad: Ein Gesicht mit |Yaw| oder |Pitch| darüber erhält kein Blinzel-Urteil und keinen Augen-offen-/Lächeln-Score (NULL, unbekannt), da ein gedrehter Kopf wie geschlossene Augen wirkt. `null` (Standard) = kein Gate; es bleibt standardmäßig aus: Auf einer zurückgehaltenen Hälfte einer echten Bibliothek verbesserte kein Grenzwert zwischen 20° und 45° die Blinzel-Erkennung (jeder verlor mehr echte Blinzler als falsche), daher wird keiner mitgeliefert; setze ihn nur, wenn deine Bibliothek viele stark gedrehte Gesichter enthält. Gilt für neu gescannte Fotos; vorhandene `is_blink`-Werte ändern sich erst bei einem erneuten Scan. |
 
 ---
 

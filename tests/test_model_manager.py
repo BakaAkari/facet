@@ -569,17 +569,34 @@ class TestWeightsDestination:
         destination = tmp_path / 'nested' / 'weights.pth'
         observed = {}
 
-        def fake_urlretrieve(url, path):
-            observed['temp_path'] = path
-            with open(path, 'wb') as handle:
-                handle.write(b'payload')
+        def fake_urlopen(url, timeout=None):
+            observed['timeout'] = timeout
+            observed['temp_files'] = [p.name for p in destination.parent.glob('*.part')]
+            return _FakeResponse(b'payload')
 
-        with mock.patch.object(weights.urllib.request, 'urlretrieve', fake_urlretrieve):
+        with mock.patch.object(weights.urllib.request, 'urlopen', fake_urlopen):
             weights.download_weights('https://example.invalid/w.pth', destination)
 
         assert destination.read_bytes() == b'payload'
-        assert observed['temp_path'] != str(destination)
+        assert len(observed['temp_files']) == 1  # fetched into a .part file, not the destination
+        assert observed['timeout'] == weights.DOWNLOAD_TIMEOUT_SECONDS
         assert list(destination.parent.glob('*.part')) == []
+
+    def test_a_stalled_connection_leaves_neither_part_file_nor_destination(self, tmp_path):
+        import socket
+        from models import weights
+
+        destination = tmp_path / 'weights.pth'
+
+        def timing_out(url, timeout=None):
+            raise socket.timeout('timed out')
+
+        with mock.patch.object(weights.urllib.request, 'urlopen', timing_out):
+            with pytest.raises(socket.timeout):
+                weights.download_weights('https://example.invalid/w.pth', destination)
+
+        assert not destination.exists()
+        assert list(tmp_path.glob('*.part')) == []
 
     def test_download_of_an_existing_file_is_idempotent(self, tmp_path):
         from models import weights
@@ -587,11 +604,10 @@ class TestWeightsDestination:
         destination = tmp_path / 'weights.pth'
         destination.write_bytes(b'first')
 
-        def fake_urlretrieve(url, path):
-            with open(path, 'wb') as handle:
-                handle.write(b'second')
+        def fake_urlopen(url, timeout=None):
+            return _FakeResponse(b'second')
 
-        with mock.patch.object(weights.urllib.request, 'urlretrieve', fake_urlretrieve):
+        with mock.patch.object(weights.urllib.request, 'urlopen', fake_urlopen):
             weights.download_weights('https://example.invalid/w.pth', destination)
 
         assert destination.read_bytes() == b'second'
@@ -604,11 +620,10 @@ class TestWeightsDestination:
 
         destination = tmp_path / 'weights.pth'
 
-        def fake_urlretrieve(url, path):
-            with open(path, 'wb') as handle:
-                handle.write(b'payload')
+        def fake_urlopen(url, timeout=None):
+            return _FakeResponse(b'payload')
 
-        with mock.patch.object(weights.urllib.request, 'urlretrieve', fake_urlretrieve):
+        with mock.patch.object(weights.urllib.request, 'urlopen', fake_urlopen):
             weights.download_weights(
                 'https://example.invalid/w.pth', destination,
                 sha256=hashlib.sha256(b'payload').hexdigest())
@@ -620,11 +635,10 @@ class TestWeightsDestination:
 
         destination = tmp_path / 'weights.pth'
 
-        def fake_urlretrieve(url, path):
-            with open(path, 'wb') as handle:
-                handle.write(b'tampered')
+        def fake_urlopen(url, timeout=None):
+            return _FakeResponse(b'tampered')
 
-        with mock.patch.object(weights.urllib.request, 'urlretrieve', fake_urlretrieve):
+        with mock.patch.object(weights.urllib.request, 'urlopen', fake_urlopen):
             with pytest.raises(ValueError):
                 weights.download_weights(
                     'https://example.invalid/w.pth', destination,
@@ -884,6 +898,49 @@ class TestFaceModelIsAManagedModel:
 
         assert 'insightface' not in manager.models
         assert 'insightface' not in manager._cpu_cache
+
+
+class _FakeResponse:
+    """A urlopen() result: a context manager with a binary ``read``."""
+
+    def __init__(self, payload):
+        import io
+        self._buf = io.BytesIO(payload)
+
+    def read(self, n=-1):
+        return self._buf.read(n)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestBuildPermissiveFaceAnalyzerMapsTheBlinkGate:
+    @pytest.mark.parametrize('configured', [None, 35.0])
+    def test_blink_pose_gate_deg_reaches_the_analyzer(self, configured):
+        from analyzers import face_permissive
+        from models.model_manager import build_permissive_face_analyzer
+
+        config = mock.MagicMock()
+        config.get_face_detection_settings.return_value = {
+            'blendshapes': {'blink_pose_gate_deg': configured}}
+        config.get_face_processing_settings.return_value = {}
+        with mock.patch.object(face_permissive, 'PermissiveFaceAnalyzer') as analyzer:
+            build_permissive_face_analyzer(config)
+        assert analyzer.call_args.kwargs['blink_pose_gate_deg'] == configured
+
+    @pytest.mark.parametrize('bad', [0, -5, -0.1])
+    def test_non_positive_gate_is_rejected_naming_the_key(self, bad):
+        from models.model_manager import build_permissive_face_analyzer
+
+        config = mock.MagicMock()
+        config.get_face_detection_settings.return_value = {
+            'blendshapes': {'blink_pose_gate_deg': bad}}
+        config.get_face_processing_settings.return_value = {}
+        with pytest.raises(ValueError, match='blink_pose_gate_deg'):
+            build_permissive_face_analyzer(config)
 
 
 class TestBuildFaceAnalyzerMapsEverySetting:

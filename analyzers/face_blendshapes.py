@@ -13,6 +13,7 @@ absence degrades silently to the geometric scores.
 """
 
 import logging
+import math
 import os
 import threading
 import urllib.request  # noqa: F401  (tests patch urllib.request.urlretrieve, which weights.download_weights calls)
@@ -71,6 +72,36 @@ def blendshapes_to_scores(scores_by_name):
     return (_clamp(eyes_open), _clamp(smile_score))
 
 
+def pose_from_matrix(matrix):
+    """``(yaw_deg, pitch_deg, roll_deg)`` from a MediaPipe 4x4 facial transformation matrix.
+
+    The matrix maps the canonical face to the camera frame and carries a uniform
+    scale, so each rotation column is normalised first. The face's forward axis
+    is the image of the canonical +z axis (third column): yaw is its heading in
+    the x-z plane, pitch its elevation (positive = looking up in the +y-up frame)
+    and roll the in-plane tilt of the canonical x axis. A frontal face gives
+    ``(0, 0, 0)``. Only magnitudes feed the blink gate, so the SIGN convention
+    is not relied on; which angle is which is pinned by ``tests/test_face_pose.py``.
+    Returns ``None`` for a missing or degenerate matrix.
+    """
+    import numpy as np
+    try:
+        m = np.asarray(matrix, dtype=np.float64)
+        if m.ndim != 2 or m.shape[0] < 3 or m.shape[1] < 3:
+            return None
+        rot = m[:3, :3]
+        norms = np.linalg.norm(rot, axis=0)
+        if not np.all(np.isfinite(norms)) or np.any(norms < 1e-9):
+            return None
+        rot = rot / norms
+    except (TypeError, ValueError):
+        return None
+    yaw = math.degrees(math.atan2(rot[0, 2], rot[2, 2]))
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, rot[1, 2]))))
+    roll = math.degrees(math.atan2(rot[1, 0], rot[1, 1]))
+    return yaw, pitch, roll
+
+
 def crop_face_region(img_cv, bbox, padding=CROP_PADDING):
     """Padded BGR sub-array around ``bbox`` from the full-res image (no resize).
 
@@ -120,7 +151,7 @@ class BlendshapeScorer:
                     running_mode=vision.RunningMode.IMAGE,
                     num_faces=1,
                     output_face_blendshapes=True,
-                    output_facial_transformation_matrixes=False,
+                    output_facial_transformation_matrixes=True,
                 )
                 self._mp = mp
                 self._landmarker = vision.FaceLandmarker.create_from_options(options)
@@ -139,6 +170,14 @@ class BlendshapeScorer:
         478-point mesh as an ``(478, 2)`` float32 array in crop pixel
         coordinates (``None`` when the bundle returns no mesh). ``None`` under
         the same conditions as :meth:`score_face_crop`.
+        """
+        full = self.analyze_face_crop_pose(bgr_crop)
+        return None if full is None else full[:4]
+
+    def analyze_face_crop_pose(self, bgr_crop):
+        """:meth:`analyze_face_crop` plus a fifth element: ``(yaw, pitch, roll)`` degrees or ``None``.
+
+        ``None`` pose when the bundle returned no transformation matrix.
         """
         if bgr_crop is None:
             return None
@@ -163,7 +202,11 @@ class BlendshapeScorer:
                 landmarks = np.array(
                     [(p.x * w, p.y * h) for p in result.face_landmarks[0]],
                     dtype=np.float32)
-            return eyes_open, smile, names, landmarks
+            pose = None
+            matrixes = getattr(result, 'facial_transformation_matrixes', None)
+            if matrixes is not None and len(matrixes):
+                pose = pose_from_matrix(matrixes[0])
+            return eyes_open, smile, names, landmarks, pose
         except Exception as e:
             logger.debug("Blendshape scoring failed: %s", e)
             return None

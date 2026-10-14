@@ -155,7 +155,8 @@ class PermissiveFaceAnalyzer:
                  min_face_size=DEFAULT_MIN_FACE_SIZE,
                  thumbnail_size=128, thumbnail_quality=85,
                  blink_threshold=DEFAULT_BLINK_THRESHOLD, min_faces_for_group=4,
-                 enable_blendshapes=True, blendshape_min_crop=192, enable_ofiq=True):
+                 enable_blendshapes=True, blendshape_min_crop=192, enable_ofiq=True,
+                 blink_pose_gate_deg=None):
         # `device` is accepted for constructor parity; YuNet/SFace run on CPU via cv2.
         self.available = False
         self.min_confidence = min_confidence
@@ -167,6 +168,13 @@ class PermissiveFaceAnalyzer:
         self.enable_blendshapes = enable_blendshapes
         self.blendshape_min_crop = blendshape_min_crop
         self.enable_ofiq = enable_ofiq
+        # None = no gate. Else a face whose |yaw| or |pitch| exceeds this many degrees has
+        # its blink verdict (and eyes/smile scores) left NULL: a turned head reads as closed eyes.
+        if blink_pose_gate_deg is not None and not blink_pose_gate_deg > 0:
+            raise ValueError(
+                "face_detection.blendshapes.blink_pose_gate_deg must be a positive number of "
+                f"degrees or null (off), got {blink_pose_gate_deg!r}")
+        self.blink_pose_gate_deg = blink_pose_gate_deg
         self._blendshape_scorer = None
         self._detector = None
         self._recognizer = None
@@ -226,17 +234,27 @@ class PermissiveFaceAnalyzer:
         """Landmarker on a padded crop upscaled to ``blendshape_min_crop``.
 
         Returns ``(eyes_open, smile, blendshapes, mesh_in_full_res)`` or None.
+        :meth:`_mesh_analysis_pose` is the same call with ``(yaw, pitch, roll)`` appended.
         Serialised on the instance lock: ``FaceProcessor`` runs several worker
         threads over ONE analyzer, and the MediaPipe landmarker (a process-wide
         singleton, so a per-worker analyzer would not isolate it) is not
         re-entrant. The other engine calls take the same lock.
         """
+        result = self._mesh_analysis_pose(img_cv, bbox, want_pose=False)
+        return None if result is None else result[:4]
+
+    def _mesh_analysis_pose(self, img_cv, bbox, want_pose=True):
+        """:meth:`_mesh_analysis` with a fifth element, the head pose ``(yaw, pitch, roll)`` or None.
+
+        ``want_pose=False`` takes the exact pre-pose call path (``analyze_face_crop``) so a
+        scorer without pose support, or an install with the gate off, behaves as before.
+        """
         if not self.enable_blendshapes:
             return None
         with self._lock:
-            return self._mesh_analysis_locked(img_cv, bbox)
+            return self._mesh_analysis_locked(img_cv, bbox, want_pose)
 
-    def _mesh_analysis_locked(self, img_cv, bbox):
+    def _mesh_analysis_locked(self, img_cv, bbox, want_pose=False):
         if self._blendshape_scorer is None:
             self._blendshape_scorer = get_blendshape_scorer(min_crop_size=self.blendshape_min_crop)
         crop = crop_face_region(img_cv, bbox)
@@ -247,14 +265,21 @@ class PermissiveFaceAnalyzer:
         if scale > 1.0:
             crop = cv2.resize(crop, (round(cw * scale), round(ch * scale)),
                               interpolation=cv2.INTER_CUBIC)
-        analysis = self._blendshape_scorer.analyze_face_crop(crop)
+        pose = None
+        pose_call = getattr(self._blendshape_scorer, 'analyze_face_crop_pose', None) if want_pose else None
+        if pose_call is not None:
+            analysis = pose_call(crop)
+            if analysis is not None:
+                pose = analysis[4]
+        else:
+            analysis = self._blendshape_scorer.analyze_face_crop(crop)
         if analysis is None:
             return None
-        eyes_open, smile, names, mesh = analysis
+        eyes_open, smile, names, mesh = analysis[:4]
         if mesh is not None:
             ox, oy, _, _ = padded_face_bbox(img_cv.shape, bbox, CROP_PADDING)
             mesh = mesh / scale + np.array([ox, oy], dtype=np.float32)
-        return eyes_open, smile, names, mesh
+        return eyes_open, smile, names, mesh, pose
 
     def _eye_sharpness(self, img_cv, row, mesh):
         """Raw eye sharpness: max Laplacian ratio over the two eye patches.
@@ -362,13 +387,23 @@ class PermissiveFaceAnalyzer:
             total_area += (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
             qualities.append(confidence * 10)
 
-            mesh_result = self._mesh_analysis(img_cv, bbox)
+            gate = self.blink_pose_gate_deg
+            if gate:
+                mesh_result = self._mesh_analysis_pose(img_cv, bbox)
+            else:
+                mesh_result = self._mesh_analysis(img_cv, bbox)
             eyes_open = smile = mesh = None
             if mesh_result is None:
                 blink_known = False
             else:
-                eyes_open, smile, names, mesh = mesh_result
-                if max(names['eyeBlinkLeft'], names['eyeBlinkRight']) >= self.blink_threshold:
+                eyes_open, smile, names, mesh = mesh_result[:4]
+                pose = mesh_result[4] if len(mesh_result) > 4 else None
+                if gate and pose is not None and max(abs(pose[0]), abs(pose[1])) > gate:
+                    # Turned head: eyelids read as closed from the side. Unknown, never a
+                    # measured 0 or 1 (the mesh stays for eye sharpness).
+                    blink_known = False
+                    eyes_open = smile = None
+                elif max(names['eyeBlinkLeft'], names['eyeBlinkRight']) >= self.blink_threshold:
                     any_blink = True
 
             raw_eye = self._eye_sharpness(img_cv, row, mesh)

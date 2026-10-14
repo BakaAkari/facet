@@ -1,12 +1,13 @@
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
-import { of, throwError } from 'rxjs';
+import { from, of, throwError } from 'rxjs';
 import { MatDialog } from '@angular/material/dialog';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { signal } from '@angular/core';
 import { AuthService } from '../../core/services/auth.service';
 import { ApiService } from '../../core/services/api.service';
 import { I18nService } from '../../core/services/i18n.service';
+import { GalleryStore } from '../gallery/gallery.store';
 import { MergeSuggestionsComponent } from './merge-suggestions.component';
 
 describe('MergeSuggestionsComponent', () => {
@@ -15,6 +16,7 @@ describe('MergeSuggestionsComponent', () => {
   let mockI18n: { t: Mock };
   let mockDialog: { open: Mock };
   let mockSnackBar: { open: Mock };
+  const storeConfig = signal<{ face_merge_threshold?: number } | null>(null);
 
   const makeSuggestion = (
     id1: number,
@@ -31,6 +33,7 @@ describe('MergeSuggestionsComponent', () => {
   });
 
   beforeEach(() => {
+    storeConfig.set(null);
     mockApi = {
       get: vi.fn(() => of({ suggestions: [], threshold: 0.6 })),
       post: vi.fn(() => of({})),
@@ -49,6 +52,7 @@ describe('MergeSuggestionsComponent', () => {
         { provide: I18nService, useValue: mockI18n },
         { provide: MatDialog, useValue: mockDialog },
         { provide: MatSnackBar, useValue: mockSnackBar },
+        { provide: GalleryStore, useValue: { config: storeConfig } },
       ],
     });
     component = TestBed.inject(MergeSuggestionsComponent);
@@ -293,6 +297,25 @@ describe('MergeSuggestionsComponent', () => {
 
       expect(mockApi.get).toHaveBeenCalledWith('/merge_suggestions', {});
       expect(component.threshold()).toBe(0.45);
+    });
+
+    it('shows the config default before the first response arrives', async () => {
+      storeConfig.set({ face_merge_threshold: 0.65 });
+      let resolve!: (v: unknown) => void;
+      const deferred = new Promise((r) => (resolve = r));
+      mockApi.get.mockReturnValue(from(deferred));
+
+      const loading = component.ngOnInit();
+      expect(component.sliderValue()).toBe(0.65);
+      expect(mockApi.get).toHaveBeenCalledWith('/merge_suggestions', {});
+
+      resolve({ suggestions: [], threshold: 0.65 });
+      await loading;
+      expect(component.sliderValue()).toBe(0.65);
+    });
+
+    it('stays hidden until the response when the config carries no default', () => {
+      expect(component.sliderValue()).toBeNull();
     });
 
     it('sends the threshold only after the user moves the slider', async () => {

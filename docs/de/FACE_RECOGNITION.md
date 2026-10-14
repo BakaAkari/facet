@@ -283,7 +283,8 @@ eine Warnung und fällt auf die geometrischen Scores zurück.
   "face_detection": {
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -295,6 +296,7 @@ eine Warnung und fällt auf die geometrischen Scores zurück.
 - `min_crop_size` (Standard `192`): Gesichter, deren gepolsterter Ausschnitt kleiner als dieser Wert
   ist (px, kürzere Seite), fallen auf die Geometrie zurück, statt ein winziges Gesicht
   hochzuskalieren.
+- `blink_pose_gate_deg` (Standard `null` = aus): nur der MediaPipe-Analyzer des kommerziellen Modus. Ein Gesicht mit |Yaw| oder |Pitch| (Grad, aus der Transformationsmatrix des Face Landmarkers) über diesem Wert erhält kein Blinzel-Urteil und keinen Augen-offen-/Lächeln-Score (NULL = unbekannt), da ein gedrehter Kopf wie geschlossene Augen wirkt. Standardmäßig aus: Auf einer zurückgehaltenen Hälfte einer echten Bibliothek verbesserte kein Grenzwert zwischen 20° und 45° die Blinzel-Erkennung (jeder verlor mehr echte Blinzler als falsche), daher wird keiner mitgeliefert; setze ihn nur, wenn deine Bibliothek viele stark gedrehte Gesichter enthält; gilt für neu gescannte Fotos, vorhandene `is_blink`-Werte ändern sich erst bei einem erneuten Scan.
 
 ### Neuberechnung
 
@@ -492,9 +494,9 @@ Umsetzung erfordert:
 ### Gemischte Bibliotheken, Neu-Extraktion und unbekannte Werte
 
 - **Gemischte Bibliotheken.** Eine Bibliothek kann ArcFace- (512-d) und SFace-Gesichter (128-d) gleichzeitig enthalten. Clusterer, Merge-Vorschläge, die Suche nach ähnlichen Personen und Personen-Zentroide verwenden jeweils nur ein Modell (`persons.centroid_model` hält fest, welches); die inkrementellen und die Nur-benannte-Modi des Clusterings lassen Gesichter und Personen des anderen Modells unberührt, `--cluster-faces-force` dagegen löscht alle Gesicht→Person-Zuordnungen und alle Personen, auch benannte, unabhängig vom Modell. Um eine Bibliothek auf das aktive Modell umzustellen, `--extract-faces-gpu-force` ausführen (im kommerziellen Modus mit dem permissiven Extraktor; benannte Personen bleiben erhalten) und danach `--cluster-faces-incremental`.
-- **Warnungen.** Ein Scan protokolliert eine Warnung, wenn gespeicherte Gesichter zu einem anderen als dem aktiven Modell gehören; `--doctor` meldet dieselbe Abweichung gegenüber dem aktiven Modell.
-- **Benannte Personen überleben die Neu-Extraktion.** Bevor `--extract-faces-gpu-force` die Gesichtszeilen löscht, merkt sich Facet die Box jedes Gesichts einer benannten Person; danach erhält jedes neu erkannte Gesicht die Person, deren alte Box es mit IoU >= 0,5 überlappt (eins zu eins, beste Überlappung zuerst), und die Zentroide werden pro Modell neu berechnet. Ein Gesicht ohne passende alte Box bleibt für den nächsten Clustering-Lauf unzugeordnet. Die gemerkten Boxen stehen in der Tabelle `face_reextract_snapshot`, geschrieben in derselben Transaktion wie das Löschen; ein unterbrochener Lauf wird daher von der nächsten Extraktion nachgeholt. Das erneute Scannen eines Fotos erhält benannte Personen auf dieselbe Weise.
-- **Unbekannt ist nicht null.** Ohne MediaPipe kann der permissive Analysator Augen, Lächeln und Blinzeln nicht messen; diese Werte werden als NULL gespeichert (nicht 0 und nicht „blinzelt“). Blink-Filter und Blink-Abzug behandeln NULL als „kein Blinzeln“. Die Leser der 106-Punkte-Landmarken überspringen Gesichter ohne Landmarken.
+- **Warnungen.** Ein Scan protokolliert eine Warnung, wenn gespeicherte Gesichter zu einem anderen als dem aktiven Modell gehören; `--doctor` meldet dieselbe Abweichung gegenüber dem aktiven Modell. Im kommerziellen Modus listet `--doctor` die Komponenten auf, die ein Scan tatsächlich laden würde (YuNet, SFace, Q-ReAlign sowie OFIQ, wenn `python-ofiq` installiert ist), und nicht jene, die das VRAM-Profil lediglich nennt; TOPIQ, LIQE und InsightFace erscheinen daher nicht mehr als Warnungen.
+- **Benannte Personen überleben die Neu-Extraktion.** Bevor `--extract-faces-gpu-force` die Gesichtszeilen löscht, merkt sich Facet die Box jedes Gesichts einer benannten Person; danach erhält jedes neu erkannte Gesicht die Person, deren alte Box es mit IoU >= 0,5 überlappt (eins zu eins, beste Überlappung zuerst), und die Zentroide werden pro Modell neu berechnet. Ein Gesicht ohne passende alte Box bleibt für den nächsten Clustering-Lauf unzugeordnet. Die gemerkten Boxen stehen in der Tabelle `face_reextract_snapshot`, geschrieben in derselben Transaktion wie das Löschen; ein unterbrochener Lauf wird daher von der nächsten Extraktion nachgeholt. Das erneute Scannen eines Fotos erhält benannte Personen auf dieselbe Weise. Personen-Zentroide, die ein erneuter Scan veraltet zurückgelassen hat, werden einmal am Ende des Scans neu aufgebaut (auch wenn dieser unterbrochen wird), nicht einmal pro Batch; Zähler und repräsentative Gesichter werden weiterhin pro Batch aktualisiert.
+- **Unbekannt ist nicht null.** Ohne MediaPipe kann der permissive Analysator Augen, Lächeln und Blinzeln nicht messen; diese Werte werden als NULL gespeichert (nicht 0 und nicht „blinzelt“). Blink-Filter und Blink-Abzug behandeln NULL als „kein Blinzeln“. Die Leser der 106-Punkte-Landmarken überspringen Gesichter ohne Landmarken. Ein Foto, dessen Gesichtsdurchlauf fehlschlägt, wird mit `face_count`, `face_ratio` und `is_group_portrait` als NULL (unbekannt) gespeichert, nicht als 0, und seine gespeicherten Gesichter bleiben erhalten; die Bewertung behandelt es als ohne Gesicht, bis es erneut gescannt wird.
 
 ## Fehlerbehebung
 

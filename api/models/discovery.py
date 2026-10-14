@@ -100,6 +100,9 @@ class ViewerConfigResponse(BaseModel):
     # unless OFIQ is installed). Empty in default mode. ``sort_options`` already
     # excludes them; the client hides the matching filters and disables their weights.
     unavailable_metrics: list[str] = []
+    # Default merge-suggestion threshold of the active face-recognition model
+    # (``face_clustering.thresholds_by_model``); absent when the model has no entry.
+    face_merge_threshold: Optional[float] = None
     quality_levels: list[tuple[str, str]]
     type_labels: dict[str, str]
     defaults: dict[str, Any]

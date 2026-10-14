@@ -20,6 +20,7 @@ import { FixedPipe } from '../../shared/pipes/fixed.pipe';
 import { ConfirmDialogComponent } from '../../shared/components/confirm-dialog/confirm-dialog.component';
 import { HeaderSlotService } from '../../core/services/header-slot.service';
 import { I18N, i18nKeys } from '../../core/i18n/keys';
+import { GalleryStore } from '../gallery/gallery.store';
 import type { MergeSuggestionsResponse } from '../../core/api/types';
 
 type MergeSuggestion = MergeSuggestionsResponse['suggestions'][number];
@@ -59,7 +60,7 @@ type SuggestionPerson = MergeSuggestion['person1'];
             <mat-icon>arrow_back</mat-icon>
           </a>
           <span class="text-sm opacity-70 shrink-0">{{ I18N.persons.similarity_threshold | translate }}</span>
-          @if (threshold(); as value) {
+          @if (sliderValue(); as value) {
             <mat-slider [min]="0.3" [max]="0.9" [step]="0.05" [discrete]="true" class="w-40">
               <input
                 matSliderThumb
@@ -184,6 +185,7 @@ export class MergeSuggestionsComponent implements OnInit, OnDestroy {
   /** Merge, reject and accept-all call edition-only routes. */
   protected readonly canEdit = inject(AuthService).isEdition;
   private readonly i18n = inject(I18nService);
+  private readonly store = inject(GalleryStore);
   private dialog = inject(MatDialog);
   private snackBar = inject(MatSnackBar);
   private readonly headerSlot = inject(HeaderSlotService);
@@ -194,6 +196,10 @@ export class MergeSuggestionsComponent implements OnInit, OnDestroy {
   readonly merging = signal(false);
   /** Null until the server reports the active model's default (or the user picks one). */
   readonly threshold = signal<number | null>(null);
+  /** What the slider shows: the user's pick or the server's last answer, else the active
+   *  model's default from /api/config, so it renders before the first response (null when
+   *  the server did not report one: hidden until the response, never a client constant). */
+  readonly sliderValue = computed(() => this.threshold() ?? this.store.config()?.face_merge_threshold ?? null);
   /** Sent only once the user has moved the slider; before that the server decides. */
   private userThreshold: number | null = null;
 

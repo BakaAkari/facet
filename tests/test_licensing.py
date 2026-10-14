@@ -168,10 +168,15 @@ class TestDoctorLicenceSection:
         assert 'Licensing mode: default' in out
         assert 'InsightFace buffalo_l (insightface)' in out
 
-    def test_commercial_mode_warns_for_restricted_components(self, capsys, tmp_path):
+    def test_commercial_mode_lists_what_is_routed_not_what_is_configured(self, capsys, tmp_path):
         out = self._doctor(capsys, tmp_path, '{"licensing": {"mode": "commercial"}}')
         assert 'Licensing mode: commercial' in out
-        assert re.search(r'\[!!\] InsightFace buffalo_l \(insightface\): not permitted', out)
+        # The scan loads the permissive stack ...
+        assert 'YuNet (opencv_zoo) (yunet)' in out
+        assert 'SFace (opencv_zoo) (sface)' in out
+        # ... and never InsightFace, so the doctor does not warn about it.
+        assert 'InsightFace buffalo_l (insightface)' not in out
+        assert not re.search(r'\[!!\] .*not permitted in commercial mode', out)
 
     def test_face_model_mismatch_warning(self, capsys, tmp_path):
         db = tmp_path / 'mixed.db'
@@ -283,3 +288,52 @@ class TestLicensingAllowUnclearEnv:
         monkeypatch.setenv('FACET_LICENSING_ALLOW_UNCLEAR', '0')
         licensing.reset_policy()
         assert licensing.policy() == licensing.Policy('commercial', False)
+
+
+class TestReraiseIfRefused:
+    @staticmethod
+    def _handled(exc_factory):
+        """Run the helper inside a broad handler, the way every call site does."""
+        try:
+            try:
+                raise exc_factory()
+            except Exception:
+                licensing.reraise_if_refused()
+                return 'swallowed'
+        except licensing.LicenceError:
+            return 'refused'
+
+    def test_a_direct_refusal_passes_through(self):
+        assert self._handled(lambda: licensing.LicenceError('no')) == 'refused'
+
+    def test_a_refusal_wrapped_with_from_passes_through(self):
+        def make():
+            try:
+                raise licensing.LicenceError('no')
+            except licensing.LicenceError as inner:
+                err = RuntimeError('wrapped')
+                err.__cause__ = inner
+                return err
+        assert self._handled(make) == 'refused'
+
+    def test_a_refusal_in_the_context_chain_passes_through(self):
+        def make():
+            try:
+                raise licensing.LicenceError('no')
+            except licensing.LicenceError:
+                try:
+                    raise ValueError('during handling')
+                except ValueError as e:
+                    return e
+        assert self._handled(make) == 'refused'
+
+    def test_an_unrelated_error_is_left_for_the_handler(self):
+        assert self._handled(lambda: ValueError('boom')) == 'swallowed'
+
+    def test_a_context_cycle_terminates(self):
+        a, b = ValueError('a'), ValueError('b')
+        a.__context__, b.__context__ = b, a
+        assert self._handled(lambda: a) == 'swallowed'
+
+    def test_outside_an_except_block_it_does_nothing(self):
+        licensing.reraise_if_refused()

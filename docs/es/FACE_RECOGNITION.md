@@ -282,7 +282,8 @@ puntuaciones geométricas.
   "face_detection": {
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -293,6 +294,7 @@ puntuaciones geométricas.
   automáticamente. Establecer en `false` para forzar solo geometría.
 - `min_crop_size` (predeterminado `192`): los rostros cuyo recorte con relleno sea menor que este
   valor (px, lado más corto) recurren a la geometría en lugar de ampliar un rostro diminuto.
+- `blink_pose_gate_deg` (predeterminado `null` = desactivado): solo el analizador MediaPipe del modo comercial. Una cara cuyo |yaw| o |pitch| (grados, a partir de la matriz de transformación del Face Landmarker) supere este valor no recibe veredicto de parpadeo ni puntuación de ojos abiertos / sonrisa (NULL = desconocido), porque una cabeza girada parece tener los ojos cerrados. Permanece desactivado por defecto: en una mitad reservada de una biblioteca real, ningún umbral entre 20° y 45° mejoró la detección de parpadeos (cada uno perdía más parpadeos reales que falsos), así que no se incluye ninguno; actívalo solo si tu biblioteca tiene muchos rostros muy girados; se aplica a las fotos recién escaneadas y los valores `is_blink` existentes solo cambian al volver a escanear.
 
 ### Recálculo
 
@@ -483,9 +485,9 @@ validar sin datos reales. Hacerlo correctamente requiere:
 ### Bibliotecas mixtas, reextracción y valores desconocidos
 
 - **Bibliotecas mixtas.** Una biblioteca puede contener rostros ArcFace (512-d) y SFace (128-d) a la vez. El agrupador, las sugerencias de fusión, la búsqueda de persona similar y los centroides de personas usan cada uno un solo modelo (`persons.centroid_model` registra cuál); los modos de agrupación incremental y solo-con-nombre no tocan los rostros ni las personas del otro modelo, pero `--cluster-faces-force` borra todas las asignaciones rostro→persona y todas las personas, incluidas las nombradas, sea cual sea su modelo. Para pasar una biblioteca al modelo activo, ejecuta `--extract-faces-gpu-force` (en modo comercial usa el extractor permisivo; las personas con nombre se conservan) y después `--cluster-faces-incremental`.
-- **Avisos.** Un escaneo registra una advertencia cuando hay rostros almacenados de un modelo distinto del activo, y `--doctor` informa de la misma discrepancia respecto al modelo activo.
-- **Las personas con nombre sobreviven a la reextracción.** Antes de que `--extract-faces-gpu-force` borre las filas de rostros, Facet recuerda el recuadro de cada rostro de una persona con nombre; después, cada rostro redetectado se devuelve a la persona cuyo recuadro antiguo lo solapa con IoU >= 0,5 (uno a uno, primero el mayor solapamiento) y los centroides se recalculan por modelo. Un rostro sin recuadro antiguo equivalente queda sin asignar hasta la siguiente agrupación. Los recuadros recordados se guardan en la tabla `face_reextract_snapshot` en la misma transacción que el borrado, de modo que una ejecución interrumpida se retoma en la siguiente extracción. Reescanear una foto conserva sus personas con nombre de la misma forma.
-- **Desconocido no es cero.** Sin MediaPipe el analizador permisivo no puede medir ojos, sonrisa ni parpadeos, por lo que esos valores se guardan como NULL (no 0 ni «parpadeando»); el filtro y la penalización de parpadeo tratan NULL como «no es un parpadeo». Los lectores de los 106 puntos de referencia omiten los rostros sin ellos.
+- **Avisos.** Un escaneo registra una advertencia cuando hay rostros almacenados de un modelo distinto del activo, y `--doctor` informa de la misma discrepancia respecto al modelo activo. En modo comercial, `--doctor` enumera los componentes que un escaneo cargaría realmente (YuNet, SFace, Q-ReAlign y, si `python-ofiq` está instalado, OFIQ), y no los que el perfil de VRAM se limita a nombrar, por lo que TOPIQ, LIQE e InsightFace ya no aparecen como advertencias.
+- **Las personas con nombre sobreviven a la reextracción.** Antes de que `--extract-faces-gpu-force` borre las filas de rostros, Facet recuerda el recuadro de cada rostro de una persona con nombre; después, cada rostro redetectado se devuelve a la persona cuyo recuadro antiguo lo solapa con IoU >= 0,5 (uno a uno, primero el mayor solapamiento) y los centroides se recalculan por modelo. Un rostro sin recuadro antiguo equivalente queda sin asignar hasta la siguiente agrupación. Los recuadros recordados se guardan en la tabla `face_reextract_snapshot` en la misma transacción que el borrado, de modo que una ejecución interrumpida se retoma en la siguiente extracción. Reescanear una foto conserva sus personas con nombre de la misma forma. Los centroides de personas que un reescaneo dejó obsoletos se reconstruyen una sola vez al terminar el escaneo (incluso si se interrumpe), no una vez por lote; los recuentos y los rostros representativos se siguen actualizando por lote.
+- **Desconocido no es cero.** Sin MediaPipe el analizador permisivo no puede medir ojos, sonrisa ni parpadeos, por lo que esos valores se guardan como NULL (no 0 ni «parpadeando»); el filtro y la penalización de parpadeo tratan NULL como «no es un parpadeo». Los lectores de los 106 puntos de referencia omiten los rostros sin ellos. Una foto cuyo paso de rostros falla se almacena con `face_count`, `face_ratio` e `is_group_portrait` en NULL (desconocido), no en 0, y se conservan sus rostros almacenados; la puntuación la trata como sin rostro hasta que se vuelva a escanear.
 
 ## Resolución de problemas
 

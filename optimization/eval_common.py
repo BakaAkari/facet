@@ -258,3 +258,34 @@ def pairwise_f1_grid(sim, labels, grid):
         rows.append({'threshold': round(float(t), 6), 'precision': p, 'recall': r, 'f1': f1,
                      'tp': tp, 'n_pred': n_pred, 'n_same': n_same})
     return rows
+
+
+def split_halves(n, seed, strata=None, groups=None):
+    """Seeded 50/50 split of ``n`` items into ``(A, B)`` sorted index arrays.
+
+    The unit of splitting is the *group* (``groups[i]``, e.g. a person id), or the item
+    itself when ``groups`` is None, so a group never straddles the halves. Units are
+    shuffled within each stratum (``strata[i]``, constant per group; the first member's
+    value is used) and halved, the odd unit going to A or B by the seeded draw, so each
+    half keeps the stratum mix (label-stratified for blink, face-count tercile for
+    centroid persons). Deterministic per ``seed`` and independent of the global RNG;
+    A and B are disjoint and together cover ``range(n)``.
+    """
+    rng = np.random.default_rng(seed + 7)
+    group_of = list(range(n)) if groups is None else list(groups)
+    first = {}
+    for i, g in enumerate(group_of):
+        first.setdefault(g, i)
+    by_stratum = {}
+    for g, i in first.items():
+        by_stratum.setdefault(None if strata is None else strata[i], []).append(g)
+    in_a = set()
+    for key in sorted(by_stratum, key=lambda k: (k is None, str(k))):
+        units = sorted(by_stratum[key], key=lambda g: (str(type(g)), g))
+        order = rng.permutation(len(units))
+        k = len(units)
+        h = k // 2 + (int(rng.integers(2)) if k % 2 else 0)
+        in_a.update(units[j] for j in order[:h])
+    a = np.array([i for i in range(n) if group_of[i] in in_a], dtype=int)
+    b = np.array([i for i in range(n) if group_of[i] not in in_a], dtype=int)
+    return a, b

@@ -335,7 +335,7 @@ FACET_VRAM_PROFILE=8gb python facet.py /path/to/photos
 
 `mediapipe` 必须始终使用 `--no-deps` 安装：它自带的 `opencv-contrib-python` 会让 `cv2` 命名空间被重复安装。`commercial` extra 只声明其运行时依赖（`absl-py`、`flatbuffers`）。`python-ofiq`（OFIQ 人脸质量绑定）已发布到 PyPI，但只提供 Linux x86-64 和 macOS arm64 的 wheel，因此不在该 extra 中；有 wheel 的平台上请手动 `pip install python-ofiq`。
 
-商业安装本身不会切换模式。请在 `scoring_config.json` 覆盖文件中设置（`{ "licensing": { "mode": "commercial" } }`）；Docker 构建参数还会在镜像中设置 `FACET_LICENSING_MODE=commercial`。`python facet.py --doctor` 会显示当前生效的许可状态。
+商业安装本身不会切换模式。请在 `scoring_config.json` 覆盖文件中设置（`{ "licensing": { "mode": "commercial" } }`）；Docker 构建参数还会在镜像中设置 `FACET_LICENSING_MODE=commercial`。`python facet.py --doctor` 会显示当前生效的许可状态。在商业模式下，它列出扫描实际会加载的组件（YuNet、SFace、Q-ReAlign），而不是配置档案仅仅提到的组件。
 
 ## 手动安装，不使用 install.sh
 

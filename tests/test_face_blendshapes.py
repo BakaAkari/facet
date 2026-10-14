@@ -166,13 +166,10 @@ class TestEnsureModelFile:
         model_path = str(tmp_path / "face_landmarker.task")
         scorer = BlendshapeScorer(model_path=model_path)
 
-        def fake_urlretrieve(url, path):
-            with open(path, 'wb') as f:
-                f.write(b'\x00' * 100)
+        def fake_urlopen(url, timeout=None):
             raise ConnectionError("simulated network drop")
 
-        monkeypatch.setattr(
-            "analyzers.face_blendshapes.urllib.request.urlretrieve", fake_urlretrieve)
+        monkeypatch.setattr("models.weights.urllib.request.urlopen", fake_urlopen)
 
         with pytest.raises(ConnectionError):
             scorer._ensure_model_file()
@@ -183,12 +180,17 @@ class TestEnsureModelFile:
         model_path = str(tmp_path / "face_landmarker.task")
         scorer = BlendshapeScorer(model_path=model_path)
 
-        def fake_urlretrieve(url, path):
-            with open(path, 'wb') as f:
-                f.write(b'\x00' * 10)
+        import io
 
-        monkeypatch.setattr(
-            "analyzers.face_blendshapes.urllib.request.urlretrieve", fake_urlretrieve)
+        class _Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr("models.weights.urllib.request.urlopen",
+                            lambda url, timeout=None: _Resp(bytes(10)))
 
         with pytest.raises(ValueError):  # SHA-256 mismatch is refused
             scorer._ensure_model_file()

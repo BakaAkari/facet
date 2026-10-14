@@ -11,7 +11,6 @@ import cv2
 import numpy as np
 
 import licensing
-from licensing import LicenceError
 
 logger = logging.getLogger("facet.face_analyzer")
 
@@ -72,9 +71,8 @@ class FaceAnalyzer:
                 finally:
                     sys.stdout = _stdout
             self.available = True
-        except LicenceError:
-            raise
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.warning("InsightFace not available: %s", e)
 
     def _crop_face_thumbnail(self, img_cv, bbox, padding=0.3):

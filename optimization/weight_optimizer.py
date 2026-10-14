@@ -30,6 +30,7 @@ import numpy as np
 from scipy.optimize import minimize
 from db import DEFAULT_DB_PATH, get_connection
 from config import ScoringConfig
+from config.category_filter import with_face_defaults
 from config.scoring_config import resolve_scoring_config_path
 from config_resolve import load_resolved
 from processing.scorer import build_metric_vector, SCORING_METRIC_KEYS
@@ -76,7 +77,7 @@ class WeightOptimizer:
         category-dependent terms (leading-lines blend, isolation) match scoring.
         Values are clamped to 0-10 exactly as the scorer clamps them.
         """
-        cat = category or self.cfg.determine_category(row)
+        cat = category or self.cfg.determine_category(with_face_defaults(row))
         vec = build_metric_vector(row, self.cfg, cat, weights=self.cfg.get_weights(cat))
         return [max(0.0, min(10.0, vec.get(c, 0.0))) for c in self.SCORE_COMPONENTS]
 

@@ -122,7 +122,7 @@ def api_face_markers(
         if not prow:
             raise HTTPException(status_code=404, detail="Unknown photo")
         rows = conn.execute(
-            "SELECT bbox_x1, bbox_y1, bbox_x2, bbox_y2, landmark_2d_106 "
+            "SELECT bbox_x1, bbox_y1, bbox_x2, bbox_y2, landmark_2d_106, eyes_open_score "
             "FROM faces WHERE photo_path = ? ORDER BY face_index", (path,)
         ).fetchall()
 
@@ -134,13 +134,16 @@ def api_face_markers(
     for r in rows:
         bbox = _normalized_face_box(r["bbox_x1"], r["bbox_y1"], r["bbox_x2"],
                                     r["bbox_y2"], width, height)
-        eyes_score = None
+        # The stored score first: it is the one the rest of the app shows, and the only one
+        # an SFace face has (no 106-point landmarks). Landmark geometry is the fallback.
+        eyes_score = r["eyes_open_score"]
         eye_points = []
         blob = r["landmark_2d_106"]
         if blob is not None:
             try:
                 lm = np.frombuffer(blob, dtype=np.float32).reshape(106, 2)
-                eyes_score = FaceAnalyzer.compute_eyes_open_score(lm)
+                if eyes_score is None:
+                    eyes_score = FaceAnalyzer.compute_eyes_open_score(lm)
                 if bbox is not None:
                     left = lm[FaceAnalyzer.LEFT_EYE_INDICES].mean(axis=0)
                     right = lm[FaceAnalyzer.RIGHT_EYE_INDICES].mean(axis=0)

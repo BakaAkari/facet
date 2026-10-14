@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from typing import Mapping, Optional
 
@@ -35,6 +36,25 @@ MODES = (MODE_DEFAULT, MODE_COMMERCIAL)
 
 class LicenceError(RuntimeError):
     """A component was requested that the active licensing policy forbids."""
+
+
+def reraise_if_refused() -> None:
+    """Call as the FIRST statement of a broad ``except Exception`` handler.
+
+    Re-raises the exception being handled when it is, or was caused by or raised
+    while handling, a :class:`LicenceError`, so a licence refusal is never
+    downgraded to a logged warning. Python cannot make ``except Exception`` skip
+    a subclass, so this one call is the single definition of "a refusal passes
+    through". Outside an ``except`` block there is no active exception and it
+    does nothing.
+    """
+    exc = sys.exc_info()[1]
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, LicenceError):
+            raise exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
 
 
 @dataclass(frozen=True)
@@ -82,7 +102,7 @@ COMPONENTS: dict[str, Component] = {c.id: c for c in (
     _pyiqa('topiq_nr_face', 'TOPIQ NR-Face', 'face_quality_iqa (supplementary)', 'ofiq'),
     _pyiqa('liqe', 'LIQE', 'quality + distortion diagnosis (supplementary)', None,
            'No permissive replacement: the metric is unavailable in commercial mode.'),
-    _c('qrealign_native', 'Q-ReAlign Mini/Lite/Pro (transformers)', 'weights', 'MIT',
+    _c('qrealign_native', 'Q-ReAlign Mini/Lite (transformers)', 'weights', 'MIT',
        'Apache-2.0', 'yes', 'https://huggingface.co/q-future', 'qrealign_score (extended IQA); '
        'aesthetic / quality_score (commercial mode)', None,
        'Loaded through transformers (models/qrealign_native.py); no pyiqa involved.'),
