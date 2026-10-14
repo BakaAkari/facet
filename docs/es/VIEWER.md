@@ -153,6 +153,8 @@ python database.py --migrate-user-preferences --user alice
 | **Contenido** | Etiquetas, interruptor monocromático |
 | **Momentos** | Confianza del momento narrativo (control deslizante de rango 0–1: `min_moment_confidence` / `max_moment_confidence`) |
 
+Los filtros de rango de Estética IAA, Calidad facial IQA, LIQE y Aesthetic V2.5 solo incluyen fotos que tienen puntuación. Una foto que un modelo no pudo puntuar se guarda como NULL (antes llevaba un 5,0 neutro), así que incluso un filtro que empieza en 0 la excluye, y una ordenación ascendente por Estética (IAA), Calidad facial (IQA) o LIQE la coloca al final. Consulta [Dimensiones IQA complementarias](SCORING.md#dimensiones-iqa-complementarias).
+
 ### Patrones de composición
 
 Filtra por los patrones detectados por SAMP-Net (el modelo emite exactamente estos

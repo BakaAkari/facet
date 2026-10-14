@@ -624,7 +624,7 @@ Quando `vram_profile` é `"auto"` (padrão), o sistema detecta a VRAM de GPU dis
 | ≥ 6GB | `8gb` |
 | Sem GPU | `legacy` (usa a RAM do sistema) |
 
-**Placas de 10-14GB podem optar pelo conjunto completo de recursos.** A detecção automática não muda: abaixo de 14GB ela continua selecionando `8gb`. Em vez disso, uma placa de 10-14GB pode executar o perfil `16gb` (embeddings SigLIP 2, TOPIQ, tagging com Qwen3.5-2B, Q-ReAlign, saliência) definindo `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`. O planejador de passagens então divide os modelos em três passagens que cabem (veja [Agrupamento Dinâmico de Passagens](#agrupamento-dinâmico-de-passagens)), a saliência, que antes ficava sem memória aqui, agora dimensiona seu lote pela VRAM livre, e uma foto que ela ainda não consegue pontuar grava NULL e registra um ERROR em vez de uma pontuação neutra. **Trocar uma biblioteca `8gb` existente para `16gb` muda o modelo de embeddings** (CLIP ViT-L-14 de 768 dimensões → SigLIP 2 de 1152 dimensões), de modo que a biblioteca misturaria duas dimensões de embedding: refaça a varredura ou execute `--recompute-embeddings` para reincorporá-la. Veja *Busca semântica e uma biblioteca incorporada sob um perfil diferente* em [Models](#models) para saber como a busca se comporta até lá.
+**Placas de 10-14GB podem optar pelo conjunto completo de recursos.** A detecção automática não muda: abaixo de 14GB ela continua selecionando `8gb`. Em vez disso, uma placa de 10-14GB pode executar o perfil `16gb` (embeddings SigLIP 2, TOPIQ, tagging com Qwen3.5-2B, Q-ReAlign, saliência) definindo `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`. O planejador de passagens então divide os modelos em quatro passagens que cabem (três em uma placa que informa 11,8 GiB ou mais) (veja [Agrupamento Dinâmico de Passagens](#agrupamento-dinâmico-de-passagens)), a saliência, que antes ficava sem memória aqui, agora dimensiona seu lote pela VRAM livre, e uma foto que ela ainda não consegue pontuar grava NULL e registra um ERROR em vez de uma pontuação neutra. **Trocar uma biblioteca `8gb` existente para `16gb` muda o modelo de embeddings** (CLIP ViT-L-14 de 768 dimensões → SigLIP 2 de 1152 dimensões), de modo que a biblioteca misturaria duas dimensões de embedding: refaça a varredura ou execute `--recompute-embeddings` para reincorporá-la. Veja *Busca semântica e uma biblioteca incorporada sob um perfil diferente* em [Models](#models) para saber como a busca se comporta até lá.
 
 ---
 
@@ -794,16 +794,19 @@ O sistema monitora o uso de recursos e ajusta:
 
 Quando a VRAM permite, vários modelos pequenos rodam juntos:
 
-| VRAM | Passagem 1 | Passagem 2 | Passagem 3 |
-|------|------------|------------|------------|
-| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ | - |
-| 12GB (perfil `16gb`, opcional) | Tagger Qwen3.5 + Q-ReAlign | SigLIP + saliência + TOPIQ | TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace |
-| 16GB | Tagger Qwen3.5 + SigLIP + TOPIQ | Q-ReAlign + saliência + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
-| 24GB+ | Todos os modelos juntos (passagem única) | - | - |
+| VRAM | Passagem 1 | Passagem 2 | Passagem 3 | Passagem 4 |
+|---|---|---|---|---|
+| 8GB (perfil `8gb`) | CLIP | Q-ReAlign + saliência | TOPIQ IAA + TOPIQ NR-Face + LIQE | SAMP-Net + InsightFace |
+| 12GB\* (perfil `16gb`, opcional) | Tagger Qwen3.5 + Q-ReAlign | SigLIP + saliência + TOPIQ IAA | TOPIQ + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
+| 16GB (perfil `16gb`) | Tagger Qwen3.5 + SigLIP + TOPIQ | Q-ReAlign + saliência + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace | - |
+| 24GB (perfil `24gb`) | Tagger Qwen3.5 4B + SigLIP + Q-ReAlign + saliência | TOPIQ + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace | - | - |
+| 35GB+ (perfil `24gb`) | Todos os modelos juntos (passagem única) | - | - | - |
 
-As linhas de 12GB e 16GB são a saída do planejador para o perfil `16gb`. Uma placa de 12GB não é selecionada automaticamente (veja [Detecção Automática de VRAM](#detecção-automática-de-vram)): ela exige `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`.
+As linhas de 8GB, 12GB, 16GB e 24GB são a saída do planejador de passagens para o perfil indicado, para uma placa que informa 8,0, 11,7, 15,99 e 23,99 GiB de VRAM total; uma placa que informa 34,8 GiB ou mais planeja uma única passagem com o perfil `24gb` (linha 35GB+). O planejador distribui os modelos conforme a VRAM estimada na VRAM total da placa menos 1,3 GiB, que ele reserva para a sobrecarga do CUDA e do ONNX Runtime e para o desktop. Uma placa de 12GB não é selecionada automaticamente (veja [Detecção Automática de VRAM](#detecção-automática-de-vram)): ela exige `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`.
 
-Medido em uma execução com 49 fotos e um limite rígido de 11,7 GiB sobre PyTorch, ONNX Runtime e a leitura de VRAM livre (RTX 4070 Ti SUPER): pico de VRAM de 9,06 GiB para a placa inteira, desktop incluído (picos por passagem de ~8,5, ~9,1 e ~3,9 GiB), tamanho de lote de saliência 2 e resultados idênticos aos de uma execução sem limite em 16 GiB (tags 49/49, caixas de sujeito da saliência 44 contra 44, rostos iguais). O tempo total foi de 226 s contra ~240 s sem limite. Na placa de 16 GiB sem limite, o tamanho de lote de saliência é 3.
+\* A linha de 12GB é o plano para uma placa que informa 11,7 GiB. Uma placa de 12GB que informa 11,8 GiB ou mais (por exemplo, 11,99 GiB) planeja em vez disso três passagens: tagger Qwen3.5 + Q-ReAlign; SigLIP + saliência + TOPIQ; TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace.
+
+Medido em 49 fotos com um limite rígido de 11,7 GiB no PyTorch, no ONNX Runtime e na leitura de VRAM livre (RTX 4070 Ti SUPER): o plano de quatro passagens terminou sem nenhum erro de falta de memória, com pico de VRAM de 9,74 GiB para a placa inteira, desktop incluído (passagem mais pesada: SigLIP + saliência + TOPIQ IAA), tamanho de lote de saliência 2 e 246 s de duração; as tags, os embeddings de 1152 dimensões, as caixas do assunto (44/44) e os rostos coincidiram com uma execução sem limite.
 
 ### Opções de CLI
 

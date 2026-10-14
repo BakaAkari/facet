@@ -121,7 +121,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --recompute-saliency` | `[GPU]` 从已存储的缩略图重新计算主体显著性指标（BiRefNet_dynamic）——照片库所在卷离线时也能运行。会跳过已有 `subject_bbox` 的照片（可续跑）；`--force` 则全部重做。所有档位都启用了显著性（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。某张照片的显著性失败（例如显存不足）时，会记录一条 ERROR 且不写入：从未评分的行保持 NULL，并会在下次运行时再次被选中；使用 `--force` 时，已有显著性的行会保留其已存储的值。在 CUDA 上，批大小由空闲显存推算。 |
 | `python facet.py --recompute-composition-cpu` | 用基于规则的方法重新计算构图（CPU，任意档位） |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` 用 SAMP-Net 重新计算构图 |
-| `python facet.py --recompute-iqa` | `[GPU]` 从已存储的缩略图重新计算补充 IQA 指标（TOPIQ IAA、NR-Face、LIQE）。所有档位都已启用（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU |
+| `python facet.py --recompute-iqa` | `[GPU]` 从已存储的缩略图重新计算补充 IQA 指标（TOPIQ IAA、NR-Face、LIQE）。所有档位都已启用（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。仅填充为 NULL 的列：模型无法评分的照片保持 NULL，并会被下次运行再次选中；NR-Face 会跳过未检测到人脸的照片；已存储的值（包括旧版本写入的中性 5.0）绝不会被替换。见[补充画质模型](#补充画质模型) |
 | `python facet.py --detect-text` | 通过对已存储缩略图做 OCR，把图像中的文字（招牌、海报、文件）提取到 `ocr_text`，使其可在照片库搜索框中被检索到。会跳过已评估过的照片，因此重新运行时只读取新照片。需手动开启：要求 `scoring_config.json` 中的 `ocr.enabled` 并 `pip install easyocr`——参见 [配置 — OCR](CONFIGURATION.md#ocr) |
 | `python facet.py --recompute-text` | 对整个照片库重新运行 OCR，包括 `--detect-text` 已经评估过的照片 |
 | `python facet.py --recompute-colors` | 从缩略图提取主色调与冷暖色温（CPU，快速），写入 `dominant_hue` ／ `color_temp` |
@@ -142,7 +142,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --extract-gps` | 从 EXIF 数据中提取 GPS 坐标写入数据库列 |
 | `python facet.py --rescan-gps` | 为全部照片重新从 EXIF 提取 GPS 坐标（覆盖已有值） |
 | `python facet.py --recompute-embeddings` | 为全部照片重新计算 CLIP/SigLIP 特征向量（更换模型后必须执行） |
-| `python facet.py --score-topiq` | 从已存储的缩略图回填 TOPIQ 画质评分（需要 GPU） |
+| `python facet.py --score-topiq` | 对每张带有已存储缩略图的照片，用 TOPIQ 重新计算 `topiq_score`（需要 GPU）。没有 NULL 过滤，因此会覆盖现有值；TOPIQ 无法评分的照片保留其已存储的值 |
 | `python facet.py --backfill-focal-35mm` | 为缺少等效 35mm 焦距的照片从 EXIF 回填该值 |
 | `python facet.py --backfill-clipping` | 从已存储的直方图推导各通道的溢出百分比。仅使用数据库（不解码图像）且可续跑；直方图早于 RGB 格式的照片保持未知（NULL） |
 | `python facet.py --repair-int-columns` | 修复 `photos` 表中实际存储为 REAL 的 INTEGER 列——SQLite 的类型亲和性并非约束，因此外部工具写入的小数 ISO 会原样保留为 REAL。就地对每个值取整（SQLite 无法以整数保存的值——非有限值，或超过 2^53——置为 NULL），其余一概不动。仅使用数据库（不解码图像）。API 在读取时会对未修复的行取整，因此图库无需本命令即可正常显示；但筛选和排序比较的是实际存储的值，运行本命令可避免显示为 ISO 63 的照片被 ISO 区间筛选漏掉 |
@@ -158,6 +158,8 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 - **TOPIQ IAA**（`--pass quality-iaa`）：基于 AVA 训练的艺术美学价值，与技术质量相互独立。存储为 `aesthetic_iaa`。
 - **TOPIQ NR-Face**（`--pass quality-face`）：人脸区域的画质评估。存储为 `face_quality_iqa`。
 - **LIQE**（`--pass quality-liqe`）：画质评分外加失真类型诊断（例如运动模糊、过曝、噪点）。存储为 `liqe_score`。
+
+模型无法评分的照片（NR-Face 为其检测器找不到人脸，LIQE 为短边小于 224 px）会在该列存入 NULL，而不是中性的 5.0；在此之前，GPU 显存不足错误会先以一半的批大小重试，直至一张图片。`--recompute-iqa` 每次运行都会再次选中这类照片，因为它只填充为 NULL 的列（并对 `face_count` 为 0 的照片跳过 NR-Face）；每次重试的代价是把缩略图送入模型前向一次。它绝不会替换已存储的值，包括旧版本写入的中性 5.0：只有重写照片的重新扫描（例如 `--force`）才会。使用 `--pass quality`、`quality-iaa`、`quality-face` 和 `quality-liqe` 时，模型失败的照片保留其已存储的值。完整扫描会把主 TOPIQ 模型失败的照片记入 `scan_failures`（用 `--retry-failed` 重试）；`--pass quality` 不记录任何内容。见[补充 IQA 维度](SCORING.md#补充-iqa-维度)。
 
 ### 基准测试与补充评分
 
@@ -350,6 +352,8 @@ python /opt/facet/viewer.py      # 仍然读取 /opt/facet/scoring_config.json�
 | `python tag_existing.py --force` | 重新标注全部照片 |
 | `python tag_existing.py --db custom.db` | 使用自定义数据库 |
 | `python tag_existing.py --config my.json` | 使用自定义配置 |
+
+在 CUDA 机器上，SigLIP 配置档（`16gb`、`24gb`）现在以 fp16 编码标签词表，与单遍评分器此前的做法一致；`tag_existing.py` 以前以 fp32 加载。`python tag_existing.py`、`python tag_existing.py --force`、`python facet.py --tag-untagged` 以及扫描结束时的标注步骤共用同一个加载器。在 49 张照片上实测，其中 2 张（4%）的标签集合发生了变化：重新运行 `python tag_existing.py --force` 即可为之前已标注的照片重新标注。CPU 和 CLIP ViT-L-14 配置档（`legacy`、`8gb`）不受影响。
 
 ## 数据库校验
 

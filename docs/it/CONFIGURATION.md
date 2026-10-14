@@ -626,7 +626,7 @@ Quando `vram_profile` è `"auto"` (predefinito), il sistema rileva la VRAM GPU d
 | ≥ 6GB | `8gb` |
 | Nessuna GPU | `legacy` (usa la RAM di sistema) |
 
-**Le schede da 10-14GB possono scegliere l'insieme completo delle funzionalità.** Il rilevamento automatico non cambia: sotto i 14GB seleziona ancora `8gb`. Una scheda da 10-14GB può invece eseguire il profilo `16gb` (embedding SigLIP 2, TOPIQ, tagging con Qwen3.5-2B, Q-ReAlign, salienza) impostando `"vram_profile": "16gb"` oppure `FACET_VRAM_PROFILE=16gb`. Il pianificatore dei passaggi suddivide quindi i modelli in tre passaggi che ci stanno (vedi [Raggruppamento dinamico dei passaggi](#raggruppamento-dinamico-dei-passaggi)), la salienza, che prima qui esauriva la memoria, ora dimensiona il batch in base alla VRAM libera, e una foto che comunque non riesce a valutare memorizza NULL e registra un ERROR invece di un punteggio neutro. **Passare una libreria `8gb` esistente a `16gb` cambia il modello di embedding** (CLIP ViT-L-14 a 768 dimensioni → SigLIP 2 a 1152 dimensioni), quindi la libreria mescolerebbe due dimensioni di embedding: riesegui la scansione o lancia `--recompute-embeddings` per rigenerare gli embedding. Vedi *Ricerca semantica e libreria incorporata con un profilo diverso* in [Models](#models) per il comportamento della ricerca nel frattempo.
+**Le schede da 10-14GB possono scegliere l'insieme completo delle funzionalità.** Il rilevamento automatico non cambia: sotto i 14GB seleziona ancora `8gb`. Una scheda da 10-14GB può invece eseguire il profilo `16gb` (embedding SigLIP 2, TOPIQ, tagging con Qwen3.5-2B, Q-ReAlign, salienza) impostando `"vram_profile": "16gb"` oppure `FACET_VRAM_PROFILE=16gb`. Il pianificatore dei passaggi suddivide quindi i modelli in quattro passaggi che ci stanno (tre su una scheda che riporta 11,8 GiB o più) (vedi [Raggruppamento dinamico dei passaggi](#raggruppamento-dinamico-dei-passaggi)), la salienza, che prima qui esauriva la memoria, ora dimensiona il batch in base alla VRAM libera, e una foto che comunque non riesce a valutare memorizza NULL e registra un ERROR invece di un punteggio neutro. **Passare una libreria `8gb` esistente a `16gb` cambia il modello di embedding** (CLIP ViT-L-14 a 768 dimensioni → SigLIP 2 a 1152 dimensioni), quindi la libreria mescolerebbe due dimensioni di embedding: riesegui la scansione o lancia `--recompute-embeddings` per rigenerare gli embedding. Vedi *Ricerca semantica e libreria incorporata con un profilo diverso* in [Models](#models) per il comportamento della ricerca nel frattempo.
 
 ---
 
@@ -796,16 +796,19 @@ Il sistema monitora l'utilizzo delle risorse e si regola:
 
 Quando la VRAM lo consente, più modelli piccoli vengono eseguiti insieme:
 
-| VRAM | Passaggio 1 | Passaggio 2 | Passaggio 3 |
-|------|--------|--------|--------|
-| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ | - |
-| 12GB (profilo `16gb`, opt-in) | Tagger Qwen3.5 + Q-ReAlign | SigLIP + salienza + TOPIQ | TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace |
-| 16GB | Tagger Qwen3.5 + SigLIP + TOPIQ | Q-ReAlign + salienza + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
-| 24GB+ | Tutti i modelli insieme (single-pass) | - | - |
+| VRAM | Passaggio 1 | Passaggio 2 | Passaggio 3 | Passaggio 4 |
+|---|---|---|---|---|
+| 8GB (profilo `8gb`) | CLIP | Q-ReAlign + salienza | TOPIQ IAA + TOPIQ NR-Face + LIQE | SAMP-Net + InsightFace |
+| 12GB\* (profilo `16gb`, opt-in) | Tagger Qwen3.5 + Q-ReAlign | SigLIP + salienza + TOPIQ IAA | TOPIQ + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
+| 16GB (profilo `16gb`) | Tagger Qwen3.5 + SigLIP + TOPIQ | Q-ReAlign + salienza + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace | - |
+| 24GB (profilo `24gb`) | Tagger Qwen3.5 4B + SigLIP + Q-ReAlign + salienza | TOPIQ + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace | - | - |
+| 35GB+ (profilo `24gb`) | Tutti i modelli insieme (single-pass) | - | - | - |
 
-Le righe 12GB e 16GB sono l'output del pianificatore per il profilo `16gb`. Una scheda da 12GB non viene selezionata automaticamente (vedi [Rilevamento automatico della VRAM](#rilevamento-automatico-della-vram)): richiede `"vram_profile": "16gb"` o `FACET_VRAM_PROFILE=16gb`.
+Le righe 8GB, 12GB, 16GB e 24GB sono l'output del pianificatore dei passaggi per il profilo indicato, per una scheda che riporta 8,0, 11,7, 15,99 e 23,99 GiB di VRAM totale; una scheda che riporta 34,8 GiB o più pianifica un solo passaggio con il profilo `24gb` (riga 35GB+). Il pianificatore distribuisce i modelli in base alla VRAM stimata nella VRAM totale della scheda meno 1,3 GiB, che tiene da parte per l'overhead di CUDA e ONNX Runtime e per il desktop. Una scheda da 12GB non viene selezionata automaticamente (vedi [Rilevamento automatico della VRAM](#rilevamento-automatico-della-vram)): richiede `"vram_profile": "16gb"` o `FACET_VRAM_PROFILE=16gb`.
 
-Misurato in un'esecuzione su 49 foto con un limite rigido di 11,7 GiB su PyTorch, ONNX Runtime e sulla lettura della VRAM libera (RTX 4070 Ti SUPER): picco di VRAM di 9,06 GiB per l'intera scheda, desktop incluso (picchi per passaggio di circa 8,5, 9,1 e 3,9 GiB), dimensione del batch di salienza 2 e risultati identici a un'esecuzione senza limite su 16 GiB (tag 49/49, riquadri del soggetto di salienza 44 contro 44, volti uguali). Il tempo totale è stato di 226 s contro circa 240 s senza limite. Sulla scheda da 16 GiB senza limite la dimensione del batch di salienza è 3.
+\* La riga 12GB è il piano per una scheda che riporta 11,7 GiB. Una scheda da 12GB che riporta 11,8 GiB o più (ad esempio 11,99 GiB) pianifica invece tre passaggi: tagger Qwen3.5 + Q-ReAlign; SigLIP + salienza + TOPIQ; TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace.
+
+Misurato su 49 foto con un limite rigido di 11,7 GiB su PyTorch, ONNX Runtime e la lettura della VRAM libera (RTX 4070 Ti SUPER): il piano in quattro passaggi è terminato senza alcun errore di memoria esaurita, con un picco di VRAM di 9,74 GiB per l'intera scheda, desktop incluso (passaggio più pesante: SigLIP + salienza + TOPIQ IAA), dimensione del batch di salienza 2 e 246 s di durata; tag, embedding a 1152 dimensioni, riquadri del soggetto (44/44) e volti coincidono con un'esecuzione senza limite.
 
 ### Opzioni CLI
 

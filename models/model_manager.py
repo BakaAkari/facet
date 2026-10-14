@@ -128,8 +128,10 @@ class ModelManager:
     # what is free, so this has to cover everything a pass does not declare: the
     # CUDA context, the ONNX Runtime arena InsightFace keeps, other non-torch
     # residue that outlives a pass (``_reclaim_freed_memory`` already returns
-    # what torch holds) and the desktop. 1.3 GiB is the non-torch residue
-    # measured between passes on the 12 GB run behind issue #184.
+    # what torch holds) and the desktop. 1.3 GiB is the whole-card plateau
+    # (desktop included) measured between passes over a ten-chunk capped run
+    # for issue #184; single boundaries reached ~1.8 GiB, which the rounded-up
+    # MODEL_VRAM_REQUIREMENTS entries absorb (that run never exceeded its cap).
     _CUDA_PASS_MARGIN_GB = 1.3
     _HOST_OS_RESERVE_GB = 1.0
     _RAM_PER_DECLARED_GB = 1.6

@@ -614,7 +614,7 @@ penalty = min(noise_max_penalty_points, (noise_sigma - threshold) * noise_penalt
 | ≥ 6GB | `8gb` |
 | 无 GPU | `legacy`（使用系统内存） |
 
-**10-14GB 的显卡可以自行启用完整功能集。** 自动检测保持不变：低于 14GB 时仍会选择 `8gb`。10-14GB 的显卡可以改为运行 `16gb` 配置档（SigLIP 2 嵌入、TOPIQ、Qwen3.5-2B 标签、Q-ReAlign、显著性），方法是设置 `"vram_profile": "16gb"` 或 `FACET_VRAM_PROFILE=16gb`。此时遍次规划器会把模型拆成三个放得下的遍次（见[动态遍次分组](#动态遍次分组)），此前在这里会显存不足的显著性，现在按空闲显存确定批大小；仍无法评分的照片会存入 NULL 并记录一条 ERROR，而不是存入中性分数。**把已有的 `8gb` 照片库切换到 `16gb` 会更换嵌入模型**（CLIP ViT-L-14 的 768 维 → SigLIP 2 的 1152 维），照片库里会混入两种嵌入维度：请重新扫描，或运行 `--recompute-embeddings` 重新生成嵌入。在此之前搜索的行为见[模型](#模型)一节中的*语义搜索与在不同配置档下建立索引的照片库*。
+**10-14GB 的显卡可以自行启用完整功能集。** 自动检测保持不变：低于 14GB 时仍会选择 `8gb`。10-14GB 的显卡可以改为运行 `16gb` 配置档（SigLIP 2 嵌入、TOPIQ、Qwen3.5-2B 标签、Q-ReAlign、显著性），方法是设置 `"vram_profile": "16gb"` 或 `FACET_VRAM_PROFILE=16gb`。此时遍次规划器会把模型拆成四个放得下的遍次（显卡报告 11.8 GiB 或更多时为三个）（见[动态遍次分组](#动态遍次分组)），此前在这里会显存不足的显著性，现在按空闲显存确定批大小；仍无法评分的照片会存入 NULL 并记录一条 ERROR，而不是存入中性分数。**把已有的 `8gb` 照片库切换到 `16gb` 会更换嵌入模型**（CLIP ViT-L-14 的 768 维 → SigLIP 2 的 1152 维），照片库里会混入两种嵌入维度：请重新扫描，或运行 `--recompute-embeddings` 重新生成嵌入。在此之前搜索的行为见[模型](#模型)一节中的*语义搜索与在不同配置档下建立索引的照片库*。
 
 ### `FACET_VRAM_PROFILE` 环境变量覆盖
 
@@ -782,16 +782,19 @@ SRCC = 在 KonIQ-10k 基准上的斯皮尔曼等级相关系数（1.0 = 完美�
 
 显存允许时，多个小模型会一起运行：
 
-| 显存 | 第 1 遍 | 第 2 遍 | 第 3 遍 |
-|------|--------|--------|--------|
-| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ | - |
-| 12GB（`16gb` 配置档，需手动启用） | Qwen3.5 标签 VLM + Q-ReAlign | SigLIP + 显著性 + TOPIQ | TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace |
-| 16GB | Qwen3.5 标签 VLM + SigLIP + TOPIQ | Q-ReAlign + 显著性 + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
-| 24GB+ | 所有模型一起（单遍） | - | - |
+| 显存 | 第 1 遍 | 第 2 遍 | 第 3 遍 | 第 4 遍 |
+|---|---|---|---|---|
+| 8GB（`8gb` 配置档） | CLIP | Q-ReAlign + 显著性 | TOPIQ IAA + TOPIQ NR-Face + LIQE | SAMP-Net + InsightFace |
+| 12GB\*（`16gb` 配置档，需手动启用） | Qwen3.5 标签 VLM + Q-ReAlign | SigLIP + 显著性 + TOPIQ IAA | TOPIQ + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
+| 16GB（`16gb` 配置档） | Qwen3.5 标签 VLM + SigLIP + TOPIQ | Q-ReAlign + 显著性 + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace | - |
+| 24GB（`24gb` 配置档） | Qwen3.5 4B 标签 VLM + SigLIP + Q-ReAlign + 显著性 | TOPIQ + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace | - | - |
+| 35GB+（`24gb` 配置档） | 所有模型一起（单遍） | - | - | - |
 
-12GB 与 16GB 两行是规划器针对 `16gb` 配置档给出的分组。12GB 显卡不会被自动选中（见[显存自动检测](#显存自动检测)）：需要设置 `"vram_profile": "16gb"` 或 `FACET_VRAM_PROFILE=16gb`。
+8GB、12GB、16GB 和 24GB 四行是遍次规划器针对所示配置档的分组，对应显卡报告的总显存分别为 8.0、11.7、15.99 和 23.99 GiB；报告 34.8 GiB 或更多的显卡在 `24gb` 配置档下只规划一遍（35GB+ 一行）。规划器按各模型的估计显存把它们装入显卡总显存减去 1.3 GiB 的容量，这 1.3 GiB 留给 CUDA 与 ONNX Runtime 的开销以及桌面。12GB 显卡不会被自动选中（见[显存自动检测](#显存自动检测)）：需要设置 `"vram_profile": "16gb"` 或 `FACET_VRAM_PROFILE=16gb`。
 
-实测：在 49 张照片的运行中，对 PyTorch、ONNX Runtime 以及空闲显存读数施加 11.7 GiB 的硬性上限（RTX 4070 Ti SUPER），整张显卡（含桌面）的显存峰值为 9.06 GiB（各遍峰值约 8.5、约 9.1 和约 3.9 GiB），显著性批大小为 2，结果与不设上限的 16 GiB 运行完全一致（标签 49/49，显著性主体框 44 对 44，人脸相同）。总耗时 226 秒，不设上限时约 240 秒。在不设上限的 16 GiB 显卡上，显著性批大小为 3。
+\* 12GB 一行是报告 11.7 GiB 的显卡的分组。报告 11.8 GiB 或更多（例如 11.99 GiB）的 12GB 显卡则规划三遍：Qwen3.5 标签 VLM + Q-ReAlign；SigLIP + 显著性 + TOPIQ；TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace。
+
+在 49 张照片上实测，对 PyTorch、ONNX Runtime 和空闲显存读数施加 11.7 GiB 硬上限（RTX 4070 Ti SUPER）：四遍计划全程没有出现显存不足错误，整卡显存峰值 9.74 GiB（含桌面占用；最重的一遍是 SigLIP + 显著性 + TOPIQ IAA），显著性批大小为 2，耗时 246 秒；标签、1152 维嵌入、主体框（44/44）和人脸与不设上限的运行完全一致。
 
 ### 命令行选项
 
