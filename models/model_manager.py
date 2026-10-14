@@ -270,14 +270,13 @@ class ModelManager:
         """Load SigLIP 2 NaFlex via transformers (16gb/24gb profiles)."""
         logger.info("Loading SigLIP 2 NaFlex model (transformers)...")
         try:
-            from transformers import AutoModel, AutoProcessor
+            from transformers import AutoProcessor
+
+            from utils.siglip import load_siglip_model
 
             model_name = clip_config.get('model_name', 'google/siglip2-so400m-patch16-naflex')
 
-            model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-            model = model.to(self.device).eval()
-            if self.device == 'cuda':
-                model = model.half()
+            model = load_siglip_model(model_name, self.device)
             processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
             self.models['clip'] = {
@@ -524,6 +523,30 @@ class ModelManager:
         model_ram = self.MODEL_RAM_REQUIREMENTS.get(model_name, 2.0)
         return available_gb > model_ram + self._RAM_HEADROOM_GB
 
+    @staticmethod
+    def _unregistered_modules(model):
+        """Modules a wrapper's ``model.model`` holds outside its module tree.
+
+        pyiqa's face-quality net keeps a facexlib ``FaceRestoreHelper`` as a
+        plain attribute, so its detector and parser (~0.19 GiB) are not
+        children of ``model.model`` and ``.cpu()`` / ``.to()`` on it skip them.
+        Looks one holder deep into ``model.model.net``; a wrapper without a
+        net yields nothing.
+        """
+        net = getattr(getattr(model, 'model', None), 'net', None)
+        for holder in list(getattr(net, '__dict__', {}).values()):
+            for attr in list(getattr(holder, '__dict__', {}).values()):
+                if hasattr(attr, 'parameters') and hasattr(attr, 'cpu') and hasattr(attr, 'to'):
+                    yield attr
+
+    @staticmethod
+    def _module_device(module):
+        """Device of a module's first parameter or buffer, or None if it has neither."""
+        for tensors in (module.parameters(), getattr(module, 'buffers', lambda: ())()):
+            for tensor in tensors:
+                return tensor.device
+        return None
+
     def _move_to_cpu(self, model, model_name: str):
         """Move a model's tensors to CPU for RAM caching.
 
@@ -544,6 +567,17 @@ class ModelManager:
         elif hasattr(model, 'model') and hasattr(model.model, 'cpu'):
             # Wrapper objects: PyIQAScorer, RAMTagger
             model.model.cpu()
+            # facexlib picks its own device (cuda if available, else cpu) and
+            # pyiqa never passes one, so a helper is NOT necessarily on
+            # self.device. Record where each one was and put it back THERE;
+            # one already on the CPU is left alone both ways.
+            origins = []
+            for helper in self._unregistered_modules(model):
+                origin = self._module_device(helper)
+                if origin is not None and origin.type != 'cpu':
+                    origins.append((helper, origin))
+                    helper.cpu()
+            model._helper_origin_devices = origins
         elif isinstance(model, dict):
             # Dict-style: clip, clip_aesthetic
             for v in model.values():
@@ -568,6 +602,9 @@ class ModelManager:
                     model.saliency_detector.model.to(device)
         elif hasattr(model, 'model') and hasattr(model.model, 'to'):
             model.model.to(device)
+            for helper, origin in getattr(model, '_helper_origin_devices', ()):
+                helper.to(origin)
+            model._helper_origin_devices = []
         elif isinstance(model, dict):
             for v in model.values():
                 if hasattr(v, 'to'):
@@ -1116,7 +1153,7 @@ class ModelManager:
         'qwen3_5_tagger': 7,     # Qwen3.5-2B: ~4GB weights + 3GB inference
         'qwen3_5_4b_tagger': 10, # Qwen3.5-4B: ~8GB weights + 2GB inference
         # PyIQA models (lightweight, high accuracy)
-        'topiq': 2,
+        'topiq': 2.5,         # measured 2.41 GiB NVML / 2.19 reserved (issue #184)
         'hyperiqa': 2,
         'dbcnn': 2,
         'musiq': 2,
@@ -1129,7 +1166,7 @@ class ModelManager:
         'faces_permissive': 1,  # YuNet + SFace + MediaPipe (small ONNX/CPU models)
         'aesthetic_v25': 2,   # Aesthetic Predictor V2.5 (SigLIP head)
         'deqa': 16,           # DeQA-Score VLM (very heavy)
-        'saliency': 2,        # BiRefNet saliency detection
+        'saliency': 3,        # BiRefNet saliency detection (weights + one image's activations, issue #184)
     }
 
     # RAM requirements for CPU-only execution (in GB)
@@ -1156,7 +1193,7 @@ class ModelManager:
         'qwen3_5_4b_tagger': 8.0,
     }
 
-    def get_model_vram(self, model_name: str) -> int:
+    def get_model_vram(self, model_name: str) -> float:
         """Get VRAM requirement for a model in GB."""
         if model_name in ('qrealign', 'qrealign_quality') and self._qrealign_is_lite():
             return self.QREALIGN_LITE_VRAM_GB

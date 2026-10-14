@@ -58,7 +58,7 @@ visionneuse expose dans le champ `progress` de `/api/scan/status` et du flux SSE
 | `composition` | SAMP-Net | `composition_pattern` (8 motifs) + `comp_score` | ~2 Go |
 | `faces` | InsightFace buffalo_l | Détection de visages, points de repère, détection de clignement, embeddings de reconnaissance | ~2 Go |
 | `embeddings` | CLIP ViT-L-14 ou SigLIP 2 NaFlex | BLOB `clip_embedding` pour similarité/étiquetage | 4-5 Go |
-| `saliency` | BiRefNet_dynamic | `subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation` | ~2 Go |
+| `saliency` | BiRefNet_dynamic | `subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation` | ~3 Go |
 
 ## Aperçu et export
 
@@ -120,7 +120,7 @@ Ces commandes mettent à jour des métriques spécifiques, dérivent de nouvelle
 | `python facet.py --discover-moments` | Propose un vocabulaire de moments propre à la bibliothèque en regroupant les embeddings de légende stockés (HDBSCAN) et en nommant chaque grappe à partir de ses légendes. Écrit `scoring_config.discovered.json` pour examen — ne réécrit jamais la configuration active. Exécutez d'abord `--detect-moments` pour remplir `caption_embedding` ; ajustez la granularité avec `--discover-min-cluster-size N` |
 | `python facet.py --detect-junk` | Signale les fichiers non photographiques indésirables (captures d'écran, documents, reçus, mèmes, diapositives) dans les photos nouvelles/non évaluées via CLIP en zero-shot sur les embeddings stockés ; s'exécute automatiquement en fin de scan. Les photos propres sont marquées `not_junk` afin que les ré-exécutions ne les rebalaient jamais ; ajoutez `--dry-run --verbose` pour prévisualiser les scores par photo sans écrire |
 | `python facet.py --recompute-junk` | Réévalue `junk_kind` pour toute la bibliothèque (toutes les photos disposant d'un embedding stocké) |
-| `python facet.py --recompute-saliency` | `[GPU]` `[16gb/24gb]` Recalcule les métriques de saillance du sujet (BiRefNet_dynamic) |
+| `python facet.py --recompute-saliency` | `[GPU]` `[16gb/24gb]` Recalcule les métriques de saillance du sujet (BiRefNet_dynamic). Une photo dont la saillance échoue (par exemple faute de mémoire) est journalisée en ERROR et n'est pas écrite : une ligne jamais notée reste à NULL et est resélectionnée par l'exécution suivante, et avec `--force` une ligne qui a déjà une saillance conserve ses valeurs stockées. Sur CUDA, la taille de lot est déduite de la VRAM libre. |
 | `python facet.py --recompute-composition-cpu` | Recalcule la composition, basé sur des règles (CPU, tout profil) |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` Recalcule la composition avec SAMP-Net |
 | `python facet.py --recompute-iqa` | `[GPU]` `[8gb/16gb/24gb]` Recalcule les métriques IQA supplémentaires (TOPIQ IAA, NR-Face, LIQE) à partir des miniatures stockées |
@@ -177,7 +177,7 @@ Trois modèles PyIQA additionnels notent au-delà du score esthétique TOPIQ pri
 - **Placement du sujet** : score de règle des tiers pour le centroïde du sujet.
 - **Séparation de l'arrière-plan** : différence de gradient de contour entre la frontière du sujet et l'arrière-plan — qualité du bokeh.
 
-Nécessite `transformers` (~2 Go de VRAM).
+Nécessite `transformers` (~3 Go de VRAM). Sur CUDA, la taille de lot est déduite de la VRAM libre (environ 2,4 GiB par image à 1024 px, entre 1 et 8 images) et divisée par deux après une erreur de mémoire insuffisante, jusqu'à une seule image. Une photo dont la saillance échoue malgré tout est journalisée en ERROR et ne stocke aucune valeur : elle reste à NULL si elle n'a jamais été notée (et compte comme neutre dans l'agrégat, comme les photos scannées avant l'existence de la saillance), avec `--recompute-saliency` et `--pass saliency` elle conserve ses valeurs stockées si elle avait déjà une saillance (un nouveau scan complet, par exemple avec `--force`, stocke NULL pour elle, comme pour une photo jamais notée), et `--recompute-saliency` la resélectionne. Voir [Dimensions de la saillance du sujet](SCORING.md#dimensions-de-la-saillance-du-sujet).
 
 ### Modèles d'étiquetage
 

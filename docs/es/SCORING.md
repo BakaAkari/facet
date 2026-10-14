@@ -208,6 +208,8 @@ Cuatro dimensiones derivadas de la segmentación del sujeto por BiRefNet:
 
 Usa `subject_sharpness_percent` y `bg_separation_percent` para retrato/fauna; `subject_prominence_percent` para macro.
 
+**Cuando falla la saliencia.** En CUDA, el tamaño de lote de saliencia se deriva de la VRAM libre (unos 2,4 GiB por imagen a 1024 px, entre 1 y 8 imágenes) y se reduce a la mitad tras un error de memoria agotada, hasta llegar a una sola imagen. Una foto cuya saliencia sigue fallando registra un ERROR y no guarda nada: una foto que nunca se puntuó conserva NULL en las cinco columnas de saliencia (`subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation`, `subject_bbox`), y `--recompute-saliency` y `--pass saliency` conservan los valores guardados de una foto cuando su saliencia falla. Un reescaneo completo de la foto (por ejemplo con `--force`) guarda NULL para ella, igual que para una foto nunca puntuada. Facet nunca escribe un número neutro en lugar de un resultado fallido. En el agregado, un NULL puntúa como neutro (5,0), igual que una foto escaneada antes de que existiera la saliencia, así que ni ayuda ni perjudica a la puntuación. `--recompute-saliency` vuelve a seleccionar esa foto (consulta [Saliencia del sujeto](COMMANDS.md#saliencia-del-sujeto)).
+
 ## Dimensiones IQA complementarias
 
 Tres modelos de calidad adicionales:

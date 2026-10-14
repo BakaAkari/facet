@@ -614,6 +614,8 @@ penalty = min(noise_max_penalty_points, (noise_sigma - threshold) * noise_penalt
 | ≥ 6GB | `8gb` |
 | 无 GPU | `legacy`（使用系统内存） |
 
+**10-14GB 的显卡可以自行启用完整功能集。** 自动检测保持不变：低于 14GB 时仍会选择 `8gb`。10-14GB 的显卡可以改为运行 `16gb` 配置档（SigLIP 2 嵌入、TOPIQ、Qwen3.5-2B 标签、Q-ReAlign、显著性），方法是设置 `"vram_profile": "16gb"` 或 `FACET_VRAM_PROFILE=16gb`。此时遍次规划器会把模型拆成三个放得下的遍次（见[动态遍次分组](#动态遍次分组)），此前在这里会显存不足的显著性，现在按空闲显存确定批大小；仍无法评分的照片会存入 NULL 并记录一条 ERROR，而不是存入中性分数。**把已有的 `8gb` 照片库切换到 `16gb` 会更换嵌入模型**（CLIP ViT-L-14 的 768 维 → SigLIP 2 的 1152 维），照片库里会混入两种嵌入维度：请重新扫描，或运行 `--recompute-embeddings` 重新生成嵌入。在此之前搜索的行为见[模型](#模型)一节中的*语义搜索与在不同配置档下建立索引的照片库*。
+
 ### `FACET_VRAM_PROFILE` 环境变量覆盖
 
 `FACET_VRAM_PROFILE` 环境变量会在加载时覆盖 `models.vram_profile`（由 `config/scoring_config.py` 处理），因此一份挂载进去的配置无需修改 JSON 就能服务于每个 Docker 配置档。可接受的取值是 `auto`、`legacy`、`8gb`、`16gb` 和 `24gb`；其他取值会被忽略并给出警告（这样拼写错误就不会导致悄无声息的错误扫描）。各配置档的 Docker Compose 覆盖文件（`docker-compose.{legacy,8gb,16gb,24gb}.yml`）已经替你设置好了这个变量。
@@ -780,12 +782,16 @@ SRCC = 在 KonIQ-10k 基准上的斯皮尔曼等级相关系数（1.0 = 完美�
 
 显存允许时，多个小模型会一起运行：
 
-| 显存 | 第 1 遍 | 第 2 遍 |
-|------|--------|--------|
-| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ |
-| 12GB | CLIP + SAMP-Net + InsightFace + TOPIQ | - |
-| 16GB | CLIP + SAMP-Net + InsightFace + TOPIQ | 标签 VLM |
-| 24GB+ | 所有模型一起（单遍） | - |
+| 显存 | 第 1 遍 | 第 2 遍 | 第 3 遍 |
+|------|--------|--------|--------|
+| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ | - |
+| 12GB（`16gb` 配置档，需手动启用） | Qwen3.5 标签 VLM + Q-ReAlign | SigLIP + 显著性 + TOPIQ | TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace |
+| 16GB | Qwen3.5 标签 VLM + SigLIP + TOPIQ | Q-ReAlign + 显著性 + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
+| 24GB+ | 所有模型一起（单遍） | - | - |
+
+12GB 与 16GB 两行是规划器针对 `16gb` 配置档给出的分组。12GB 显卡不会被自动选中（见[显存自动检测](#显存自动检测)）：需要设置 `"vram_profile": "16gb"` 或 `FACET_VRAM_PROFILE=16gb`。
+
+实测：在 49 张照片的运行中，对 PyTorch、ONNX Runtime 以及空闲显存读数施加 11.7 GiB 的硬性上限（RTX 4070 Ti SUPER），整张显卡（含桌面）的显存峰值为 9.06 GiB（各遍峰值约 8.5、约 9.1 和约 3.9 GiB），显著性批大小为 2，结果与不设上限的 16 GiB 运行完全一致（标签 49/49，显著性主体框 44 对 44，人脸相同）。总耗时 226 秒，不设上限时约 240 秒。在不设上限的 16 GiB 显卡上，显著性批大小为 3。
 
 ### 命令行选项
 

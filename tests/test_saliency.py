@@ -232,6 +232,102 @@ def _images(count):
     return [Image.new("RGB", (16, 12))] * count
 
 
+def _fake_cuda_memory(monkeypatch, free_gb, reserved_gb=0.0, allocated_gb=0.0):
+    """Stub the three torch.cuda readings the CUDA batch sizing consults.
+
+    Returns the list of devices each was called with, so a test can assert the
+    scorer's own device is passed rather than the current-device default.
+    """
+    calls = []
+
+    def _gib(value):
+        return int(value * BYTES_PER_GB)
+
+    def mem_get_info(device=None):
+        calls.append(("mem_get_info", device))
+        return _gib(free_gb), _gib(16.0)
+
+    def memory_reserved(device=None):
+        calls.append(("memory_reserved", device))
+        return _gib(reserved_gb)
+
+    def memory_allocated(device=None):
+        calls.append(("memory_allocated", device))
+        return _gib(allocated_gb)
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", mem_get_info)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", memory_reserved)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", memory_allocated)
+    return calls
+
+
+class TestCudaBatchSizing:
+    """Issue #184: on CUDA the batch is sized from free VRAM, not the fixed ceiling.
+
+    A 12 GB card capped to 11.7 GiB OOMs at batch 8 ("Tried to allocate 3.75 GiB")
+    while batch 2 passes; the marginal cost is ~2.4 GiB of reserved memory per image.
+    """
+
+    def test_roomy_card_keeps_the_ceiling(self, monkeypatch):
+        _fake_cuda_memory(monkeypatch, free_gb=24.0)
+        assert _stub_scorer(device="cuda")._affordable_batch_size(None) == 8
+
+    def test_sixteen_gib_free_affords_five(self, monkeypatch):
+        _fake_cuda_memory(monkeypatch, free_gb=16.0)
+        assert _stub_scorer(device="cuda")._affordable_batch_size(None) == 5  # int(16*0.8/2.4)
+
+    def test_nine_gib_free_affords_three(self, monkeypatch):
+        _fake_cuda_memory(monkeypatch, free_gb=9.0)
+        assert _stub_scorer(device="cuda")._affordable_batch_size(None) == 3
+
+    def test_starved_card_floors_at_the_minimum(self, monkeypatch):
+        _fake_cuda_memory(monkeypatch, free_gb=1.0)
+        assert _stub_scorer(device="cuda")._affordable_batch_size(None) == SaliencyScorer.MIN_BATCH_SIZE
+
+    def test_explicit_request_stays_a_ceiling(self, monkeypatch):
+        _fake_cuda_memory(monkeypatch, free_gb=24.0)
+        scorer = _stub_scorer(device="cuda")
+        assert scorer._affordable_batch_size(2) == 2
+        _fake_cuda_memory(monkeypatch, free_gb=9.0)
+        assert scorer._affordable_batch_size(8) == 3
+
+    def test_reusable_torch_cache_counts_as_free(self, monkeypatch):
+        """Reserved-but-unallocated memory is reusable by the next forward pass."""
+        _fake_cuda_memory(monkeypatch, free_gb=6.0, reserved_gb=5.0, allocated_gb=2.0)
+        # 6 + (5 - 2) = 9 GiB -> 3
+        assert _stub_scorer(device="cuda")._affordable_batch_size(None) == 3
+
+    def test_higher_resolution_lowers_the_batch(self, monkeypatch):
+        _fake_cuda_memory(monkeypatch, free_gb=16.0)
+        # per image 2.4 * (1536/1024)**2 = 5.4 GiB -> int(12.8/5.4) == 2
+        assert _stub_scorer(device="cuda", resolution=1536)._affordable_batch_size(None) == 2
+
+    def test_lower_resolution_never_prices_below_the_measured_figure(self, monkeypatch):
+        _fake_cuda_memory(monkeypatch, free_gb=9.0)
+        assert _stub_scorer(device="cuda", resolution=512)._affordable_batch_size(None) == 3
+
+    def test_every_reading_names_the_scorers_own_device(self, monkeypatch):
+        calls = _fake_cuda_memory(monkeypatch, free_gb=16.0)
+        _stub_scorer(device="cuda:1")._affordable_batch_size(None)
+        assert {name for name, _ in calls} == {"mem_get_info", "memory_reserved", "memory_allocated"}
+        assert all(device == "cuda:1" for _, device in calls)
+
+    def test_unreadable_vram_falls_back_to_the_ceiling_with_one_warning(self, monkeypatch, caplog):
+        def boom(device=None):
+            raise RuntimeError("driver gone")
+
+        monkeypatch.setattr(torch.cuda, "mem_get_info", boom)
+        scorer = _stub_scorer(device="cuda")
+        with caplog.at_level("WARNING", logger="facet.saliency"):
+            assert scorer._affordable_batch_size(None) == SaliencyScorer.DEFAULT_BATCH_SIZE
+            assert scorer._affordable_batch_size(None) == SaliencyScorer.DEFAULT_BATCH_SIZE
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+
+    def test_planner_figure_matches_the_class_property(self):
+        assert _stub_scorer().vram_gb == 3
+
+
 class TestBatchSizing:
     """Issue #111: the batch must be sized against the memory it lands in.
 
@@ -283,13 +379,14 @@ class TestBatchSizing:
         assert scorer.model.batch_sizes == [1, 1]
 
     def test_cuda_batch_ignores_host_memory(self, monkeypatch):
-        """Activations live in VRAM there, which no cgroup limit governs.
+        """Activations live in VRAM there, which no cgroup limit governs: host RAM is not read.
 
         Asserted on the sizing decision rather than through a forward pass:
         running one would need a real CUDA device, which is exactly the
         environment this regression must not depend on.
         """
         scorer = _stub_scorer(device="cuda")
+        _fake_cuda_memory(monkeypatch, free_gb=24.0)
         monkeypatch.setattr(system_memory, "effective_memory", lambda: _memory(0.1))
         assert scorer._affordable_batch_size(None) == SaliencyScorer.DEFAULT_BATCH_SIZE
 
@@ -345,6 +442,7 @@ class TestBatchSizing:
         assert cpu_scorer.model.batch_sizes == [8, 2]
 
         cuda_scorer = _stub_scorer(device="cuda")
+        _fake_cuda_memory(monkeypatch, free_gb=24.0)
         monkeypatch.setattr(system_memory, "effective_memory", lambda: _memory(0.1))
         assert cuda_scorer._affordable_batch_size(None) == SaliencyScorer.DEFAULT_BATCH_SIZE
 
@@ -376,3 +474,131 @@ class TestLoadPrecision:
             scorer = SaliencyScorer(device="cuda")
             scorer.load()
         fake_model.float.assert_not_called()
+
+
+class _OomBiRefNet(_RecordingBiRefNet):
+    """BiRefNet stand-in that raises OOM by rule: any batch over ``max_ok``, or an image tagged ``poison``.
+
+    An image is identified by its first pixel value, which ``_tagged_images`` sets
+    to its index, so the rule can follow one photo through a split.
+    """
+
+    def __init__(self, resolution, max_ok=None, poison=(), exc=None):
+        super().__init__(resolution)
+        self.max_ok = max_ok
+        self.poison = set(poison)
+        self.exc = exc
+
+    def __call__(self, batch_tensor):
+        n = batch_tensor.shape[0]
+        self.batch_sizes.append(n)
+        ids = {round(float(batch_tensor[i].flatten()[0]) * 255) for i in range(n)}
+        if (self.max_ok is not None and n > self.max_ok) or ids & self.poison:
+            raise self.exc if self.exc is not None else torch.cuda.OutOfMemoryError(
+                "CUDA out of memory. Tried to allocate 3.75 GiB")
+        # Each image's mask marks the whole frame so order is checkable: pixel value == index.
+        out = torch.zeros(n, 1, self.resolution, self.resolution)
+        for i in range(n):
+            out[i] += 10.0 if round(float(batch_tensor[i].flatten()[0]) * 255) % 2 else -10.0
+        return [out]
+
+
+def _tagged_images(count):
+    return [Image.new("RGB", (16, 12), (i, i, i)) for i in range(count)]
+
+
+def _oom_scorer(**kwargs):
+    scorer = _stub_scorer()
+    scorer.model = _OomBiRefNet(8, **kwargs)
+    return scorer
+
+
+def _fixed_batch(scorer, size):
+    scorer._affordable_batch_size = lambda requested: size
+    return scorer
+
+
+class TestOomRetry:
+    """Issue #184: a CUDA OOM halves the sub-batch instead of failing the whole call."""
+
+    def test_oom_halves_the_chunk_and_keeps_every_mask_in_order(self):
+        scorer = _fixed_batch(_oom_scorer(max_ok=2), 4)
+        masks = scorer.get_saliency_masks(_tagged_images(4))
+        assert scorer.model.batch_sizes == [4, 2, 2]
+        assert len(masks) == 4
+        # odd-indexed images were rendered as full-frame masks, even ones as empty
+        assert [bool(m.any()) for m in masks] == [False, True, False, True]
+
+    def test_oom_at_every_size_marks_every_image_failed_and_logs_the_batch_size(self, caplog):
+        scorer = _fixed_batch(_oom_scorer(max_ok=0), 4)
+        imgs = _tagged_images(4)
+        cv = [np.zeros((12, 16, 3), dtype=np.uint8)] * 4
+        with caplog.at_level("WARNING", logger="facet.saliency"):
+            results = scorer.score_batch(imgs, cv)
+        assert len(results) == 4
+        for r in results:
+            assert r == {'subject_sharpness': None, 'subject_prominence': None,
+                         'subject_placement': None, 'bg_separation': None, 'subject_bbox': None}
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert errors and any("4" in r.getMessage() for r in errors)
+
+    def test_mixed_batch_fails_only_the_image_that_cannot_fit_alone(self):
+        # Batches over 1 OOM, and image 2 OOMs even alone.
+        scorer = _fixed_batch(_oom_scorer(max_ok=1, poison={2}), 4)
+        imgs = _tagged_images(4)
+        masks = scorer.get_saliency_masks(imgs)
+        assert [m is None for m in masks] == [False, False, True, False]
+        cv = [np.full((12, 16, 3), 200, dtype=np.uint8)] * 4
+        scorer2 = _fixed_batch(_oom_scorer(max_ok=1, poison={2}), 4)
+        results = scorer2.score_batch(imgs, cv)
+        failed = [all(v is None for v in r.values()) for r in results]
+        assert failed == [False, False, True, False]
+
+    def test_score_image_returns_the_failure_dict_when_the_mask_is_none(self):
+        scorer = _fixed_batch(_oom_scorer(max_ok=0), 4)
+        img = Image.new("RGB", (16, 12), (255, 255, 255))
+        result = scorer.score_image(img, np.zeros((12, 16, 3), dtype=np.uint8))
+        assert result == {'subject_sharpness': None, 'subject_prominence': None,
+                          'subject_placement': None, 'bg_separation': None, 'subject_bbox': None}
+
+    def test_non_oom_error_is_not_retried(self):
+        scorer = _fixed_batch(_oom_scorer(max_ok=0, exc=ValueError("bad tensor")), 4)
+        with pytest.raises(ValueError):
+            scorer.get_saliency_masks(_tagged_images(4))
+        assert scorer.model.batch_sizes == [4]
+
+    def test_non_oom_error_in_score_batch_fails_every_photo(self, caplog):
+        scorer = _fixed_batch(_oom_scorer(max_ok=0, exc=ValueError("bad tensor")), 4)
+        cv = [np.zeros((12, 16, 3), dtype=np.uint8)] * 4
+        with caplog.at_level("ERROR", logger="facet.saliency"):
+            results = scorer.score_batch(_tagged_images(4), cv)
+        assert all(all(v is None for v in r.values()) for r in results)
+        assert any("batch size 4" in r.getMessage() for r in caplog.records)
+
+    def test_reduction_warning_omits_the_exception_text(self, caplog):
+        scorer = _fixed_batch(_oom_scorer(max_ok=2), 4)
+        with caplog.at_level("WARNING", logger="facet.saliency"):
+            scorer.get_saliency_masks(_tagged_images(4))
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "reduced" in warnings[0]
+        assert "Tried to allocate" not in warnings[0] and "out of memory" not in warnings[0].lower()
+
+    def test_cache_is_released_outside_the_handler(self, monkeypatch):
+        """empty_cache must run after the except block, or the traceback pins the activations."""
+        import sys
+        seen = []
+
+        def fake_clear(device=None):
+            seen.append(sys.exc_info()[1])
+
+        monkeypatch.setattr("utils.device.clear_device_cache", fake_clear)
+        scorer = _fixed_batch(_oom_scorer(max_ok=2), 4)
+        scorer.get_saliency_masks(_tagged_images(4))
+        assert seen and all(exc is None for exc in seen)
+
+    def test_empty_mask_stays_a_successful_neutral_result(self):
+        scorer = _fixed_batch(_oom_scorer(), 4)
+        imgs = [Image.new("RGB", (16, 12), (0, 0, 0))]  # even id -> empty mask
+        result = scorer.score_batch(imgs, [np.zeros((12, 16, 3), dtype=np.uint8)])[0]
+        assert result['subject_sharpness'] == 5.0 and result['subject_bbox'] is None

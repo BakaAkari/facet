@@ -57,7 +57,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `composition` | SAMP-Net | `composition_pattern`（8 种模式）＋ `comp_score` | 约 2 GB |
 | `faces` | InsightFace buffalo_l | 人脸检测、关键点、闭眼检测、识别特征向量 | 约 2 GB |
 | `embeddings` | CLIP ViT-L-14 或 SigLIP 2 NaFlex | 用于相似度／标签标注的 `clip_embedding` BLOB | 4-5 GB |
-| `saliency` | BiRefNet_dynamic | `subject_sharpness`、`subject_prominence`、`subject_placement`、`bg_separation` | 约 2 GB |
+| `saliency` | BiRefNet_dynamic | `subject_sharpness`、`subject_prominence`、`subject_placement`、`bg_separation` | 约 3 GB |
 
 ## 预览与导出
 
@@ -118,7 +118,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --discover-moments` | 通过对已存储的照片描述向量做聚类（HDBSCAN），并依据各簇的描述为其命名，提出一份贴合本照片库的时刻词表。结果写入 `scoring_config.discovered.json` 供你审阅——绝不会改写正在使用的配置。请先运行 `--detect-moments` 以填充 `caption_embedding`；用 `--discover-min-cluster-size N` 调整粒度 |
 | `python facet.py --detect-junk` | 在新增／尚未评估的照片中，通过对已存储特征向量做零样本 CLIP 判别，标出非摄影类杂图（截屏、文档、票据、表情包、幻灯片）；每次扫描结束时自动运行。判定干净的照片会被标记为 `not_junk`，因此重新运行时不会再次扫描它们；加上 `--dry-run --verbose` 可预览逐张照片的分数而不写入 |
 | `python facet.py --recompute-junk` | 为整个照片库重新评估 `junk_kind`（所有已存储特征向量的照片） |
-| `python facet.py --recompute-saliency` | `[GPU]` 从已存储的缩略图重新计算主体显著性指标（BiRefNet_dynamic）——照片库所在卷离线时也能运行。会跳过已有 `subject_bbox` 的照片（可续跑）；`--force` 则全部重做。所有档位都启用了显著性（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU |
+| `python facet.py --recompute-saliency` | `[GPU]` 从已存储的缩略图重新计算主体显著性指标（BiRefNet_dynamic）——照片库所在卷离线时也能运行。会跳过已有 `subject_bbox` 的照片（可续跑）；`--force` 则全部重做。所有档位都启用了显著性（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。某张照片的显著性失败（例如显存不足）时，会记录一条 ERROR 且不写入：从未评分的行保持 NULL，并会在下次运行时再次被选中；使用 `--force` 时，已有显著性的行会保留其已存储的值。在 CUDA 上，批大小由空闲显存推算。 |
 | `python facet.py --recompute-composition-cpu` | 用基于规则的方法重新计算构图（CPU，任意档位） |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` 用 SAMP-Net 重新计算构图 |
 | `python facet.py --recompute-iqa` | `[GPU]` 从已存储的缩略图重新计算补充 IQA 指标（TOPIQ IAA、NR-Face、LIQE）。所有档位都已启用（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU |
@@ -175,7 +175,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 - **主体位置**：按三分法为主体质心打分。
 - **背景分离度**：主体边界与背景之间的边缘梯度差——即背景虚化质量。
 
-需要 `transformers`（约 2 GB VRAM）。
+需要 `transformers`（约 3 GB VRAM）。在 CUDA 上，批大小由空闲显存推算（1024 px 下每张图片约 2.4 GiB，范围 1 至 8 张），遇到显存不足错误时减半，直至一张图片。如果某张照片的显著性仍然失败，则记录一条 ERROR 且不存入任何值：从未评分的照片保持 NULL（并在综合评分中按中性计算，与显著性功能出现之前扫描的照片一样），使用 `--recompute-saliency` 与 `--pass saliency` 时，已有显著性的照片保留其已存储的值（对该照片进行完整重新扫描，例如 `--force`，则会为其存入 NULL，与从未评分的照片相同），`--recompute-saliency` 会再次选中它。见[主体显著性维度](SCORING.md#主体显著性维度)。
 
 ### 标签模型
 

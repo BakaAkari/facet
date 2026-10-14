@@ -64,6 +64,9 @@ class SaliencyScorer:
     DEFAULT_MIN_SUBJECT_PIXELS = 50
     DEFAULT_BATCH_SIZE = 8
     MIN_BATCH_SIZE = 1
+    # Marginal memory one more image adds to a forward pass at the default
+    # 1024 resolution: measured 2.4 GiB reserved on CUDA (issue #184) and on
+    # CPU fp32 (issue #111). The same figure sizes both the RAM and VRAM batch.
     ACTIVATION_GB_PER_IMAGE = 2.4
     USABLE_MEMORY_FRACTION = 0.8
     DEDICATED_VRAM_DEVICE = 'cuda'
@@ -101,6 +104,7 @@ class SaliencyScorer:
         self.model = None
         self.transform = None
         self._loaded = False
+        self._warned_vram_unreadable = False
 
     def load(self):
         """Load BiRefNet, in float32 anywhere without a dedicated GPU.
@@ -110,8 +114,12 @@ class SaliencyScorer:
         have no fp16 path and fall back to an unvectorised one: measured in a
         container, a 256x256 forward takes 49.97s in fp16 against 1.10s in
         float32, and a single 1024x1024 forward ran for 28 minutes. Casting
-        doubles activation memory, which is why the batch size derived in
-        :meth:`_affordable_batch_size` is sized from the float32 slope.
+        raises the activation memory of a CPU forward (about 2.4 GiB per
+        image at 1024 px, the figure ``ACTIVATION_GB_PER_IMAGE`` is sized
+        from), which is why the batch size derived in
+        :meth:`_affordable_batch_size` is sized from the float32 slope. CUDA
+        keeps the checkpoint's fp16 and reserves about the same 2.4 GiB per
+        image at 1024 px.
         """
         if self._loaded:
             return
@@ -158,7 +166,8 @@ class SaliencyScorer:
             pil_img: PIL Image (RGB)
 
         Returns:
-            numpy.ndarray: Binary mask (H, W) with values 0 or 255
+            numpy.ndarray: Binary mask (H, W) with values 0 or 255, or
+            ``None`` when the single image cannot fit in memory even alone
         """
         return self.get_saliency_masks([pil_img])[0]
 
@@ -182,12 +191,18 @@ class SaliencyScorer:
         only narrow the batch -- which is also all the parameter has ever
         claimed to be, a maximum per forward pass.
 
-        Only a dedicated-VRAM device escapes the bound. On CUDA the
-        activations are allocated in VRAM, which no cgroup limit governs, so
-        sizing that batch against host RAM would throttle a GPU run for
-        memory it never touches. CPU spends the very RAM ``effective_memory``
-        reports, container limit included. Apple's unified memory (MPS) is
-        sized from that reading too, but under a small fixed ceiling,
+        A dedicated-VRAM device is sized from free VRAM, not host RAM: on CUDA
+        the activations land in VRAM, which no cgroup limit governs. The free
+        figure is ``mem_get_info`` plus the torch cache this process already
+        holds (reserved minus allocated), which the next forward pass reuses.
+        The per-image cost grows with the square of the resolution above 1024
+        and is never priced below the measured figure. A 12 GB card capped to
+        11.7 GiB OOMs at the old fixed batch of 8 and passes at 2 (issue
+        #184). If ``mem_get_info`` itself fails the ceiling is used, with one
+        WARNING, because the retry in :meth:`get_saliency_masks` still bounds
+        the damage. CPU spends the very RAM ``effective_memory`` reports,
+        container limit included. Apple's unified memory (MPS) is sized from
+        that reading too, but under a small fixed ceiling,
         ``UNIFIED_MEMORY_MAX_BATCH``: the MPS allocator keeps its own pool
         that psutil's "available" figure cannot see, so a scan can read
         plenty of headroom while the pool itself is already large.
@@ -213,13 +228,29 @@ class SaliencyScorer:
         """
         ceiling = self.DEFAULT_BATCH_SIZE if requested is None else max(self.MIN_BATCH_SIZE, requested)
         if self.device.startswith(self.DEDICATED_VRAM_DEVICE):
-            return ceiling
+            return self._affordable_vram_batch_size(ceiling)
         if self.device.startswith(self.UNIFIED_MEMORY_ACCELERATOR):
             ceiling = min(ceiling, self.UNIFIED_MEMORY_MAX_BATCH)
         from utils.system_memory import effective_memory
         spare_gb = effective_memory().available * self.USABLE_MEMORY_FRACTION / BYTES_PER_GB
         affordable = int(spare_gb // self.ACTIVATION_GB_PER_IMAGE)
         return max(self.MIN_BATCH_SIZE, min(ceiling, affordable))
+
+    def _affordable_vram_batch_size(self, ceiling):
+        """Batch size that fits the free VRAM of ``self.device``, bounded by ``ceiling``."""
+        try:
+            free_bytes = torch.cuda.mem_get_info(self.device)[0]
+            cached_bytes = (torch.cuda.memory_reserved(self.device)
+                            - torch.cuda.memory_allocated(self.device))
+        except Exception as e:
+            if not self._warned_vram_unreadable:
+                self._warned_vram_unreadable = True
+                logger.warning("  Cannot read free VRAM on %s (%s); using saliency batch size %d",
+                               self.device, e, ceiling)
+            return ceiling
+        spare_gb = (free_bytes + max(0, cached_bytes)) * self.USABLE_MEMORY_FRACTION / BYTES_PER_GB
+        per_image_gb = self.ACTIVATION_GB_PER_IMAGE * max(1, self.resolution / self.DEFAULT_RESOLUTION) ** 2
+        return max(self.MIN_BATCH_SIZE, min(ceiling, int(spare_gb / per_image_gb)))
 
     def get_saliency_masks(self, pil_images, batch_size=None):
         """Generate binary saliency masks for a batch of PIL images.
@@ -231,8 +262,14 @@ class SaliencyScorer:
                 memory the activations land in -- see
                 :meth:`_affordable_batch_size`.
 
+        An out-of-memory error (CUDA or MPS, see ``is_out_of_memory_error``)
+        halves the failing sub-batch and retries, down to one image. An image
+        that does not fit even alone gets ``None`` in its slot; every other
+        image keeps its mask and the list stays aligned with ``pil_images``.
+
         Returns:
-            List of numpy.ndarray: Binary masks (H, W) with values 0 or 255
+            List aligned with ``pil_images``: binary masks (H, W) with values
+            0 or 255, or ``None`` for an image that ran out of memory alone
         """
         if not self._loaded:
             self.load()
@@ -243,27 +280,63 @@ class SaliencyScorer:
 
         orig_sizes = [(img.size[0], img.size[1]) for img in pil_images]
         results = []
+        reduced_to = []
 
         for start in range(0, len(pil_images), batch_size):
-            chunk = pil_images[start:start + batch_size]
-            batch_tensor = torch.stack([self.transform(img) for img in chunk]).to(self.device, dtype=next(self.model.parameters()).dtype)
+            results.extend(self._masks_with_oom_retry(
+                pil_images[start:start + batch_size],
+                orig_sizes[start:start + batch_size],
+                reduced_to))
 
-            with torch.no_grad():
-                preds = self.model(batch_tensor)[-1].sigmoid()
-
-            for i, pred in enumerate(preds):
-                idx = start + i
-                orig_w, orig_h = orig_sizes[idx]
-                mask = pred.squeeze().cpu().numpy()
-                binary_mask = (mask > self.mask_threshold).astype(np.uint8) * 255
-
-                if binary_mask.shape[0] != orig_h or binary_mask.shape[1] != orig_w:
-                    binary_mask = cv2.resize(binary_mask, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
-                    binary_mask = (binary_mask > 128).astype(np.uint8) * 255
-
-                results.append(binary_mask)
-
+        if reduced_to:
+            logger.warning("  Saliency batch reduced to %d after out-of-memory", min(reduced_to))
         return results
+
+    def _masks_with_oom_retry(self, chunk, sizes, reduced_to):
+        """Masks for one chunk, halving it on an out-of-memory error down to one image.
+
+        An image that still does not fit alone yields ``None`` in its slot, so the
+        list stays aligned with ``chunk`` and its neighbours keep their masks.
+        Any other exception propagates unretried.
+        """
+        from utils.device import clear_device_cache, is_out_of_memory_error
+
+        try:
+            return self._run_chunk(chunk, sizes)
+        except Exception as e:
+            if not is_out_of_memory_error(e):
+                raise
+        # Reaching here means the chunk ran out of memory. The cache is cleared and
+        # the halves run out here, not inside the handler: the live exception's
+        # traceback holds the failed activations, so freeing from within the
+        # except block would release nothing.
+        clear_device_cache(self.device)
+        if len(chunk) == 1:
+            return [None]
+        half = len(chunk) // 2
+        reduced_to.append(half)
+        return (self._masks_with_oom_retry(chunk[:half], sizes[:half], reduced_to)
+                + self._masks_with_oom_retry(chunk[half:], sizes[half:], reduced_to))
+
+    def _run_chunk(self, chunk, sizes):
+        """One forward pass over ``chunk``, returning a binary mask per image at its original size."""
+        batch_tensor = torch.stack([self.transform(img) for img in chunk]).to(
+            self.device, dtype=next(self.model.parameters()).dtype)
+
+        with torch.no_grad():
+            preds = self.model(batch_tensor)[-1].sigmoid()
+
+        masks = []
+        for pred, (orig_w, orig_h) in zip(preds, sizes):
+            mask = pred.squeeze().cpu().numpy()
+            binary_mask = (mask > self.mask_threshold).astype(np.uint8) * 255
+
+            if binary_mask.shape[0] != orig_h or binary_mask.shape[1] != orig_w:
+                binary_mask = cv2.resize(binary_mask, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+                binary_mask = (binary_mask > 128).astype(np.uint8) * 255
+
+            masks.append(binary_mask)
+        return masks
 
     def get_saliency_soft(self, pil_img):
         """Return the pre-threshold saliency map (float32 0..1) sized to the image.
@@ -296,7 +369,20 @@ class SaliencyScorer:
                           subject_placement, bg_separation
         """
         mask = self.get_saliency_mask(pil_img)
+        if mask is None:
+            return self._failed_scores()
         return self._score_from_mask(mask, img_cv)
+
+    @staticmethod
+    def _failed_scores():
+        """The all-None result for a photo whose saliency could not be computed."""
+        return {
+            'subject_sharpness': None,
+            'subject_prominence': None,
+            'subject_placement': None,
+            'bg_separation': None,
+            'subject_bbox': None,
+        }
 
     def _score_from_mask(self, mask, img_cv):
         """Compute saliency metrics from a pre-computed binary mask.
@@ -425,38 +511,40 @@ class SaliencyScorer:
             cv_images: List of OpenCV BGR image arrays
 
         Returns:
-            List of score dicts
+            List of score dicts. A photo whose saliency could not be computed
+            gets a dict of ``None`` values: a failure is never stored as a score.
         """
         if not self._loaded:
             self.load()
 
-        default_scores = {
-            'subject_sharpness': 5.0,
-            'subject_prominence': 0.0,
-            'subject_placement': 5.0,
-            'bg_separation': 5.0,
-            'subject_bbox': None,
-        }
+        failed = self._failed_scores()
+        n = len(pil_images)
 
         # Batch mask generation (single GPU forward pass per sub-batch)
         try:
             masks = self.get_saliency_masks(pil_images)
         except Exception as e:
-            logger.warning("  Batch saliency mask generation failed: %s", e)
-            return [dict(default_scores) for _ in pil_images]
+            logger.error("  Batch saliency mask generation failed for batch size %d: %s", n, e)
+            return [dict(failed) for _ in pil_images]
 
         results = []
         for mask, img_cv in zip(masks, cv_images):
+            if mask is None:
+                results.append(dict(failed))
+                continue
             try:
-                result = self._score_from_mask(mask, img_cv)
-                results.append(result)
+                results.append(self._score_from_mask(mask, img_cv))
             except Exception as e:
-                logger.warning("  Saliency scoring failed: %s", e)
-                results.append(dict(default_scores))
+                logger.error("  Saliency scoring failed for batch size %d: %s", n, e)
+                results.append(dict(failed))
 
+        lost = sum(1 for r in results if r['subject_sharpness'] is None)
+        if lost:
+            logger.error("  Saliency failed for %d of %d image(s) in this batch (batch size %d); "
+                         "their saliency columns are left unset", lost, n, n)
         return results
 
     @property
     def vram_gb(self) -> float:
         """Get estimated VRAM requirement in GB."""
-        return 2
+        return 3

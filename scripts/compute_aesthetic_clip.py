@@ -56,11 +56,11 @@ def _make_text_encoder(model_override: str | None = None, backend_override: str 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if backend == "transformers":
-        from transformers import AutoModel, AutoProcessor
+        from transformers import AutoProcessor
 
-        model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device).eval()
-        if device == "cuda":
-            model = model.half()
+        from utils.siglip import load_siglip_model
+
+        model = load_siglip_model(model_name, device)
         processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
         def encode(texts):

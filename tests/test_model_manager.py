@@ -152,7 +152,14 @@ class TestModelRegistry:
     def test_get_model_vram_known(self, manager):
         assert manager.get_model_vram('clip') == 5
         assert manager.get_model_vram('vlm_tagger') == 18
-        assert manager.get_model_vram('topiq') == 2
+        assert manager.get_model_vram('topiq') == 2.5
+
+    def test_saliency_and_topiq_planner_entries_are_the_measured_figures(self, manager):
+        """Issue #184: BiRefNet peaks ~3 GB and TOPIQ 2.41 GB NVML; the old 2/2 under-booked both."""
+        from models.model_manager import ModelManager
+        assert ModelManager.MODEL_VRAM_REQUIREMENTS['saliency'] == 3
+        assert ModelManager.MODEL_VRAM_REQUIREMENTS['topiq'] == 2.5
+        assert manager.get_model_vram('saliency') == 3
 
     def test_get_model_vram_unknown_returns_default_4(self, manager):
         assert manager.get_model_vram('does_not_exist') == 4
@@ -1341,3 +1348,70 @@ class TestBareMetalBudgetUsesAvailableRam:
         monkeypatch.setattr(system_memory, 'memory_limit_bytes', lambda: None)
         monkeypatch.setattr(system_memory, 'effective_memory', lambda: UNKNOWN_MEMORY)
         assert ModelManager.detect_available_ram_gb() == float('inf')
+
+
+class TestWrapperHelperModulesFollowTheCache:
+    """``topiq_nr_face`` kept ~0.19 GiB on the card after a cached unload.
+
+    pyiqa's CGFIQA net holds a facexlib ``FaceRestoreHelper`` as a plain
+    attribute, so its RetinaFace / ParseNet are not children of ``model.model``
+    and ``model.model.cpu()`` never reached them. The cache path has to move
+    them too, and bring them back.
+    """
+
+    class _Mod:
+        def __init__(self, where='cuda'):
+            self.where = where
+
+        def parameters(self):
+            return iter([types.SimpleNamespace(device=types.SimpleNamespace(type=self.where))])
+
+        def cpu(self):
+            self.where = 'cpu'
+            return self
+
+        def to(self, device):
+            self.where = getattr(device, 'type', device)  # a recorded torch.device or a str
+            return self
+
+    def _wrapper(self, helper_at='cuda'):
+        det, parse = self._Mod(helper_at), self._Mod(helper_at)
+        helper = types.SimpleNamespace(face_det=det, face_parse=parse, device='cuda')
+        net = types.SimpleNamespace(face_helper=helper, crop_size=512)
+        inner = self._Mod()
+        inner.net = net
+        return types.SimpleNamespace(model=inner), inner, det, parse
+
+    def test_cached_unload_moves_helper_modules_off_the_device(self, manager):
+        wrapper, inner, det, parse = self._wrapper()
+
+        manager._move_to_cpu(wrapper, 'topiq_nr_face')
+
+        assert (inner.where, det.where, parse.where) == ('cpu', 'cpu', 'cpu')
+
+    def test_restore_moves_them_back(self, manager):
+        wrapper, inner, det, parse = self._wrapper()
+        manager._move_to_cpu(wrapper, 'topiq_nr_face')
+        manager.device = 'cuda'
+
+        manager._move_to_device(wrapper, 'topiq_nr_face')
+
+        assert (inner.where, det.where, parse.where) == ('cuda', 'cuda', 'cuda')
+
+    def test_helper_on_cpu_is_restored_to_cpu_not_the_manager_device(self, manager):
+        """facexlib chooses its own device; an mps / FACET_DEVICE=cpu manager must not move it."""
+        wrapper, inner, det, parse = self._wrapper(helper_at='cpu')
+        manager._move_to_cpu(wrapper, 'topiq_nr_face')
+        manager.device = 'mps'
+
+        manager._move_to_device(wrapper, 'topiq_nr_face')
+
+        assert (inner.where, det.where, parse.where) == ('mps', 'cpu', 'cpu')
+
+    def test_wrapper_without_a_net_is_unaffected(self, manager):
+        inner = self._Mod()
+        wrapper = types.SimpleNamespace(model=inner)
+
+        manager._move_to_cpu(wrapper, 'topiq')
+
+        assert inner.where == 'cpu'

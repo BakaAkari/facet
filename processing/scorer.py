@@ -876,13 +876,11 @@ class Facet:
                 self._clip_backend = clip_config.get('backend', 'open_clip')
 
                 if self._clip_backend == 'transformers':
-                    from transformers import AutoModel, AutoProcessor
-                    self.model = AutoModel.from_pretrained(
-                        self._clip_model_name, trust_remote_code=True
-                    )
-                    self.model = self.model.to(self.device).eval()
+                    from transformers import AutoProcessor
+
+                    from utils.siglip import load_siglip_model
+                    self.model = load_siglip_model(self._clip_model_name, self.device)
                     if self.device == 'cuda':
-                        self.model = self.model.half()
                         logger.info("SigLIP 2 NaFlex loaded (FP16): %s", self._clip_model_name)
                     else:
                         logger.info("SigLIP 2 NaFlex loaded: %s", self._clip_model_name)

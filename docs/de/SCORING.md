@@ -208,6 +208,8 @@ Vier aus der BiRefNet-Motivsegmentierung abgeleitete Dimensionen:
 
 Verwenden Sie `subject_sharpness_percent` und `bg_separation_percent` für Porträts/Wildtiere; `subject_prominence_percent` für Makro.
 
+**Wenn die Salienz fehlschlägt.** Auf CUDA wird die Salienz-Batchgröße aus dem freien VRAM abgeleitet (etwa 2,4 GiB pro Bild bei 1024 px, zwischen 1 und 8 Bildern) und nach einem Out-of-Memory-Fehler halbiert, bis hinunter zu einem Bild. Schlägt die Salienz für ein Foto trotzdem fehl, wird ein ERROR protokolliert und nichts gespeichert: Ein Foto, das nie bewertet wurde, behält NULL in allen fünf Salienz-Spalten (`subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation`, `subject_bbox`), und `--recompute-saliency` sowie `--pass saliency` behalten die gespeicherten Werte eines Fotos, wenn dessen Salienz fehlschlägt. Ein vollständiger Neuscan des Fotos (z. B. mit `--force`) speichert dafür NULL, wie bei einem nie bewerteten Foto. Facet schreibt nie eine neutrale Zahl anstelle eines fehlgeschlagenen Ergebnisses. Im Gesamtwert zählt NULL als neutral (5,0), genau wie bei einem Foto, das gescannt wurde, bevor es die Salienz gab, und hilft oder schadet der Bewertung daher nicht. `--recompute-saliency` wählt ein solches Foto erneut aus (siehe [Motiv-Salienz](COMMANDS.md#motiv-salienz)).
+
 ## Ergänzende IQA-Dimensionen
 
 Drei zusätzliche Qualitätsmodelle:
