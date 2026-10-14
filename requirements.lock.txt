@@ -25,7 +25,6 @@
 # Regenerate: docker compose ... exec facet pip freeze --all | (filter base-image pkgs)
 absl-py==2.5.0
 accelerate==1.15.0
-addict==2.4.0
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.3
 aiosignal==1.4.0
@@ -47,7 +46,6 @@ dnspython==2.8.0
 einops==0.8.2
 ExifRead==3.5.1
 expecttest==0.3.0
-facexlib==0.3.0
 fastapi==0.141.1
 filelock==3.32.4
 filterpy==1.4.5
@@ -70,7 +68,6 @@ imagecodecs==2026.3.6
 ImageHash==4.3.2
 ImageIO==2.37.4
 iniconfig==2.3.0
-insightface==1.0.1
 joblib==1.5.3
 kiwisolver==1.5.1
 kornia==0.8.3
@@ -92,9 +89,6 @@ networkx==3.4.2
 ninja==1.13.2
 nodeenv==1.10.0
 numba==0.67.0
-onnx==1.22.0
-onnxruntime==1.27.0
-openai-clip==1.0.1
 opencv-python-headless==4.14.0.94
 opencv-python==4.14.0.94
 open_clip_torch==3.3.0
@@ -108,7 +102,6 @@ protobuf==7.36.0
 pyarrow==24.0.0
 pydantic==2.13.5
 pydantic_core==2.46.5
-pyiqa==0.1.16
 PyJWT==2.15.0
 pyparsing==3.3.2
 pytest-asyncio==1.4.0
@@ -129,7 +122,6 @@ scikit-learn==1.9.0
 scipy==1.17.1
 Send2Trash==2.1.0
 sentencepiece==0.2.2
-setuptools==80.10.2
 shellingham==1.5.4
 six==1.17.0
 sortedcontainers==2.4.0
@@ -156,6 +148,5 @@ uvicorn==0.52.4
 virtualenv==21.7.13
 Werkzeug==3.1.8
 xxhash==3.8.1
-yapf==0.43.0
 yarl==1.24.5
 zstandard==0.25.0

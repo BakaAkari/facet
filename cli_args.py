@@ -144,7 +144,7 @@ Configuration:
     db_group.add_argument('--recompute-junk', action='store_true',
                         help='Re-evaluate junk_kind for the whole library')
     db_group.add_argument('--limit', type=int, default=None, metavar='N',
-                        help='Cap --detect-moments / --recompute-moments to the first N photos (verification / incremental)')
+                        help='Cap --detect-moments / --recompute-moments to the first N photos (verification / incremental), or the sample size of --evaluate-models faces-detect (photos) / faces-recognize (faces)')
     db_group.add_argument('--discover-moments', action='store_true',
                         help='Propose a library-specific moment vocabulary by clustering the stored '
                              'caption embeddings (writes scoring_config.discovered.json for review; '
@@ -235,7 +235,9 @@ Configuration:
     face_group.add_argument('--extract-faces-gpu-incremental', action='store_true',
                         help='Extract faces only for photos not yet processed (requires GPU)')
     face_group.add_argument('--extract-faces-gpu-force', action='store_true',
-                        help='Delete all faces and re-extract from all photos (requires GPU)')
+                        help='Delete all faces and re-extract from all photos with the active face model '
+                             '(InsightFace, or the permissive YuNet+SFace pipeline in commercial mode); '
+                             'named persons are carried over')
     face_group.add_argument('--cluster-faces-incremental', action='store_true',
                         help='Run HDBSCAN clustering preserving all existing persons')
     face_group.add_argument('--cluster-faces-incremental-named', action='store_true',
@@ -258,8 +260,9 @@ Configuration:
                         help='Recompute burst detection groups')
     face_group.add_argument('--suggest-person-merges', action='store_true',
                         help='Analyze persons and suggest potential merges based on centroid similarity')
-    face_group.add_argument('--merge-threshold', type=float, default=0.6,
-                        help='Similarity threshold for merge suggestions (default: 0.6)')
+    face_group.add_argument('--merge-threshold', type=float, default=None,
+                        help='Similarity threshold for merge suggestions (default: the active '
+                             "embedding model's face_clustering.thresholds_by_model merge_threshold)")
 
     # Thumbnail management
     thumb_group = parser.add_argument_group('Thumbnail management')
@@ -310,6 +313,17 @@ Configuration:
                         help='Report how many burst groups remain unreviewed (read-only)')
     weight_group.add_argument('--eval-iqa-srcc', action='store_true',
                         help='Report Spearman SRCC of each IQA/aesthetic metric vs star ratings (read-only)')
+    weight_group.add_argument('--evaluate-models', type=str, default=None, metavar='SLOT',
+                        choices=['aesthetic', 'quality', 'faces-detect', 'faces-recognize', 'faces-centroid', 'blink',
+                                 'face-quality', 'end-to-end'],
+                        help='Rank candidate models for a slot by agreement with your pairwise '
+                             'picks in the comparisons table (read-only)')
+    weight_group.add_argument('--candidates', type=str, default=None, metavar='A,B,...',
+                        help='Comma-separated candidates for --evaluate-models '
+                             '(stored:<column> or a registered name; default: all registered)')
+    weight_group.add_argument('--eval-out', type=str, default=None, metavar='PATH',
+                        help='JSON report path for --evaluate-models '
+                             '(default: .facet_cache/eval/<slot>-<timestamp>.json)')
 
     # Model information
     model_group = parser.add_argument_group('Model information')

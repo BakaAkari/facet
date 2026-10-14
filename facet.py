@@ -92,6 +92,7 @@ except ImportError:
         return iterable
 
 # Import config module (lightweight, no cv2/torch dependency)
+import licensing
 from config import ScoringConfig, PercentileNormalizer
 from config.scoring_config import resolve_scoring_config_path
 from utils.image_loading import (
@@ -1216,6 +1217,28 @@ def library_job_conflict_message(holder, lock_path=None):
     return f"{message} Lock file: {lock_path}" if lock_path else message
 
 
+def _warn_face_model_mismatch(db_path, config):
+    """Warn when stored faces were embedded by a model other than the active one.
+
+    Such faces are invisible to clustering, merge suggestions and similar-person
+    search until they are re-extracted, so a scan that adds faces in the new
+    space beside them should say so up front.
+    """
+    import sqlite3
+    from db.embedding_space import (
+        active_embedding_model, face_model_mismatch_message, mismatched_face_models,
+    )
+    active = active_embedding_model(config)
+    try:
+        with get_connection(db_path, row_factory=False) as conn:
+            rows = mismatched_face_models(conn, active)
+    except sqlite3.Error:
+        return  # fresh or unreadable database: nothing stored to mismatch
+    for model, count in rows:
+        logger.warning("Face embedding model mismatch: %s",
+                       face_model_mismatch_message(model, count, active))
+
+
 def scan_stale_seconds(config):
     """Heartbeat age past which a ``scan_runs`` row stops counting as live."""
     return config.get('processing', {}).get('scan_stale_seconds', DEFAULT_SCAN_STALE_SECONDS)
@@ -1380,6 +1403,61 @@ def _library_job_requested(args):
     return any(getattr(args, name) for name in LIBRARY_JOB_ARGS)
 
 
+def _apply_licensing_policy(args):
+    """Resolve the licensing policy from the config this run uses and install it.
+
+    Honours ``--config`` (and ``$FACET_LICENSING_MODE``). Children spawned without
+    ``--config`` resolve the same policy lazily through ``licensing.policy()``.
+    """
+    from config_resolve import load_resolved
+    try:
+        cfg = load_resolved(resolve_scoring_config_path(args.config))
+        pol = licensing.resolve_policy(cfg)
+    except (OSError, ValueError):
+        if not args.doctor:
+            raise
+        # --doctor exists to diagnose a missing or invalid config and reports
+        # the problem itself ("Licensing", "Config"); it must not crash first.
+        # It loads no models, so the strictest reading the environment allows is
+        # enough.
+        try:
+            pol = licensing.resolve_policy(None)
+        except ValueError:
+            # A bad $FACET_LICENSING_MODE: assume the strictest mode.
+            pol = licensing.Policy(licensing.MODE_COMMERCIAL, False)
+    licensing.set_policy(pol.mode, pol.allow_unclear)
+    return pol
+
+
+def _upgrade_iqa_step(args):
+    """``(flag, label)`` of the ``--upgrade-db`` IQA step, or None when no IQA model is allowed.
+
+    Default mode always has the pyiqa trio. Commercial mode has only Q-ReAlign,
+    and only when ``iqa_extended.qrealign`` resolves on; with neither,
+    ``--recompute-iqa`` would refuse every run, so the step is skipped instead.
+    """
+    if not licensing.is_commercial():
+        return "--recompute-iqa", "TOPIQ IAA + NR-Face + LIQE"
+    try:
+        enabled = ScoringConfig(args.config, validate=False).get_extended_iqa_settings().get('qrealign')
+    except (OSError, ValueError):
+        enabled = False
+    return ("--recompute-iqa", "Q-ReAlign quality score") if enabled else None
+
+
+def _commercial_refusals(args):
+    """CLI flags that cannot run under ``licensing.mode: commercial``, as (flag, reason) pairs."""
+    refused = []
+    if args.score_topiq:
+        refused.append(('--score-topiq', "TOPIQ is a pyiqa model; use --recompute-iqa "
+                                         "(Q-ReAlign) instead."))
+    if args.recompute_composition_gpu and not licensing.loader_allowed('samp_net'):
+        refused.append(('--recompute-composition-gpu',
+                        "SAMP-Net is not permitted; use --recompute-composition-cpu, or set "
+                        "licensing.allow_unclear."))
+    return refused
+
+
 def _upgrade_db_schema(args, db_path):
     """Migrate the schema under the library lock; returns the columns added.
 
@@ -1448,6 +1526,7 @@ def _run_scan(args, resumed_run):
     use_multi_pass = not (args.dry_run or args.single_pass or config_single_pass)
     scorer = Facet(db_path=args.db, config_path=args.config, multi_pass=use_multi_pass)
     _log_scan_db_destination(scorer.db_path)
+    _warn_face_model_mismatch(scorer.db_path, scorer.config)
 
     # Initialise plugin manager for scoring events
     from plugins import init_global_plugin_manager
@@ -1594,6 +1673,10 @@ def _run_scan(args, resumed_run):
         logger.info("DRY RUN MODE - Scoring %d sample photos (not saving to database)", sample_count)
         logger.info("=" * 80)
 
+        # Resolve the face analyzer / commercial aesthetic scorer once, so a
+        # startup refusal aborts here rather than failing every sample.
+        scorer.preflight_models()
+
         results = []
         for i, photo_path in enumerate(sample_files, 1):
             logger.info("[%d/%d] Processing %s...", i, sample_count, photo_path.name)
@@ -1612,6 +1695,7 @@ def _run_scan(args, resumed_run):
                 else:
                     logger.warning("FAILED")
             except Exception as e:
+                licensing.reraise_if_refused()
                 logger.error("ERROR: %s", e)
 
         # Print results table and exit non-zero if every sample failed (issue #15).
@@ -1687,6 +1771,15 @@ def _run_scan(args, resumed_run):
             model_manager = ModelManager(scorer.config)
             todo_paths = [str(f) for f in todo_list]
             processed = run_single_pass(todo_paths, args.single_pass_name, scorer, model_manager)
+            if processed == 0:
+                # A pass the commercial policy refuses did nothing: say so in the
+                # exit code. Default mode keeps its shipped behaviour (the pass logs
+                # its own error, e.g. `--pass tags` on a CLIP-similarity profile,
+                # and the scan still finishes as completed with exit 0).
+                if licensing.is_commercial():
+                    logger.error("Pass '%s' processed no photos.", args.single_pass_name)
+                    scan_run.finish('failed')
+                    exit(1)
             logger.info("Processed %d photos with %s pass", processed, args.single_pass_name)
 
         elif args.single_pass:
@@ -2134,6 +2227,11 @@ def main():
     parser = cli_args.build_parser()
     args = parser.parse_args()
 
+    policy = _apply_licensing_policy(args)
+    if policy.mode == licensing.MODE_COMMERCIAL:
+        for flag, reason in _commercial_refusals(args):
+            parser.error(f"{flag} is refused in licensing.mode 'commercial': {reason}")
+
     # Validate argument dependencies
     if args.apply_recommendations and not args.compute_recommendations:
         parser.error("--apply-recommendations requires --compute-recommendations")
@@ -2315,6 +2413,14 @@ def main():
     if args.eval_iqa_srcc:
         from optimization.iqa_eval import print_iqa_srcc_report
         print_iqa_srcc_report(args.db or DEFAULT_DB_PATH)
+        exit()
+
+    # Evaluate candidate models against pairwise picks (read-only)
+    if args.evaluate_models:
+        from optimization.model_eval import evaluate
+        candidates = [c.strip() for c in args.candidates.split(',') if c.strip()] if args.candidates else None
+        evaluate(args.db or DEFAULT_DB_PATH, args.evaluate_models, candidates=candidates,
+                 out=args.eval_out, config_path=args.config, limit=args.limit)
         exit()
 
     # Report unreviewed burst groups (read-only, no GPU)
@@ -2506,6 +2612,8 @@ def main():
         import socket
 
         threshold = args.merge_threshold
+        if threshold is None:
+            threshold = ScoringConfig(args.config).get_face_clustering_settings()['merge_threshold']
         port = int(os.environ.get('PORT', 5000))
         url = f"http://localhost:{port}/merge-suggestions?threshold={threshold}"
 
@@ -2594,10 +2702,14 @@ def main():
         else:
             logger.info("  Schema already up to date")
 
-        steps = [
+        iqa_step = _upgrade_iqa_step(args)
+        if iqa_step is None:
+            logger.info("--- IQA metrics: skipped (no IQA model is permitted under the active "
+                        "licensing policy) ---")
+        steps = [step for step in (
             ("--extract-gps", "GPS coordinates from EXIF"),
             ("--detect-duplicates", "Duplicate detection (pHash)"),
-            ("--recompute-iqa", "TOPIQ IAA + NR-Face + LIQE"),
+            iqa_step,
             ("--recompute-saliency", "Subject saliency (BiRefNet)"),
             ("--recompute-composition-cpu", "Rule-based composition"),
             ("--recompute-burst", "Burst detection grouping"),
@@ -2606,7 +2718,7 @@ def main():
             ("--recompute-eyes-expression", "Eyes-open + expression from landmarks"),
             ("--recompute-face-signals", "Per-face eyes/smile signals from landmarks"),
             ("--recompute-average", "Aggregate scores"),
-        ]
+        ) if step is not None]
         cmd_base = [sys.executable, os.path.abspath(__file__)]
         if args.db:
             cmd_base += ["--db", args.db]

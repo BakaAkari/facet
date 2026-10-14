@@ -47,6 +47,40 @@ def _build_sort_options():
 
 
 SORT_OPTIONS, SORT_OPTIONS_GROUPED = _build_sort_options()
+
+# licensing.unavailable_metrics() speaks in weight keys; the viewer sorts and
+# filters by photos columns. The two differ only for LIQE ('liqe' -> 'liqe_score').
+_METRIC_COLUMNS = {
+    'liqe': 'liqe_score',
+    'aesthetic_iaa': 'aesthetic_iaa',
+    'face_quality_iqa': 'face_quality_iqa',
+}
+
+
+def unavailable_columns():
+    """Column-level names of metrics the active licensing policy cannot compute.
+
+    Evaluated per call (licensing mode is fixed at startup, but this keeps the
+    import-time sort tables free of policy state). Empty in default mode.
+    """
+    import licensing
+    return sorted(_METRIC_COLUMNS.get(m, m) for m in licensing.unavailable_metrics())
+
+
+def available_sort_options():
+    """``(SORT_OPTIONS, SORT_OPTIONS_GROUPED)`` minus unavailable-metric sorts."""
+    hidden = set(unavailable_columns())
+    if not hidden:
+        return SORT_OPTIONS, SORT_OPTIONS_GROUPED
+    flat = [opt for opt in SORT_OPTIONS if opt[0] not in hidden]
+    grouped = None
+    if SORT_OPTIONS_GROUPED is not None:
+        grouped = {
+            cat: [o for o in opts if o['column'] not in hidden]
+            for cat, opts in SORT_OPTIONS_GROUPED.items()
+        }
+        grouped = {cat: opts for cat, opts in grouped.items() if opts}
+    return flat, grouped
 # 'top_picks_score' and 'learned_score' are computed/joined sort columns, not
 # stored photos columns: top_picks_score is an on-the-fly weighted expression and
 # learned_score comes from the personal-ranker learned_scores table (opt-in

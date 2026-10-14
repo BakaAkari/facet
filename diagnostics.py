@@ -3,6 +3,7 @@
 import importlib.metadata
 import logging
 import os
+import pathlib
 import platform
 import shutil
 import sqlite3
@@ -75,6 +76,127 @@ def _report_cuda_arch_mismatch(status):
     _log_pytorch_reinstall_hint("  Bare metal — reinstall PyTorch from the matching CUDA index:")
 
 
+def _registry_id(name):
+    """Registry id for a config model name ('clip-mlp', 'qwen3.5-2b', 'topiq_iaa'...)."""
+    import licensing
+    aliases = {'clip-mlp': 'clip_mlp_head', 'samp-net': 'samp_net'}
+    for candidate in (aliases.get(name), name, name.replace('.', '_').replace('-', '_')):
+        if candidate in licensing.COMPONENTS:
+            return candidate
+    return None
+
+
+def _components_in_use(cfg, profile_name, pol):
+    """Registry ids a scan under ``pol`` would load for the profile, in a stable order.
+
+    The set comes from :func:`processing.routing.route_models`, the function the
+    scan queue itself calls, so the doctor reports what is routed rather than
+    what is merely configured (a commercial install never loads TOPIQ or
+    InsightFace, and does load YuNet, SFace and Q-ReAlign). The VRAM fit of a
+    VLM tagger is reported by the VRAM section, so every tagger counts as fitting
+    here. Only configuration is read; no model is loaded.
+    """
+    import importlib.util
+
+    import licensing
+    from processing.routing import resolve_selected_quality, route_models
+
+    profile_name = profile_name or 'legacy'
+    profile = cfg.get('models', {}).get('profiles', {}).get(profile_name, {})
+    extended_cfg = cfg.get('iqa_extended', {})
+    qrealign = extended_cfg.get('qrealign', 'auto')
+    if isinstance(qrealign, str) and qrealign.strip().lower() == 'auto':
+        qrealign = profile_name != 'legacy'
+    extended = {'qrealign': bool(qrealign),
+                'aesthetic_v25': bool(extended_cfg.get('aesthetic_v25', False)),
+                'deqa': bool(extended_cfg.get('deqa', False))}
+
+    loaders = route_models(cfg, profile, extended, lambda _gb: True, pol)
+    routed = set()
+    # The primary quality model is not itself a queue entry when it is the CLIP head.
+    routed.add(licensing.component_for_loader(resolve_selected_quality(cfg, profile, pol)))
+    blendshapes = cfg.get('face_detection', {}).get('blendshapes', {}).get('enabled', True)
+    for loader in loaders:
+        if loader == 'clip':
+            routed.add('siglip2' if profile.get('clip_config') == 'clip' else 'clip')
+        elif loader == 'faces_permissive':
+            routed.update(('yunet', 'sface'))
+            if importlib.util.find_spec('ofiq') is not None:
+                routed.add('ofiq')
+            if blendshapes:
+                routed.add('mediapipe_face_landmarker')
+        else:
+            routed.add(licensing.component_for_loader(loader))
+            if loader == 'insightface' and blendshapes:
+                routed.add('mediapipe_face_landmarker')
+            if loader == 'samp_net':
+                routed.add('u2netp')
+
+    # Stable display order: the profile's own listing order, then anything routed beyond it.
+    order = []
+    for candidate in (
+            _registry_id(profile.get('aesthetic_model', 'clip-mlp')), 'siglip2', 'clip',
+            _registry_id(profile.get('tagging_model', 'clip')),
+            *(_registry_id(n) for n in profile.get('supplementary_pyiqa', [])),
+            'samp_net', 'u2netp', 'birefnet', 'insightface', 'mediapipe_face_landmarker',
+            'qrealign_native', 'aesthetic_v25', 'deqa', 'yunet', 'sface', 'ofiq'):
+        if candidate in routed and candidate not in order:
+            order.append(candidate)
+    order.extend(sorted(routed - set(order)))
+    return order
+
+
+def _report_model_licences(config_path, db_path, profile_name):
+    """Licensing mode, the commercial status of each component in use, and face-model drift."""
+    import licensing
+    from db.embedding_space import embedding_model_for_policy
+    try:
+        from config_resolve import load_resolved
+        cfg = load_resolved(config_path)
+        pol = licensing.resolve_policy(cfg)
+    except Exception as e:
+        _warn("Licensing", f"could not resolve the configuration: {e}")
+        return
+    mode = pol.mode + (" (allow_unclear)" if pol.allow_unclear else "")
+    _ok("Licensing mode", mode)
+    _info("Scoring drift",
+          f"scores are weighted for the '{pol.mode}' licensing mode; after changing the mode, "
+          "photos scored under the other one keep their old aggregate until --recompute-average is run")
+    if profile_name is None:
+        _info("Profile", "unknown — showing the legacy profile's components")
+    for component_id in _components_in_use(cfg, profile_name, pol):
+        comp = licensing.COMPONENTS[component_id]
+        label = f"{comp.name} ({component_id})"
+        if not licensing.allowed(component_id, pol):
+            hint = f" — use {comp.replacement}" if comp.replacement else ""
+            _warn(label, f"not permitted in commercial mode (commercial use: {comp.commercial}){hint}")
+        elif comp.commercial == 'yes':
+            _ok(label, "commercial use: yes")
+        elif comp.commercial == 'unclear':
+            _info(label, f"commercial use: unclear ({comp.weights_licence})")
+        else:
+            _info(label, f"commercial use: no ({comp.weights_licence})")
+    _warn_face_model_mismatch(db_path, embedding_model_for_policy(pol))
+
+
+def _warn_face_model_mismatch(db_path, active_model):
+    """Warn when stored face embeddings come from a model other than the active one."""
+    from db.embedding_space import face_model_mismatch_message, mismatched_face_models
+    if not os.path.exists(db_path):
+        return
+    try:
+        uri = pathlib.Path(db_path).resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            rows = mismatched_face_models(conn, active_model)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return  # no faces table / unreadable DB: reported by the database section
+    for model, count in rows:
+        _warn("Face embedding model", face_model_mismatch_message(model, count, active_model))
+
+
 def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=None):
     """Run full diagnostic report.
 
@@ -92,6 +214,7 @@ def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=
     selected_device = None
     has_mps = False
     arch_mismatch = None
+    resolved_profile = None
 
     if simulating:
         vram_str = f", {simulate_vram:.0f}GB VRAM" if simulate_vram else ""
@@ -255,6 +378,7 @@ def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=
         config = ScoringConfig(config_path, validate=False)
         current = config.get_model_config().get('vram_profile', 'legacy')
         _ok("Configured", current)
+        resolved_profile = suggested if current == 'auto' else current
         if current == 'auto':
             _info("Note", "auto mode will select the recommended profile at runtime")
         elif current != suggested:
@@ -311,6 +435,10 @@ def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=
                 _ok("darktable-cli", dt_path)
         else:
             _warn("darktable-cli", f"not found ({dt_exec}) — RAW downloads will fail")
+
+    # --- Model licences ---
+    _section("Model licences")
+    _report_model_licences(config_path, db_path, resolved_profile)
 
     # --- Config & Database ---
     _section("Config / Database")

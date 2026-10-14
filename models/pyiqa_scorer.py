@@ -11,6 +11,9 @@ import numpy as np
 from PIL import Image
 from typing import Optional
 
+import licensing
+from utils.image_bounds import MAX_INFERENCE_SIZE
+
 logger = logging.getLogger("facet.pyiqa")
 
 # Lazy import to avoid loading pyiqa unless needed
@@ -18,7 +21,8 @@ pyiqa = None
 
 
 def _ensure_pyiqa():
-    """Lazy load pyiqa library."""
+    """Lazy load pyiqa library (refused in commercial licensing mode)."""
+    licensing.require('pyiqa')
     global pyiqa
     if pyiqa is None:
         try:
@@ -108,43 +112,13 @@ PYIQA_MODELS = {
         'description': 'LIQE - Quality score + distortion type diagnosis',
         'has_distortion': True,
     },
-    # Q-ReAlign (LLM-based IQA, Q-ReAlign-Mini 0.8B, Apache-2.0). One variant:
-    # at ~3GB it needs no quantisation, so it is the first extended-IQA scorer
-    # that fits from the 8gb profile up (it replaced Q-Align, whose smallest
-    # 4-bit variant already wanted bitsandbytes and ~5GB).
-    #
-    # TRAP: pyiqa registers qrealign on a **(0, 1)** score range, NOT the (1, 5)
-    # AVA MOS range Q-Align used. _normalize_score clamps the raw value into
-    # score_range before scaling to 0-10, so carrying the old (1, 5) over would
-    # clamp every real score (all < 1) to exactly 1 and emit a constant 0.0
-    # column — silently, and with every unit test still green. Verify against
-    # pyiqa's own registry before touching this tuple.
-    #
-    # TRAP 2: pyiqa's QReAlign arch defaults to task='quality', but the A/B that
-    # chose Q-ReAlign scored with task_='aesthetic' (scripts/qrealign_ab.py
-    # SCORE_TASK) — that IAA head is the validated signal the qrealign_score
-    # column is documented and weighted against. The quality head is
-    # ceiling-compressed by comparison (raw ~0.48-0.99 vs ~0.12-0.75), so
-    # shipping it would silently serve a different distribution than the one the
-    # swap was decided on. CONTRACT: 'task' is forwarded as a **per-call**
-    # ``task_=`` kwarg — pyiqa's InferenceModel.forward passes **kwargs straight
-    # through to the net (pyiqa/models/inference_model.py), which is the only
-    # supported override; setting it as an attribute on ``.net`` does nothing.
-    'qrealign': {
-        'pyiqa_id': 'qrealign',
-        'vram_gb': 3,
-        'lower_better': False,
-        'score_range': (0, 1),
-        'task': 'aesthetic',
-        'description': 'Q-ReAlign-Mini 0.8B — LLM-based IQA (~3GB VRAM, Apache-2.0)',
-    },
 }
 
 
 # Models whose forward pass is per-sample independent in eval mode and accept a
 # stacked same-size batch tensor, so real batching gives results bit-identical to
 # per-image scoring. Resolution-sensitive multi-scale models (musiq*), the
-# variable-output LIQE, and the VLM Q-ReAlign stay serial (forced fixed-size
+# variable-output LIQE stay serial (forced fixed-size
 # batching would shift their scores).
 _BATCHABLE_MODELS = {'topiq', 'hyperiqa', 'dbcnn', 'topiq_iaa', 'topiq_nr_face', 'clipiqa+'}
 
@@ -218,11 +192,8 @@ class PyIQAScorer:
         self._skipped_totals = {}
         logger.info("  %s unloaded", self.model_name)
 
-    # Max long edge for inference (prevents OOM on CPU with high-res images).
-    # PyIQA models are trained on <=1024px images; larger adds no benefit
-    # but explodes intermediate activation memory (ResNet50 at 5496x3670
-    # uses ~10GB per image in FP32).
-    _MAX_INFERENCE_SIZE = 1024
+    # Max long edge for inference is utils.image_bounds.MAX_INFERENCE_SIZE
+    # (ResNet50 at 5496x3670 uses ~10GB per image in FP32).
 
     # Max images stacked into a single forward pass, even when a same-shape
     # group spans the whole chunk (up to ram_chunk_size, commonly 128). A
@@ -251,8 +222,8 @@ class PyIQAScorer:
         # Resize if larger than max inference size to prevent OOM
         w, h = image.size
         long_edge = max(w, h)
-        if long_edge > self._MAX_INFERENCE_SIZE:
-            scale = self._MAX_INFERENCE_SIZE / long_edge
+        if long_edge > MAX_INFERENCE_SIZE:
+            scale = MAX_INFERENCE_SIZE / long_edge
             image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
         # Convert to tensor: (H, W, C) -> (C, H, W)

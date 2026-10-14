@@ -5,6 +5,26 @@ Evaluates whether a photo matches a category's filter rules.
 """
 
 
+FACE_DEFAULT_FIELDS = ("face_count", "face_ratio", "is_group_portrait")
+
+
+def with_face_defaults(photo_data: dict) -> dict:
+    """Return a copy of ``photo_data`` with NULL face fields coalesced to 0.
+
+    A failed face pass stores ``face_count`` / ``face_ratio`` /
+    ``is_group_portrait`` as NULL ("unknown"), but category assignment treats
+    unknown as "no face", exactly as the scorer does at scan time. Every caller
+    that re-derives a category from a stored row must go through this so the
+    ``*_max`` face filters do not mismatch on NULL. ``CategoryFilter`` itself
+    keeps its NULL-fails-the-filter semantics.
+    """
+    out = dict(photo_data)
+    for field in FACE_DEFAULT_FIELDS:
+        if out.get(field) is None:
+            out[field] = 0
+    return out
+
+
 def _to_float(val):
     """Coerce a value to float, handling fractional strings like '1/250'.
 

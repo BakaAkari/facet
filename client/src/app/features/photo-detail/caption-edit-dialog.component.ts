@@ -8,7 +8,7 @@ import { MatInputModule } from '@angular/material/input';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../core/services/api.service';
 import { TranslatePipe } from '../../shared/pipes/translate.pipe';
-import { I18N_KEYS } from '../../core/i18n/keys';
+import { i18nKeys } from '../../core/i18n/keys';
 
 export interface CaptionEditDialogData {
   path: string;
@@ -38,7 +38,7 @@ export interface CaptionEditDialogData {
   `,
 })
 export class CaptionEditDialogComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly api = inject(ApiService);
   private readonly dialogRef = inject(MatDialogRef<CaptionEditDialogComponent>);
   readonly data: CaptionEditDialogData = inject(MAT_DIALOG_DATA);

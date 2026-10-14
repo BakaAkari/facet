@@ -1,0 +1,13 @@
+# RESTRICTED (non-commercial licence) packages, split from requirements.legacy.lock.txt.
+# insightface (pretrained models non-commercial) and pyiqa (+ openai-clip, facexlib
+# and the packages only they need) are excluded when licensing.mode = commercial.
+# Default installs / images install this file AFTER the base lock. See docs/INSTALLATION.md.
+addict==2.4.0
+facexlib==0.3.0
+insightface==1.0.1
+onnx==1.22.0
+onnxruntime==1.27.0
+openai-clip==1.0.1
+pyiqa==0.1.16
+setuptools==80.10.2
+yapf==0.43.0

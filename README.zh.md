@@ -239,3 +239,7 @@ python viewer.py                       # 照片库 → http://localhost:5000
 ## 许可证
 
 [MIT](LICENSE)
+
+### 许可说明
+
+Facet 自身的代码采用 MIT 许可证。部分默认模型**不**允许商业使用：pyiqa（TOPIQ、LIQE 等）和 InsightFace 权重均为非商业许可。`licensing.mode: commercial` 设置会将 Facet 限制为仅使用宽松许可的模型：受限组件绝不会被导入或下载，每个环节都会改用宽松许可的替代品（参见[许可](docs/zh/CONFIGURATION.md#许可licensing)）。参见[第三方模型与许可证](docs/zh/THIRD_PARTY_MODELS.md)。

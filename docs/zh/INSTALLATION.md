@@ -320,6 +320,23 @@ FACET_VRAM_PROFILE=8gb python facet.py /path/to/photos
 `auto` 具体采用的阈值见
 [配置 › 显存自动检测](CONFIGURATION.md#显存自动检测)。
 
+## 商业安装与受限软件包
+
+`insightface` 和 `pyiqa`（以及仅由它们使用的 `openai-clip`、`facexlib` 和 `onnxruntime`）附带的模型权重采用非商业条款。它们不再属于基础安装：它们位于 `faces-insightface` 和 `iqa` 这两个 extra 中，以及 `requirements.restricted.txt`（Docker 另有 `requirements.restricted.lock.txt` 和 `requirements.legacy.restricted.lock.txt`）。
+
+> **不兼容变更。** 单独执行 `pip install -e .` 或 `pip install -r requirements.txt` 不再包含 insightface 和 pyiqa。要恢复之前的行为，请使用 `pip install -e .[all]` 或 `pip install -r requirements.txt -r requirements.restricted.txt`。`install.sh` 和默认 Docker 镜像两者都会安装，因此行为与以前一致。
+
+| 目标 | 命令 |
+|------|------|
+| 全部（默认） | `bash install.sh` 或 `pip install -e .[all]` |
+| 可用于商业用途 | `bash install.sh --commercial` |
+| 商业用途，手动 | `pip install -r requirements.txt`，然后 `pip install -e .[commercial]` 和 `pip install mediapipe==0.10.35 --no-deps` |
+| 商业用途，Docker | `docker build --build-arg FACET_LICENSING=commercial .` |
+
+`mediapipe` 必须始终使用 `--no-deps` 安装：它自带的 `opencv-contrib-python` 会让 `cv2` 命名空间被重复安装。`commercial` extra 只声明其运行时依赖（`absl-py`、`flatbuffers`）。`python-ofiq`（OFIQ 人脸质量绑定）已发布到 PyPI，但只提供 Linux x86-64 和 macOS arm64 的 wheel，因此不在该 extra 中；有 wheel 的平台上请手动 `pip install python-ofiq`。
+
+商业安装本身不会切换模式。请在 `scoring_config.json` 覆盖文件中设置（`{ "licensing": { "mode": "commercial" } }`）；Docker 构建参数还会在镜像中设置 `FACET_LICENSING_MODE=commercial`。`python facet.py --doctor` 会显示当前生效的许可状态。在商业模式下，它列出扫描实际会加载的组件（YuNet、SFace、Q-ReAlign），而不是配置档案仅仅提到的组件。
+
 ## 手动安装，不使用 install.sh
 
 需要 Python 3.12（3.10+ 亦可），以及用于构建照片库的 Node.js 20+。
@@ -342,7 +359,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 # 3. 其余依赖一次性装完，让 pip 能一次性解算整张依赖图。
 #    requirements.txt 已经包含 transformers 和 accelerate，8gb 及以上配置档
 #    使用的 SigLIP/BiRefNet/VLM 模型需要它们。
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements.restricted.txt
 
 # 4. 只安装一个用于人脸检测的 ONNX Runtime（见下表）
 pip install onnxruntime-gpu>=1.17.0   # 或：pip install onnxruntime>=1.15.0
@@ -376,6 +393,7 @@ ONNX Runtime、`requirements.txt`、`transformers` 和 `accelerate`，检查
 | `--cuda VERSION` | 覆盖检测到的 CUDA 版本（例如 `--cuda 12.8`） |
 | `--skip-client` | 跳过 Angular 前端构建 |
 | `--no-uv` | 使用 pip 而不是 uv |
+| `--commercial` | 可用于商业用途的安装：跳过 insightface、pyiqa 和 ONNX Runtime，以 `--no-deps` 安装 mediapipe；需自行将 `licensing.mode` 设为 `commercial` |
 
 | Make 目标 | 执行内容 |
 |-------------|------|
@@ -611,7 +629,7 @@ SAMP-Net 权重来自本项目的
 | `rawpy` | RAW 解码（CR2/CR3/NEF/ARW/……） | 跳过 RAW 文件（已包含在基础的 `requirements.txt` 中） |
 | `cuml`、`cupy` | GPU 加速的人脸聚类（conda + CUDA） | 聚类通过 `hdbscan` 在 CPU 上运行（默认） |
 | `onnxruntime-gpu` | GPU 加速的人脸检测 | 使用 CPU 版 `onnxruntime`（较慢） |
-| `aesthetic-predictor-v2-5` | 扩展 IQA 层 —— `aesthetic_v25` 评分器（`pip install -e .[iqa-extended]`；对应 `scoring_config.json` 中的 `iqa_extended.aesthetic_v25`，默认关闭）。**已弃用** —— AGPL-3.0，上游自 2024-12-18 起无人维护；建议改用 `qrealign`，它不需要额外软件包（随基础依赖 `pyiqa` 一同提供） | `aesthetic_v25` 不可用 |
+| `aesthetic-predictor-v2-5` | 扩展 IQA 层 —— `aesthetic_v25` 评分器（`pip install -e .[iqa-extended]`；对应 `scoring_config.json` 中的 `iqa_extended.aesthetic_v25`，默认关闭）。**已弃用** —— AGPL-3.0，上游自 2024-12-18 起无人维护；建议改用 `qrealign`，它不需要额外软件包（通过 `transformers` 原生加载） | `aesthetic_v25` 不可用 |
 | `darktable-cli`（系统） | 从照片库导出 RAW/darktable 配置文件 | 只提供原图/内嵌图下载 |
 | `exiftool`（系统） | 最佳的 EXIF/GPS 提取 | 回退到 `exifread`，再回退到 PIL |
 

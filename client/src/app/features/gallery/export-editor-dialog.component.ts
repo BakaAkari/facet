@@ -18,7 +18,7 @@ import { I18nService } from '../../core/services/i18n.service';
 import { extractErrorDetail } from '../../core/utils/http-error.util';
 import { downloadBlob } from '../../shared/utils/download';
 import { TranslatePipe } from '../../shared/pipes/translate.pipe';
-import { I18N, I18N_KEYS } from '../../core/i18n/keys';
+import { I18N, i18nKeys } from '../../core/i18n/keys';
 import type { LightroomImportResponse, LightroomManifest } from '../../core/api/types';
 
 export interface ExportEditorDialogData {
@@ -109,7 +109,7 @@ export interface ExportEditorDialogData {
   `,
 })
 export class ExportEditorDialogComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   protected readonly data = inject<ExportEditorDialogData>(MAT_DIALOG_DATA);
   private readonly exportService = inject(ExportService);
   private readonly dialogRef = inject(MatDialogRef<ExportEditorDialogComponent>);

@@ -75,7 +75,21 @@
     "burst_detection": { "type": "object" },
     "duplicate_detection": { "type": "object" },
     "face_detection": { "type": "object" },
-    "face_clustering": { "type": "object" },
+    "face_clustering": {
+      "type": "object",
+      "properties": {
+        "thresholds_by_model": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "auto_merge_distance_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+              "merge_threshold": { "type": "number", "minimum": -1, "maximum": 1 }
+            }
+          }
+        }
+      }
+    },
     "capsules": { "type": "object" },
     "performance": { "type": "object" },
     "maintenance": { "type": "object" },
@@ -87,8 +101,16 @@
       "type": "object",
       "properties": {
         "qrealign": { "enum": [true, false, "auto"] },
+        "qrealign_size": { "enum": ["mini", "lite"] },
         "aesthetic_v25": { "type": "boolean" },
         "deqa": { "type": "boolean" }
+      }
+    },
+    "licensing": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["default", "commercial"] },
+        "allow_unclear": { "type": "boolean" }
       }
     },
     "ocr": {

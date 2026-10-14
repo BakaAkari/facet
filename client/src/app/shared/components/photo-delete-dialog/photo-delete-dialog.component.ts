@@ -3,7 +3,7 @@ import { MAT_DIALOG_DATA, MatDialogRef, MatDialogModule } from '@angular/materia
 import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { TranslatePipe } from '../../pipes/translate.pipe';
-import { I18N_KEYS } from '../../../core/i18n/keys';
+import { i18nKeys } from '../../../core/i18n/keys';
 
 export interface PhotoDeleteDialogResult {
   includeCompanions: boolean;
@@ -74,7 +74,7 @@ export interface PhotoDeleteDialogData {
   `,
 })
 export class PhotoDeleteDialogComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly dialogRef = inject(MatDialogRef<PhotoDeleteDialogComponent, PhotoDeleteDialogResult>);
   protected readonly data = inject<PhotoDeleteDialogData>(MAT_DIALOG_DATA);
 

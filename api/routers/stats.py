@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from api.auth import CurrentUser, get_optional_user, require_edition
 from api.config import (
+    child_process_env,
     CORRELATION_X_AXES, CORRELATION_Y_METRICS, FACET_SCRIPT,
     _get_stats_cached_async, _stats_cache,
     _CONFIG_PATH, reload_config, server_scoring_config,
@@ -969,7 +970,7 @@ async def api_stats_categories_overlap(user: Optional[CurrentUser] = Depends(get
     vis, vp = _vis_where(user)
 
     async def compute():
-        from config.category_filter import CategoryFilter
+        from config.category_filter import CategoryFilter, with_face_defaults
 
         config = server_scoring_config()
         cat_configs = config.get_categories()
@@ -1034,7 +1035,7 @@ async def api_stats_categories_overlap(user: Optional[CurrentUser] = Depends(get
                 # Test all filters
                 matched = []
                 for cf in cat_filters:
-                    if cf['filter'].matches(photo_data):
+                    if cf['filter'].matches(with_face_defaults(photo_data)):
                         matched.append(cf['name'])
                         match_counts[cf['name']] += 1
 
@@ -1133,6 +1134,7 @@ async def api_stats_categories_recompute(
             '--config', config_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_process_env(),
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=300)

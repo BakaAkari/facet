@@ -306,7 +306,7 @@ class TestMergeSuggestionsHidden:
         prefix = "msug_hidden/"
         try:
             # Three near-identical centroids: 9340 visible, 9341 visible, 9342 hidden.
-            base = np.ones(8, dtype=np.float32)
+            base = np.ones(512, dtype=np.float32)
             conn = _db()
             _seed_person(conn, 9340, [prefix + "a.jpg"], centroid=base.copy())
             _seed_person(conn, 9341, [prefix + "b.jpg"], centroid=base.copy())

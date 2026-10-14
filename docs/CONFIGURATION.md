@@ -1278,6 +1278,7 @@ Heavy/experimental quality scorers that add supplementary columns; **never a rep
 {
   "iqa_extended": {
     "qrealign": "auto",
+    "qrealign_size": "mini",
     "aesthetic_v25": true,
     "deqa": false
   }
@@ -1286,17 +1287,44 @@ Heavy/experimental quality scorers that add supplementary columns; **never a rep
 
 | Setting | Default | Accepted values | Column | Description |
 |---------|---------|-----------------|--------|-------------|
-| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B LLM-based IQA (pyiqa-backed, Apache-2.0 weights, ~2-3GB VRAM/RAM). `"auto"` turns it on for the `8gb`/`16gb`/`24gb` profiles and off for `legacy`/CPU; `true`/`false` override the profile default explicitly. |
+| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B LLM-based IQA (native `transformers` loader, no pyiqa; Apache-2.0 weights, ~2-3GB VRAM/RAM). `"auto"` turns it on for the `8gb`/`16gb`/`24gb` profiles and off for `legacy`/CPU; `true`/`false` override the profile default explicitly. |
+| `qrealign_size` | `"mini"` | `"mini"` · `"lite"` | - | Q-ReAlign size the native scorer loads: `mini` (0.8B) or `lite` (4B). Used by the `qrealign` column and, in `licensing.mode: "commercial"`, as the primary aesthetic and quality model. |
 | `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (SigLIP head, ~2GB). Requires the `aesthetic-predictor-v2-5` package. **Deprecated:** AGPL-3.0-licensed and unmaintained upstream since 2024-12-18 — prefer `qrealign`. |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score VLM IQA (16GB+ GPU; skipped & left NULL otherwise). |
 
-**Install the optional dependencies** for whatever you enable: `pip install -e .[iqa-extended]` (adds `aesthetic-predictor-v2-5`), or uncomment the matching line in `requirements.txt`. Q-ReAlign ships with `pyiqa`; DeQA-Score downloads via `transformers`.
+**Install the optional dependencies** for whatever you enable: `pip install -e .[iqa-extended]` (adds `aesthetic-predictor-v2-5`), or uncomment the matching line in `requirements.txt`. DeQA-Score downloads via `transformers`.
 
 When enabled, each metric is exposed to the weighted aggregate but defaults to weight 0, so `--recompute-average` is byte-identical until you give it a weight. Run `python facet.py --eval-iqa-srcc` to measure how well each metric ranks your library against your own star ratings.
 
 **Viewer surfacing.** When any of these columns is populated, the viewer shows the value in the photo-detail **Quality** panel (`Q-ReAlign`, `Aesthetic V2.5`, `DeQA`) and exposes a matching range slider in the gallery filter sidebar under **Extended Quality** (`min_qrealign`/`max_qrealign`, `min_aesthetic_v25`/`max_aesthetic_v25`, `min_deqa`/`max_deqa`). Photos scanned before the tier was enabled have `NULL` in these columns, and setting a min or max on one of these sliders **excludes** them — a `NULL` never satisfies a `>=`/`<=` comparison. Rescan before filtering on a newly enabled metric, or those photos will silently drop out of the gallery.
 
 **Robustness.** DeQA-Score loads remote `trust_remote_code` code whose forward signature varies across checkpoint revisions; its scorer is defensive — any prediction failure (wrong signature, unexpected output shape, OOM) is caught and the image's `deqa_score` is left `NULL` rather than crashing the scan.
+
+---
+
+## Licensing
+
+Controls which model components Facet may load. See [THIRD_PARTY_MODELS.md](THIRD_PARTY_MODELS.md) for the per-component licence table.
+
+```json
+{
+  "licensing": {
+    "mode": "default",
+    "allow_unclear": false
+  }
+}
+```
+
+| Setting | Default | Accepted values | Description |
+|---------|---------|-----------------|-------------|
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` loads every model (shipped behaviour). `"commercial"` never imports, queues or downloads components whose licence is not commercial-safe: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) and InsightFace are refused at every layer. Aesthetic and quality come from the native Q-ReAlign scorer, composition from the rule-based analyser, and faces from the permissive face pipeline (YuNet detection, SFace 128-d embeddings, optional MediaPipe eyes/smile and OFIQ face quality). `liqe` and `aesthetic_iaa` have no replacement and stay `NULL`. |
+| `allow_unclear` | `false` | `true` / `false` | In commercial mode, also allow components whose licence is *unclear* (SAMP-Net, U2-Net-P, the LAION CLIP-MLP aesthetic head). Components with a non-commercial licence stay refused. It must be a JSON boolean; any other value is an error that stops startup. |
+
+A refused component raises a `LicenceError` that names the component and its replacement; every handler that could absorb it re-raises it (a test enforces this), so a refusal stops the scan at startup instead of turning into per-photo failures or a silent fallback. Commands that depend only on a refused component (`--score-topiq`, `--recompute-iqa` for pyiqa models, `--recompute-composition-gpu`) exit with that message in commercial mode. The mode is read from the resolved config at startup. The viewer passes `FACET_LICENSING_MODE=commercial` in the environment of every `facet.py` process it spawns (scans, recomputes), so a child never re-resolves to default mode from a different working directory. Nothing here is legal advice.
+
+The `FACET_LICENSING_MODE` environment variable overrides the file: `commercial` forces commercial mode, `default` or empty means no override (it can never relax a file that says `commercial`), and any other value is an error that stops startup (so a typo cannot silently leave a commercial install running in default mode).
+
+The `FACET_LICENSING_ALLOW_UNCLEAR` environment variable can only tighten as well: `0`, `false`, `no` or `off` forces `licensing.allow_unclear` off even when the file says `true`, while `1`, `true`, `yes`, `on` or empty is no override and never grants it. Any other value is an error. The viewer sets `FACET_LICENSING_ALLOW_UNCLEAR=0` in the environment of every `facet.py` process it spawns whenever its own policy forbids the unclear components, so a spawned scan cannot relax the server's policy from a working-directory config. `licensing.allow_unclear` itself must be a JSON boolean: a string such as `"false"` or a number is rejected with an error at startup instead of being read as true.
 
 ---
 
@@ -1316,7 +1344,8 @@ InsightFace face detection settings.
     "poor_expression_min": 4.0,
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -1325,7 +1354,7 @@ InsightFace face detection settings.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Minimum detection confidence |
-| `min_face_size` | `20` | Minimum face size in pixels |
+| `min_face_size` | `20` | Minimum face size in pixels — InsightFace only: the commercial-mode YuNet detector uses fixed measured values (0.7 confidence, 30 px) and ignores `min_confidence_percent` and this setting. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio for blink detection |
 | `min_faces_for_group` | `4` | Minimum faces to classify as group portrait (recomputed on `--recompute-average`) |
 | `enable_3d_landmarks` | `false` | Optional override (absent from the shipped file; code default `false`). Load InsightFace `landmark_3d_68` module for head-pose extraction (yaw/pitch/roll). Costs ~5MB extra ONNX weights. Currently informational; future profile/silhouette refinements will read this. |
@@ -1333,6 +1362,7 @@ InsightFace face detection settings.
 | `poor_expression_min` | `4.0` | Per-face smile/expression score (0–10) below which the darkroom flags a weak expression. Drives the expression face ring and slider (moved from a hardcoded constant) |
 | `blendshapes.enabled` | `true` | Use appearance-based MediaPipe blendshape scores for per-face `eyes_open_score` / `smile_score` when MediaPipe and the `face_landmarker.task` bundle are available; when true they replace the landmark-geometry scores, otherwise the geometry fallback runs automatically. Optional dependency — install with `pip install mediapipe==0.10.35 --no-deps` (never a plain `pip install mediapipe`). See [FACE_RECOGNITION.md](FACE_RECOGNITION.md#per-face-expression-signals-eyes-open--smile). |
 | `blendshapes.min_crop_size` | `192` | Faces whose padded crop is smaller than this (px, shorter side) fall back to the geometric score rather than upscale a tiny face |
+| `blendshapes.blink_pose_gate_deg` | `null` | Commercial-mode (MediaPipe) analyzer only. Head-pose cutoff in degrees: a face whose |yaw| or |pitch| exceeds it gets no blink verdict and no eyes-open / smile score (NULL, unknown), because a turned head reads as closed eyes. `null` (default) = no gate; it stays off by default: on a held-out half of a real library, no cutoff between 20° and 45° improved blink detection (each lost more true blinks than false ones), so none ships; set it only if your library has many strongly turned faces. Changes apply to newly scanned photos; existing `is_blink` values change only on rescan. Must be a positive number of degrees: 0 or a negative value is rejected at startup; `null` = off. |
 
 ---
 
@@ -1346,11 +1376,13 @@ HDBSCAN clustering for face recognition.
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -1360,11 +1392,12 @@ HDBSCAN clustering for face recognition.
 | `enabled` | `true` | Enable face clustering |
 | `min_faces_per_person` | `2` | Minimum photos per person |
 | `min_samples` | `2` | HDBSCAN min_samples parameter |
-| `auto_merge_distance_percent` | `15` | Auto-merge within this distance |
 | `clustering_algorithm` | `"best"` | HDBSCAN algorithm |
 | `leaf_size` | `40` | Tree leaf size (CPU only) |
 | `use_gpu` | `"auto"` | GPU mode: `auto`, `always`, `never` (see notes below) |
-| `merge_threshold` | `0.6` | Centroid similarity for matching |
+| `thresholds_by_model` | see JSON | Per recognition model: `auto_merge_distance_percent` (auto-merge distance) and `merge_threshold` (centroid similarity for matching). Defaults: ArcFace `15` / `0.6`, SFace `27.5` / `0.65` |
+
+`merge_threshold` and `auto_merge_distance_percent` are similarities and distances inside one recognition model's embedding space, so they are read from `thresholds_by_model` for the **active** model (ArcFace by default, SFace in commercial mode). A model with no entry is an error, not a fallback: a threshold tuned for another space would silently mis-merge people. Setting `merge_threshold` or `auto_merge_distance_percent` directly under `face_clustering` is no longer read.
 
 **GPU clustering notes (`use_gpu`):**
 

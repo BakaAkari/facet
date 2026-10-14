@@ -9,6 +9,7 @@ import re
 import sqlite3
 
 from db.connection import apply_pragmas, HAS_SQLITE_VEC
+from db.embedding_space import ARCFACE_MODEL
 
 logger = logging.getLogger("facet.schema")
 
@@ -235,7 +236,7 @@ FACES_COLUMNS = [
     # only the active space (see faces/clusterer.py) — a future model swap can't
     # silently mix spaces. The constant default backfills existing rows (all
     # ArcFace/buffalo_l) on migration and tags new inserts with no code change.
-    ('embedding_model', "TEXT DEFAULT 'arcface_buffalo_l'"),
+    ('embedding_model', f"TEXT DEFAULT '{ARCFACE_MODEL}'"),
 ]
 
 # Single shared faces upsert used by every scan-time writer (processing/scorer.py
@@ -246,13 +247,21 @@ FACES_COLUMNS = [
 FACES_UPSERT_SQL = """
     INSERT OR REPLACE INTO faces
     (photo_path, face_index, embedding, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-     confidence, face_thumbnail, landmark_2d_106, eyes_open_score, smile_score)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     confidence, face_thumbnail, landmark_2d_106, eyes_open_score, smile_score,
+     embedding_model)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
-def face_upsert_row(photo_path, face):
-    """Build the FACES_UPSERT_SQL parameter tuple from a face_details dict."""
+def face_upsert_row(photo_path, face, embedding_model):
+    """Build the FACES_UPSERT_SQL parameter tuple from a face_details dict.
+
+    The model that produced the embedding is the analyzer's own word: a face
+    carrying ``embedding_model`` is tagged with it. ``embedding_model`` (the
+    active model) is the fallback for an analyzer that does not report one, and
+    is required: the column's schema default is the legacy ArcFace tag, so a
+    writer that omitted it would mislabel a 128-d SFace embedding as ArcFace.
+    """
     bbox = face.get('bbox', [0, 0, 0, 0])
     return (
         photo_path,
@@ -264,8 +273,23 @@ def face_upsert_row(photo_path, face):
         face.get('landmark_2d_106'),
         face.get('eyes_open_score'),
         face.get('smile_score'),
+        face.get('embedding_model') or embedding_model,
     )
 
+
+# Named-person faces remembered across a forced re-extraction. The extraction deletes
+# every face row long before it finishes (hours on a large library), so the memory
+# has to live in the database, written in the same transaction as the delete: a crash
+# or Ctrl-C must not leave named persons with nothing pointing at them. Replayed by
+# the extraction itself (and the next run if this one died) and cleared when done.
+FACE_REEXTRACT_SNAPSHOT_COLUMNS = [
+    ('photo_path', 'TEXT NOT NULL'),
+    ('bbox_x1', 'REAL'),
+    ('bbox_y1', 'REAL'),
+    ('bbox_x2', 'REAL'),
+    ('bbox_y2', 'REAL'),
+    ('person_id', 'INTEGER NOT NULL'),
+]
 
 PERSONS_COLUMNS = [
     ('id', 'INTEGER PRIMARY KEY AUTOINCREMENT'),
@@ -276,6 +300,12 @@ PERSONS_COLUMNS = [
     ('auto_clustered', 'INTEGER DEFAULT 1'),
     ('face_thumbnail', 'BLOB'),
     ('is_hidden', 'INTEGER DEFAULT 0'),
+    # Which embedding model the centroid was averaged from; NULL = legacy ArcFace.
+    # A centroid is only comparable with embeddings of the same model. Kept LAST:
+    # an upgrade appends a column (ALTER TABLE ADD COLUMN), so declaring it anywhere
+    # else gives a fresh DB and an upgraded one different column orders, and the
+    # positional INSERT ... SELECT * between them would shift every value.
+    ('centroid_model', 'TEXT'),
 ]
 
 
@@ -837,6 +867,7 @@ _MIGRATED_TABLES = [
     ('user_preferences', USER_PREFERENCES_COLUMNS),
     ('photo_scoring_overrides', PHOTO_SCORING_OVERRIDES_COLUMNS),
     ('photo_sequence_overrides', PHOTO_SEQUENCE_OVERRIDES_COLUMNS),
+    ('face_reextract_snapshot', FACE_REEXTRACT_SNAPSHOT_COLUMNS),
     ('scan_runs', SCAN_RUNS_COLUMNS),
     ('scan_failures', SCAN_FAILURES_COLUMNS),
 ]
@@ -1077,6 +1108,10 @@ def init_database(db_path='photo_scores_pro.db'):
             'photo_sequence_overrides', PHOTO_SEQUENCE_OVERRIDES_COLUMNS
         ))
 
+        conn.execute(_build_create_table_sql(
+            'face_reextract_snapshot', FACE_REEXTRACT_SNAPSHOT_COLUMNS
+        ))
+
         # Create scan bookkeeping tables
         conn.execute(_build_create_table_sql('scan_runs', SCAN_RUNS_COLUMNS))
         conn.execute(_build_create_table_sql(
@@ -1096,6 +1131,14 @@ def init_database(db_path='photo_scores_pro.db'):
         # reads photos.clip_embedding, which the sweep backfills on old DBs.
         for table_name, columns in _MIGRATED_TABLES:
             _migrate_add_missing_columns(conn, table_name, columns)
+
+        # A centroid that predates persons.centroid_model was averaged from ArcFace
+        # embeddings (the only space that existed), so tag it. After this a NULL
+        # centroid_model means only "no centroid yet".
+        conn.execute(
+            "UPDATE persons SET centroid_model = ? "
+            "WHERE centroid IS NOT NULL AND centroid_model IS NULL",
+            (ARCFACE_MODEL,))
 
         # Create photos_vec virtual table for vector search (requires sqlite-vec).
         # After the sweep so detect_embedding_dim can see clip_embedding.

@@ -55,6 +55,14 @@ ARG INSTALL_CUML=1
 #   requirements.lock.txt        -> torch 2.11.0 CUDA base AND the slim CPU base
 #   requirements.legacy.lock.txt -> pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime
 ARG REQUIREMENTS_LOCK=requirements.lock.txt
+# FACET_LICENSING=default (the default) installs the RESTRICTED lock too
+# (insightface, pyiqa and what only they need: non-commercial licence terms) so
+# behaviour is unchanged. FACET_LICENSING=commercial skips it and bakes
+# FACET_LICENSING_MODE=commercial into the image environment (see the ENV below).
+# The restricted lock is derived from REQUIREMENTS_LOCK, so the pair cannot drift:
+#   requirements.lock.txt        -> requirements.restricted.lock.txt
+#   requirements.legacy.lock.txt -> requirements.legacy.restricted.lock.txt
+ARG FACET_LICENSING=default
 
 WORKDIR /app
 
@@ -102,6 +110,7 @@ RUN mkdir -p /opt/exiftool \
 # textually and runs `git ls-files` on every COPY source, so a build-arg source
 # would not resolve there. The unused one costs ~4 KB.
 COPY requirements.lock.txt requirements.legacy.lock.txt ./
+COPY requirements.restricted.lock.txt requirements.legacy.restricted.lock.txt ./
 # CPU base only: the image ships no torch at all, so install it up front from
 # the CPU wheel index before anything in the lock can pull in a CUDA build
 # transitively.
@@ -119,6 +128,17 @@ RUN if [ "$STRIP_TORCH" = "0" ]; then \
 # hide the base image's own torch. Accepted as a no-op by the pip in both other
 # bases (24.3.1 conda / 25.0.1 slim), neither of which carries that marker.
 RUN pip install --no-cache-dir --break-system-packages -r "${REQUIREMENTS_LOCK}"
+# Restricted (non-commercial) packages: installed by default, skipped when
+# FACET_LICENSING=commercial. Same pip flags, and still BEFORE the torch guard
+# below so that guard covers this install too.
+RUN case "$(printf %s "$FACET_LICENSING" | tr '[:upper:]' '[:lower:]')" in \
+        commercial) restricted=0 ;; \
+        default|"") restricted=1 ;; \
+        *) echo "FACET_LICENSING must be commercial or default, got: $FACET_LICENSING" >&2 ; exit 1 ;; \
+    esac ; \
+    if [ "$restricted" = 1 ]; then \
+        pip install --no-cache-dir --break-system-packages -r "${REQUIREMENTS_LOCK%.lock.txt}.restricted.lock.txt" ; \
+    fi
 # Nothing else makes BASE_IMAGE and REQUIREMENTS_LOCK move together, and a
 # mismatched pair does not fail the install above — it silently swaps the torch
 # the image is built around: requirements.lock.txt over the 12.6 base resolves
@@ -169,7 +189,7 @@ COPY plugins/ plugins/
 COPY storage/ storage/
 COPY sync/ sync/
 COPY validation/ validation/
-COPY facet.py cli_args.py config_resolve.py int_affinity.py database.py viewer.py tag_existing.py validate_db.py calibrate.py diagnostics.py ./
+COPY facet.py cli_args.py config_resolve.py int_affinity.py licensing.py database.py viewer.py tag_existing.py validate_db.py calibrate.py diagnostics.py ./
 # No scoring_config.json is baked. The sanitized defaults ride along inside the
 # `config` PYTHON PACKAGE that COPY config/ config/ above already brings, and an
 # absent config file that nobody NAMED resolves to exactly those — so `docker run`
@@ -212,6 +232,11 @@ RUN if getent passwd 1000 >/dev/null; then userdel --remove "$(getent passwd 100
 # this the cache landed in /root or /home/facet depending on the environment's
 # inherited $HOME — and the bind mounts only catch one of them.
 ENV HOME=/home/facet
+
+# Licensing mode for the whole image. "default" is the no-override value; the
+# config layer reads FACET_LICENSING_MODE and, when it is "commercial", forces
+# licensing.mode regardless of the mounted scoring_config.json.
+ENV FACET_LICENSING_MODE=${FACET_LICENSING}
 
 EXPOSE 5000
 

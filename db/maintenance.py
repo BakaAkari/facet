@@ -718,8 +718,15 @@ def _incremental_update_viewer_db(source_db, output_path, thumbnail_size, verbos
 
     # --- Sync persons (full replace — small table) ---
     if 'persons' in dest_tables and 'persons' in src_tables:
+        # Named columns: a fresh and an upgraded database order them differently.
+        dest_person_cols = {r[1] for r in dest_conn.execute("PRAGMA main.table_info(persons)").fetchall()}
+        person_cols = [r[1] for r in dest_conn.execute("PRAGMA src.table_info(persons)").fetchall()
+                       if r[1] in dest_person_cols]
         dest_conn.execute("DELETE FROM main.persons")
-        dest_conn.execute("INSERT INTO main.persons SELECT * FROM src.persons")
+        if person_cols:
+            col_list = ', '.join(person_cols)
+            dest_conn.execute(
+                f"INSERT INTO main.persons ({col_list}) SELECT {col_list} FROM src.persons")
         dest_conn.commit()
         if verbose:
             count = dest_conn.execute("SELECT COUNT(*) FROM main.persons").fetchone()[0]

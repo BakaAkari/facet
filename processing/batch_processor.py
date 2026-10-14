@@ -19,6 +19,8 @@ from tqdm import tqdm
 
 from analyzers import CompositionAnalyzer, ImageCache
 from db.scoring_overrides import get_photo_scoring_overrides
+import licensing
+from db.person_centroids import flush_centroids_safely
 from processing.scorer import build_scoring_metrics
 from utils import (
     load_image_from_path, get_tag_params, detect_silhouette,
@@ -290,6 +292,7 @@ class BatchProcessor:
             # Use shared batch method for aesthetic/quality scoring
             aesthetic_results = self.scorer.get_aesthetic_and_quality_batch(pil_images, clip_inputs)
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.exception("Batch inference failed for %d images", len(batch))
             for item in batch:
                 self.result_queue.put({'path': item['path'], 'error': f'batch inference failed: {e}'})
@@ -409,6 +412,7 @@ class BatchProcessor:
                     shutter_speed=exif_data.get('shutter_speed'),
                     quality_score=quality_score,
                     scoring_model=scoring_model,
+                    face_quality_iqa=face_res.get('face_quality_iqa'),
                     scoring_context=photo_override.get('scoring_context'),
                     category_override=photo_override.get('category_override'),
                 )
@@ -473,7 +477,7 @@ class BatchProcessor:
                     'composition_pattern': composition_pattern,
                     'topiq_score': None,
                     'aesthetic_iaa': None,
-                    'face_quality_iqa': None,
+                    'face_quality_iqa': face_res.get('face_quality_iqa'),
                     'liqe_score': None,
                     'subject_sharpness': None,
                     'subject_prominence': None,
@@ -487,6 +491,7 @@ class BatchProcessor:
                 self.result_queue.put({'result': res, 'pil_img': pil_img})
 
             except Exception as e:
+                licensing.reraise_if_refused()
                 self.result_queue.put({'path': item['path'], 'error': str(e)})
 
     def process_files(self, photo_paths, show_metrics=True):
@@ -501,6 +506,10 @@ class BatchProcessor:
         total = len(photo_paths)
         if total == 0:
             return
+
+        # Build every lazily-created model once, before any worker or GPU work, so
+        # a startup refusal stops the scan instead of failing every photo.
+        self.scorer.preflight_models()
 
         # Track start time for metrics
         start_time = time.time()
@@ -600,6 +609,8 @@ class BatchProcessor:
                 w.join()
             self.resource_monitor.stop()
             self._stop_exif_prefetch()
+            # After the joins: the GPU thread is the only saver, and it is done.
+            flush_centroids_safely(self.scorer)
 
         self.scorer.commit()
 
@@ -628,6 +639,8 @@ class BatchProcessor:
         """
         if total_count == 0:
             return None
+
+        self.scorer.preflight_models()
 
         # Convert to list for calibration split
         all_paths = list(path_iterator)
@@ -756,6 +769,8 @@ class BatchProcessor:
                 w.join()
             self.resource_monitor.stop()
             self._stop_exif_prefetch()
+            # After the joins: the GPU thread is the only saver, and it is done.
+            flush_centroids_safely(self.scorer)
 
         self.scorer.commit()
         return None

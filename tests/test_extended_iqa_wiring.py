@@ -49,10 +49,12 @@ def _proc(ext):
 
 def test_column_map_routes_extended_to_dedicated_columns():
     cm = ChunkedMultiPassProcessor.PYIQA_COLUMN_MAP
-    assert cm["qrealign"] == "qrealign_score"
+    # Q-ReAlign is native (own pass handler writing qrealign_score), not a pyiqa model.
+    assert "qrealign" not in cm
+    assert "qrealign" not in ChunkedMultiPassProcessor.PYIQA_MODELS
     assert cm["aesthetic_v25"] == "aesthetic_v25"
     assert cm["deqa"] == "deqa_score"
-    assert {"qrealign", "aesthetic_v25", "deqa"} <= set(ChunkedMultiPassProcessor.PYIQA_MODELS)
+    assert {"aesthetic_v25", "deqa"} <= set(ChunkedMultiPassProcessor.PYIQA_MODELS)
 
 
 def test_select_models_gates_extended_on_config():
@@ -183,21 +185,21 @@ def test_qrealign_spec_pins_the_validated_aesthetic_head():
     """The A/B that chose Q-ReAlign scored task_='aesthetic'; pyiqa's default is
     'quality'. The spec must pin the validated head or the shipped column is a
     different (ceiling-compressed) distribution than the one that was measured."""
-    import pytest
+    import inspect
+    from models.qrealign_native import QReAlignNativeScorer
 
-    pytest.importorskip("torch", reason="models.pyiqa_scorer imports torch")
-    from models.pyiqa_scorer import PYIQA_MODELS
-
-    assert PYIQA_MODELS['qrealign']['task'] == 'aesthetic'
+    # The native scorer's default task is the validated aesthetic head, and the
+    # multi-pass column handler asks for 'aesthetic' explicitly.
+    assert inspect.signature(QReAlignNativeScorer.score).parameters['task'].default == 'aesthetic'
     # scripts/qrealign_ab.py is the record of what was validated.
     import re
     from pathlib import Path
     ab = Path(__file__).resolve().parent.parent / "scripts" / "qrealign_ab.py"
     m = re.search(r'^SCORE_TASK\s*=\s*"([^"]+)"', ab.read_text(encoding="utf-8"), re.M)
-    assert m and m.group(1) == PYIQA_MODELS['qrealign']['task']
+    assert m and m.group(1) == 'aesthetic'
 
 
-def test_spec_task_is_forwarded_as_a_per_call_kwarg():
+def test_spec_task_is_forwarded_as_a_per_call_kwarg(monkeypatch):
     """CONTRACT: pyiqa's InferenceModel.forward passes **kwargs to the net, so
     the task head is only selectable per call — setting it on .net does nothing.
     Every inference entry point (score_image AND score_batch) must forward it."""
@@ -205,7 +207,13 @@ def test_spec_task_is_forwarded_as_a_per_call_kwarg():
 
     pytest.importorskip("torch", reason="models.pyiqa_scorer imports torch")
     from PIL import Image
+    from models import pyiqa_scorer
     from models.pyiqa_scorer import PyIQAScorer
+
+    # No shipped spec carries a task head any more; the machinery stays, so
+    # exercise it with a spec that does.
+    monkeypatch.setitem(pyiqa_scorer.PYIQA_MODELS, 'task_demo',
+                        {**pyiqa_scorer.PYIQA_MODELS['topiq'], 'task': 'aesthetic'})
 
     class _KwargCapturingModel:
         def __init__(self):
@@ -223,7 +231,7 @@ def test_spec_task_is_forwarded_as_a_per_call_kwarg():
 
     img = Image.new("RGB", (32, 32), (128, 128, 128))
 
-    qr = _scorer('qrealign')
+    qr = _scorer('task_demo')
     qr.score_image(img)
     qr.score_batch([img, img])
     assert qr.model.kwargs == [{'task_': 'aesthetic'}] * 3
@@ -250,3 +258,40 @@ def test_photos_schema_has_extended_iqa_columns(tmp_path):
     assert {"aesthetic_v25", "qrealign_score", "deqa_score"} <= cols
     # Q-Align was replaced by Q-ReAlign: a fresh DB must not carry its column.
     assert "qalign_score" not in cols
+
+
+def test_qrealign_sizes_match_the_schema_and_each_has_a_budget():
+    """A size must be configurable (schema) AND budgeted (ModelManager) AND loadable (MODELS).
+
+    The stale 'pro' entry was loadable but neither configurable nor budgeted: a 9B model
+    that would have been planned as the 0.8B Mini.
+    """
+    import json
+    from pathlib import Path
+
+    from models.model_manager import ModelManager
+    from models.qrealign_native import MODELS
+
+    schema = json.loads((Path(__file__).resolve().parent.parent / "config"
+                         / "scoring_config.schema.json").read_text(encoding="utf-8"))
+
+    def find(node):
+        if isinstance(node, dict):
+            if "qrealign_size" in node:
+                return node["qrealign_size"]
+            for value in node.values():
+                hit = find(value)
+                if hit is not None:
+                    return hit
+        elif isinstance(node, list):
+            for value in node:
+                hit = find(value)
+                if hit is not None:
+                    return hit
+        return None
+
+    assert set(MODELS) == set(find(schema)["enum"])
+    # mini uses the table entry, every other size needs its own budget constant.
+    assert {s for s in MODELS if s != "mini"} == {"lite"}
+    assert ModelManager.QREALIGN_LITE_VRAM_GB > ModelManager.MODEL_VRAM_REQUIREMENTS["qrealign"]
+    assert ModelManager.QREALIGN_LITE_RAM_GB > ModelManager.MODEL_RAM_REQUIREMENTS["qrealign"]

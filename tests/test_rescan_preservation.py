@@ -61,6 +61,7 @@ def scored_db(tmp_path):
     db = str(tmp_path / "rescan.db")
     init_database(db)
     facet = Facet.__new__(Facet)  # bypass heavy __init__; we only need db_path
+    facet._pending_centroid_persons = set()
     facet.db_path = db
     facet.config = SimpleNamespace(version_hash='v1')
     # First scan: one photo.

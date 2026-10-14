@@ -25,7 +25,7 @@ from api.db_helpers import (
     is_access_controlled_install, resolve_hide_defaults,
 )
 from api.models.albums import AlbumPhotosResponse, SharedAlbumResponse
-from api.types import VALID_SORT_COLS, SORT_OPTIONS_GROUPED, normalize_params
+from api.types import VALID_SORT_COLS, available_sort_options, normalize_params
 
 router = APIRouter(tags=["albums"])
 logger = logging.getLogger(__name__)
@@ -1215,8 +1215,9 @@ async def get_shared_album(
         result['proofing_enabled'] = (
             bool(VIEWER_CONFIG.get('features', {}).get('show_proofing', False)) and is_manual
         )
-        if SORT_OPTIONS_GROUPED:
-            result['sort_options_grouped'] = SORT_OPTIONS_GROUPED
+        _, sort_options_grouped = available_sort_options()
+        if sort_options_grouped:
+            result['sort_options_grouped'] = sort_options_grouped
 
         # Include filter options for manual albums (first page only to avoid repeated work)
         if is_manual and page == 1:

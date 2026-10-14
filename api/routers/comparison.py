@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, create_model, field_validator
 
 from api.auth import CurrentUser, get_optional_user, require_edition
 from api.config import (
+    child_process_env,
     VIEWER_CONFIG, _CONFIG_PATH, FACET_SCRIPT,
     get_comparison_mode_settings,
     reload_config, invalidate_stats_cache, server_scoring_config,
@@ -396,6 +397,7 @@ async def api_recalculate(
             sys.executable, FACET_SCRIPT, '--recompute-average', '--config', config_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_process_env(),
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=300)
@@ -471,6 +473,7 @@ async def api_update_weights(
                     '--config', config_path,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=child_process_env(),
                 )
                 try:
                     stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=300)

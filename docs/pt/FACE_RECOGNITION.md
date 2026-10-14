@@ -80,7 +80,7 @@ Consulte [Integração com o visualizador](#integração-com-o-visualizador) par
 | Configuração | Padrão | Descrição |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Confiança mínima de detecção |
-| `min_face_size` | `20` | Tamanho mínimo do rosto em pixels |
+| `min_face_size` | `20` | Tamanho mínimo do rosto em pixels — Apenas InsightFace: o detetor YuNet do modo comercial usa valores fixos medidos (confiança 0,7, 30 px) e ignora `min_confidence_percent` e esta definição. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio para detecção de piscadas |
 
 ### Agrupamento de rostos
@@ -91,11 +91,13 @@ Consulte [Integração com o visualizador](#integração-com-o-visualizador) par
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -104,7 +106,7 @@ Consulte [Integração com o visualizador](#integração-com-o-visualizador) par
 |---------|---------|-------------|
 | `min_faces_per_person` | `2` | Número mínimo de fotos para criar uma pessoa |
 | `min_samples` | `2` | Parâmetro min_samples do HDBSCAN |
-| `merge_threshold` | `0.6` | Similaridade de centroide para associação |
+| `thresholds_by_model` | ver JSON | Por modelo de reconhecimento: `auto_merge_distance_percent` (distância de fusão automática) e `merge_threshold` (semelhança de centroides). Valores padrão: ArcFace `15` / `0.6`, SFace `27.5` / `0.65` |
 | `use_gpu` | `"auto"` | Modo de GPU: `auto`, `always`, `never` |
 
 ### Processamento de rostos
@@ -192,7 +194,7 @@ O agrupamento em CPU com um `algorithm` fixo é determinístico para a mesma ent
 
 Todos os modos exceto `--cluster-faces-force` preservam os registos de pessoas, mas todos limpam as atribuições rosto→pessoa e reconstroem-nas. Um grupo reconstruído é devolvido a uma pessoa quando:
 
-1. o seu embedding médio está dentro de `merge_threshold` (0,6 de cosseno por omissão) do centroide armazenado dessa pessoa, **ou**
+1. o seu embedding médio está dentro de `merge_threshold` (0,6 de cosseno por omissão para ArcFace, 0,65 para SFace) do centroide armazenado dessa pessoa, **ou**
 2. pelo menos metade dos seus rostos pertencia a essa pessoa antes da execução.
 
 A segunda regra pesa mais do que parece. O centroide de uma pessoa é um único vetor médio: quem foi fotografado ao longo de anos cobre uma região ampla, e o HDBSCAN divide-o corretamente em subgrupos compactos que ficam longe dessa média e falham a regra 1. Na biblioteca acima, a regra 1 sozinha devolvia 38% dos rostos ligados a pessoas nomeadas; com a regra 2 chega-se a 96%.
@@ -226,6 +228,10 @@ python facet.py --recompute-blinks
 ```
 
 Processa apenas fotos com rostos, sem necessidade de GPU.
+
+## Qualidade facial OFIQ opcional (modo comercial)
+
+No modo comercial o modelo restrito de qualidade facial não está disponível. Como substituto opcional, instale o `python-ofiq` (bindings da UNICEF sobre o OFIQ do BSI, ISO/IEC 29794-5; MIT; convive com numpy 2 e OpenCV 4.8+) com `pip install python-ofiq`. Só há wheels para Linux x86-64 e macOS arm64 (no Windows: WSL2 ou Docker). Os modelos OFIQ (cerca de 400 MB, MIT/Apache-2.0) nunca são incluídos: no primeiro uso o Facet os baixa, com SHA-256 fixado, para `pretrained_models/ofiq/`. O pipeline facial comercial divide por 10 a pontuação unificada do OFIQ (0-100) e guarda-a em `face_quality_iqa`; o valor de uma foto é 0,7 x o seu pior rosto + 0,3 x a média. Sem `python-ofiq`, a coluna fica NULL e o seu peso é renormalizado.
 
 ## Sinais de expressão por rosto (olhos abertos + sorriso)
 
@@ -275,7 +281,8 @@ pontuações geométricas.
   "face_detection": {
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -286,6 +293,7 @@ pontuações geométricas.
   Defina como `false` para forçar apenas geometria.
 - `min_crop_size` (padrão `192`): rostos cujo recorte com margem seja menor que este valor (px,
   lado mais curto) recorrem à geometria em vez de ampliar um rosto minúsculo.
+- `blink_pose_gate_deg` (padrão `null` = desativado): apenas o analisador MediaPipe do modo comercial. Um rosto cujo |yaw| ou |pitch| (graus, a partir da matriz de transformação do Face Landmarker) ultrapasse este valor não recebe veredito de piscadela nem pontuação de olhos abertos / sorriso (NULL = desconhecido), porque uma cabeça virada parece ter os olhos fechados. Desativado por padrão: numa metade reservada de uma biblioteca real, nenhum limite entre 20° e 45° melhorou a detecção de piscadas (cada um perdia mais piscadas reais do que falsas), então nenhum é fornecido; defina-o apenas se a sua biblioteca tiver muitos rostos bastante virados; aplica-se a fotos recém-escaneadas e os valores `is_blink` existentes só mudam ao reescanear. Deve ser um número positivo de graus: 0 ou um valor negativo é rejeitado na inicialização; `null` = desativado.
 
 ### Recálculo
 
@@ -444,7 +452,7 @@ em **espaços vetoriais incompatíveis** e nunca devem ser agrupados juntos — 
 produz silenciosamente pessoas inválidas sem gerar erro algum.
 
 Por isso, `FaceClusterer.load_embeddings()` carrega apenas o espaço de embedding **ativo**
-(`ACTIVE_EMBEDDING_MODEL` em `faces/clusterer.py`; uma tag `NULL` é tratada
+(`active_embedding_model()` em `db/embedding_space.py`; uma tag `NULL` é tratada
 como o espaço ArcFace legado) e registra um aviso explícito se houver rostos de qualquer outro
 espaço presentes e excluídos. Esta é uma salvaguarda de compatibilidade futura: ela torna uma
 futura troca de modelo de reconhecimento segura por construção.
@@ -463,13 +471,20 @@ validado sem dados reais. Fazê-lo corretamente exige:
    `face` do InsightFace, mas não são persistidos, então o AdaFace não pode ser preenchido offline —
    ele deve ser executado durante a extração). Verifique se BGR/normalização correspondem ao checkpoint.
 3. **Chave de configuração** — adicionar `face_detection.recognition_model: arcface|adaface`
-   e resolver `ACTIVE_EMBEDDING_MODEL` a partir dela; marcar os novos rostos conforme apropriado.
+   e resolver `active_embedding_model()` a partir dela; marcar os novos rostos conforme apropriado.
 4. **Reextração + reagrupamento completos** — `--extract-faces-gpu-force` e depois
    `--cluster-faces-force`, porque os embeddings do ArcFace e do AdaFace não são
    comparáveis. O marcador de espaço de embedding acima impede que um banco de dados parcialmente migrado
    agrupe silenciosamente os dois espaços juntos (ele avisa e exclui, em vez disso).
 5. **Validação de qualidade** — medir a qualidade dos clusters em relação a identidades rotuladas;
    "executa e emite vetores de 512 dimensões" não prova que o pré-processamento está correto.
+
+### Bibliotecas mistas, reextração e valores desconhecidos
+
+- **Bibliotecas mistas.** Uma biblioteca pode conter rostos ArcFace (512-d) e SFace (128-d) ao mesmo tempo. O agrupador, as sugestões de fusão, a pesquisa de pessoa semelhante e os centroides de pessoas usam cada um apenas um modelo (`persons.centroid_model` regista qual); os modos de agrupamento incremental e «só pessoas com nome» não tocam nos rostos nem nas pessoas do outro modelo, mas `--cluster-faces-force` limpa todas as atribuições rosto→pessoa e apaga todas as pessoas, incluindo as com nome, seja qual for o seu modelo. Para passar uma biblioteca ao modelo ativo, execute `--extract-faces-gpu-force` (no modo comercial usa o extrator permissivo; as pessoas com nome são preservadas) e depois `--cluster-faces-incremental`.
+- **Avisos.** Uma varredura regista um aviso quando há rostos guardados de um modelo diferente do ativo, e `--doctor` indica a mesma discrepância face ao modelo ativo. No modo comercial, `--doctor` lista os componentes que uma varredura realmente carregaria (YuNet, SFace, Q-ReAlign, mais OFIQ quando `python-ofiq` está instalado), e não os que o perfil de VRAM apenas nomeia; assim, TOPIQ, LIQE e InsightFace deixam de aparecer como avisos.
+- **As pessoas com nome sobrevivem à reextração.** Antes de `--extract-faces-gpu-force` apagar as linhas de rostos, o Facet memoriza a caixa de cada rosto de uma pessoa com nome; depois, cada rosto redetetado volta à pessoa cuja caixa antiga o sobrepõe com IoU >= 0,5 (um para um, maior sobreposição primeiro) e os centroides são recalculados por modelo. Um rosto sem caixa antiga correspondente fica por atribuir até ao próximo agrupamento. As caixas memorizadas ficam na tabela `face_reextract_snapshot`, na mesma transação que a eliminação, pelo que uma execução interrompida é retomada pela extração seguinte. Reescanear uma foto preserva as suas pessoas com nome da mesma forma. Os centroides de pessoas que uma nova varredura deixou desatualizados são reconstruídos uma única vez no fim da varredura (mesmo que seja interrompida), e não uma vez por lote; as contagens e os rostos representativos continuam a ser atualizados por lote.
+- **Desconhecido não é zero.** Sem MediaPipe o analisador permissivo não consegue medir olhos, sorriso nem piscar de olhos; esses valores são guardados como NULL (não 0 nem «a piscar»). O filtro e a penalização de piscar tratam NULL como «não é um piscar». Os leitores dos 106 pontos de referência ignoram os rostos sem pontos. Uma foto cuja passagem de rostos falha é guardada com `face_count`, `face_ratio` e `is_group_portrait` a NULL (desconhecido), e não a 0, e os seus rostos guardados são mantidos; a pontuação trata-a como sem rostos até ser novamente varrida.
 
 ## Solução de problemas
 
@@ -481,4 +496,4 @@ validado sem dados reais. Fazê-lo corretamente exige:
 | O agrupamento em GPU falha | Verifique a instalação do cuML; use `"never"` para forçar a CPU |
 | Miniaturas ausentes | Execute `--refill-face-thumbnails-incremental` |
 | Detecção de piscada incorreta | Ajuste `blink_ear_threshold` e execute `--recompute-blinks` |
-| Aviso "Excluded N faces from non-active embedding space" | Uma mudança de modelo de reconhecimento deixou embeddings misturados — execute `--extract-faces-gpu-force` e depois `--cluster-faces-force` |
+| Aviso "Excluded N faces from non-active embedding space" | Uma mudança de modelo de reconhecimento deixou embeddings misturados — execute `--extract-faces-gpu-force` e depois `--cluster-faces-incremental` |

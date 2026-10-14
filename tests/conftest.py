@@ -52,6 +52,20 @@ from db.schema import init_database  # noqa: E402
 init_database(_TEST_DB_FILE.name)
 
 
+@pytest.fixture(autouse=True)
+def _reset_licensing_policy():
+    """Licensing policy is process-global state: never let one test's mode leak.
+
+    Pinned to default rather than reset, so a test never lazily resolves the
+    operator's own repo-root scoring_config.json. A test of lazy resolution
+    calls ``licensing.reset_policy()`` itself.
+    """
+    import licensing
+    licensing.set_policy(licensing.MODE_DEFAULT)
+    yield
+    licensing.reset_policy()
+
+
 # ---------------------------------------------------------------------------
 # Minimal config constants — enough to satisfy most API code paths.
 # ---------------------------------------------------------------------------
@@ -98,7 +112,7 @@ MINIMAL_SCORING_CONFIG: dict = {
     "viewer": MINIMAL_VIEWER_CONFIG,
     "burst_detection": {"similarity_threshold_percent": 70, "time_window_minutes": 0.8},
     "face_detection": {"min_confidence_percent": 65, "blink_ear_threshold": 0.28},
-    "face_clustering": {"min_faces_per_person": 2, "min_samples": 2, "merge_threshold": 0.6},
+    "face_clustering": {"min_faces_per_person": 2, "min_samples": 2, "thresholds_by_model": {"arcface_buffalo_l": {"auto_merge_distance_percent": 15, "merge_threshold": 0.6}, "sface": {"auto_merge_distance_percent": 27.5, "merge_threshold": 0.65}}},
 }
 
 

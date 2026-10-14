@@ -6,7 +6,7 @@ import { MatSliderModule } from '@angular/material/slider';
 import { TranslatePipe } from '../../shared/pipes/translate.pipe';
 import * as L from 'leaflet';
 import { createLeafletMap } from '../../shared/leaflet';
-import { I18N_KEYS } from '../../core/i18n/keys';
+import { i18nKeys } from '../../core/i18n/keys';
 
 export interface GpsFilterData {
   lat?: number;
@@ -41,7 +41,7 @@ export interface GpsFilterData {
   `,
 })
 export class GpsFilterMapDialogComponent implements OnInit {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly dialogRef = inject(MatDialogRef<GpsFilterMapDialogComponent>);
   private readonly destroyRef = inject(DestroyRef);
   readonly data: GpsFilterData = inject(MAT_DIALOG_DATA) ?? {};

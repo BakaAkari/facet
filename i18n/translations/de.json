@@ -1297,6 +1297,7 @@
   },
   "comparison": {
     "title": "Gewichtungsoptimierung",
+    "unavailable_commercial": "Im kommerziellen Modus nicht verfügbar (diese Metrik wird beim Bewerten übersprungen; das Gewicht bleibt erhalten).",
     "category": "Kategorie",
     "weights": "Gewichte",
     "weight_sliders": "Gewichtungsregler",

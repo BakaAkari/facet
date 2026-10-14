@@ -8,7 +8,7 @@ import { TranslatePipe } from '../../shared/pipes/translate.pipe';
 import { ThumbnailUrlPipe } from '../../shared/pipes/thumbnail-url.pipe';
 import { TimelineFiltersService } from './timeline-filters.service';
 import { GalleryStore, type ViewFilterParams } from '../gallery/gallery.store';
-import { I18N_KEYS } from '../../core/i18n/keys';
+import { i18nKeys } from '../../core/i18n/keys';
 
 interface YearSummary {
   year: string;
@@ -65,7 +65,7 @@ interface YearSummary {
   `,
 })
 export class TimelineYearsComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   private readonly api = inject(ApiService);
   private readonly filters = inject(TimelineFiltersService);
   private readonly store = inject(GalleryStore);

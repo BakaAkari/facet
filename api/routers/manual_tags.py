@@ -146,7 +146,7 @@ def api_batch_manual_tags(
             else:
                 excluded = set(body.exclude or ())
                 paths = _writable_photo_paths(
-                    conn, user, [p for p in body.photo_paths if p not in excluded]
+                    conn, user, [p for p in body.photo_paths or () if p not in excluded]
                 )
                 if not paths:
                     return {"success": True, "count": 0}

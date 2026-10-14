@@ -19,7 +19,7 @@ import { LoupeDirective } from '../../shared/directives/loupe.directive';
 import { createLoupeState } from '../../shared/utils/loupe-state';
 import { ConfirmDialogComponent } from '../../shared/components/confirm-dialog/confirm-dialog.component';
 import { JunkKindLabelPipe, JunkKindIconPipe } from './junk-sweep.pipes';
-import { I18N, I18N_KEYS } from '../../core/i18n/keys';
+import { I18N, i18nKeys } from '../../core/i18n/keys';
 import { chunkPhotoPaths, type PhotosResponse } from '../gallery/gallery.store';
 import { normalisePhotoFlagsAll, type Photo } from '../../shared/models/photo.model';
 
@@ -147,7 +147,7 @@ const ANY_KIND = 'any';
   `,
 })
 export class JunkSweepComponent implements OnInit, OnDestroy {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   protected readonly ANY_KIND = ANY_KIND;
   private readonly api = inject(ApiService);
   private readonly snack = inject(MatSnackBar);

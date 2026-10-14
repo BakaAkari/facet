@@ -4,6 +4,52 @@ All notable changes to Facet are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Commercial-use mode (#185).** Setting `licensing.mode` to `"commercial"` in your `scoring_config.json` override, or `FACET_LICENSING_MODE=commercial` in the environment, makes Facet refuse every component whose licence is not commercial-safe: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) and InsightFace are never imported, queued or downloaded. SAMP-Net, U2-Net-P and the LAION CLIP-MLP aesthetic head have an unclear licence and are excluded too unless `licensing.allow_unclear` is `true`. Each slot is routed to a permissive replacement: native Q-ReAlign for aesthetic and quality, the rule-based analyser for composition, and YuNet + SFace + MediaPipe for faces, with OFIQ as an optional face-quality scorer. The environment variable can only tighten (`default` or empty means no override; any other value is an error that stops startup), and the viewer passes it, plus `FACET_LICENSING_ALLOW_UNCLEAR=0` when its own policy forbids the unclear components, to every `facet.py` process it spawns. `licensing.allow_unclear` must be a JSON boolean: a string such as `"false"` is rejected at startup instead of being read as true. A refused component raises a `LicenceError` naming the component and its replacement, so a scan stops at startup instead of failing photo by photo. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#licensing).
+
+- **A component licence registry and [docs/THIRD_PARTY_MODELS.md](docs/THIRD_PARTY_MODELS.md).** `licensing.py` lists every model and package with its code and weights licence and whether commercial use is allowed; the documentation table is generated from it. The page also carries the disclaimer: a weights licence is not the licence of the training data (AVA, KonIQ, VGGFace2, MS1MV2 and 300-W have not been verified), and nothing there is legal advice. `python facet.py --doctor` gains a licence section showing the active mode, the commercial status of each component in use, and the face-model drift check against the active recognition model.
+
+- **Native Q-ReAlign, with no `pyiqa` needed.** Q-ReAlign now loads through `transformers` and matched the pyiqa wrapper exactly on CPU (maximum absolute difference 0.0). In commercial mode it is the primary aesthetic and quality model; `iqa_extended.qrealign_size` (`mini` by default, or `lite`) picks the size. The unreachable `pro` size was removed.
+
+- **Unavailable metrics are renormalised away.** When a metric cannot be computed (LIQE and `aesthetic_iaa` in commercial mode, face quality without OFIQ), its weight is dropped and the remaining weights are rescaled, so aggregate scores stay on the same scale. Stored values are left NULL, never written as 0.
+
+- **The viewer hides metrics an install cannot produce.** `/api/config` lists them in `unavailable_metrics`; their range filters, filter chips and sort options disappear, and their sliders on the Weight Tuning page stay visible but disabled with a tooltip (the weights are kept). See [docs/VIEWER.md](docs/VIEWER.md).
+
+- **Per-model face embeddings.** Faces record which recognition model produced them (ArcFace 512-d or SFace 128-d); clustering, merge suggestions, the similar-person search and person centroids each work in one model's space at a time (`persons.centroid_model`), and a scan warns when stored faces belong to another model. See [docs/FACE_RECOGNITION.md](docs/FACE_RECOGNITION.md).
+
+- **Optional head-pose gate for permissive blink.** `face_detection.blendshapes.blink_pose_gate_deg` (off by default, `null`) leaves blink unknown for faces turned further than that many degrees. It stays off by default: on a held-out half of a real library, no cutoff between 20° and 45° improved blink detection (each one lost more true blinks than false ones), so the pre-registered rule shipped no gate. A value of `0` or below is rejected at startup.
+
+- **Named persons survive a rescan and a face re-extraction.** A rescan, and `--extract-faces-gpu-force`, re-attach each re-detected face to the named person whose old box overlaps it by IoU >= 0.5 (one-to-one, best overlap first). For `--extract-faces-gpu-force` the remembered boxes are stored in a `face_reextract_snapshot` table in the same transaction as the delete, so an interrupted run is replayed by the next one. `--cluster-faces-force` still deletes every person.
+
+- **`--evaluate-models SLOT`.** Ranks candidate models against the pairwise picks in your `comparisons` table, read-only. The slots `faces-detect`, `faces-recognize`, `faces-centroid` and `blink` instead measure agreement with the stored InsightFace results on a seeded sample, so they apply to default-mode libraries only. See [docs/COMMANDS.md](docs/COMMANDS.md).
+
+- **`--doctor` lists what routing loads in commercial mode.** It shows the components a scan would actually load (YuNet, SFace, Q-ReAlign, plus OFIQ when `python-ofiq` is installed) instead of those the VRAM profile merely names, so TOPIQ, LIQE and InsightFace no longer appear as warnings.
+
+- **`--evaluate-models blink` and `faces-centroid` report held-out numbers.** Thresholds are selected on one seeded half of the sample, and metrics and the bootstrap confidence interval are reported on the other half. The selection-biased full-sample numbers are kept and labelled as such.
+
+- **Packaging extras.** `faces-insightface` (insightface, onnxruntime), `iqa` (pyiqa, setuptools<81), `commercial` (mediapipe's runtime dependencies; install `mediapipe==0.10.35` with `--no-deps`) and `all`. `bash install.sh --commercial` performs a commercial-safe install; `python-ofiq` is installed by hand where a wheel exists (Linux x86-64, macOS arm64).
+
+### Changed
+
+- **BREAKING: the base install no longer includes `insightface` or `pyiqa`.** `pip install -e .` and `pip install -r requirements.txt` on their own no longer provide the default face and TOPIQ models. To keep the previous behaviour, install `pip install -e .[all]` (or the `faces-insightface` and `iqa` extras, or `pip install -r requirements.txt -r requirements.restricted.txt`). `install.sh` and the default Docker image install both, so they behave as before. Docker gains `ARG FACET_LICENSING` (`default` or `commercial`): `docker build --build-arg FACET_LICENSING=commercial .` skips the restricted lock and bakes `FACET_LICENSING_MODE=commercial` into the image. See [docs/INSTALLATION.md](docs/INSTALLATION.md#commercial-install-and-the-restricted-packages).
+
+- **BREAKING: the flat face-clustering thresholds moved under `face_clustering.thresholds_by_model`.** `face_clustering.merge_threshold` and `face_clustering.auto_merge_distance_percent` are now set per recognition model (`arcface_buffalo_l`, `sface`). The old flat keys are no longer read: they are ignored with a warning, with no alias. Defaults: ArcFace `0.6` / `15` (unchanged), SFace `0.65` / `27.5`.
+
+- **Measured defaults for the permissive face pipeline.** YuNet minimum confidence `0.7`, blink threshold `0.55` on MediaPipe's `eyeBlink` activation, SFace `merge_threshold` `0.65` and `auto_merge_distance_percent` `27.5`, measured on a real library against the stored InsightFace results.
+
+- **`licensing.reraise_if_refused()` replaces the 28 hand-placed `except LicenceError: raise` guards.** It also catches a refusal wrapped by `raise ... from LicenceError`, and the swallower test now scans the whole tree.
+
+- **Weight downloads time out.** `download_weights` now gives up after 60 s per socket operation instead of hanging, and the U2-Net-P fetch goes through it. A download that ends short of its declared `Content-Length` now fails and leaves nothing behind, even when no checksum is pinned.
+
+- **A failed face pass stores NULL, not 0.** A photo whose face pass fails keeps `face_count`, `face_ratio` and `is_group_portrait` as NULL (unknown) and its stored faces; scoring treats it as having no face until it is rescanned.
+
+- **Person centroids are rebuilt once per scan.** Stale centroids left by a rescan are rebuilt when the scan ends (even if interrupted) instead of once per batch; counts and representative faces still update per batch.
+
+- **Viewer.** The merge-suggestions threshold slider shows immediately, seeded from the new `/api/config` field `face_merge_threshold`, and face markers use the stored `eyes_open_score` (fixes SFace faces that have no 106-point landmarks).
+
+- **`npm run gen:api` works on Windows.** The generator and `npx` now run through node.
+
 ## [1.19.0] "Chambre noire" — 2026-10-05
 
 ### Added

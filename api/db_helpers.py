@@ -25,6 +25,7 @@ from api.config import (
 from api.database import get_db_connection
 from comparison.comparison_manager import record_culling_pairs
 from db import DEFAULT_DB_PATH
+from db.person_centroids import recompute_person_centroid
 from db.manual_tags import TAG_SEPARATOR, normalize_manual_tag, ManualTagError
 from utils.detection import DEFAULT_PHOTO_THUMBNAIL_SIZE
 from utils.panorama import KINDS as PANORAMA_KINDS
@@ -553,7 +554,7 @@ def is_photo_tags_available(conn=None):
 # init_database (or a CLI upgrade) can create it while the server is up. Table
 # existence is the whole check -- no row count -- so a manual-only library and a
 # first-ever write are both seen at once.
-_manual_tags_present = set()
+_manual_tags_present: set[str] = set()
 
 
 def is_manual_tags_available(conn=None):
@@ -921,41 +922,6 @@ def repair_stale_representative(conn, person_id):
             "UPDATE persons SET representative_face_id = NULL, face_thumbnail = NULL WHERE id = ?",
             (person_id,)
         )
-
-
-def recompute_person_centroid(conn, person_id):
-    """Recompute ``person_id``'s centroid from the mean of its faces' embeddings.
-
-    API-created persons (create / assign / split) and merge targets are stored
-    with a NULL centroid. Incremental re-clustering used to drop every person
-    with a NULL centroid from its preservation set, so on the next run
-    ``UPDATE faces SET person_id = NULL`` orphaned all their faces and the
-    cleanup then deleted the named person. Giving each touched person a real
-    centroid keeps them matchable.
-
-    Mirrors the clusterer's own centroid math: 512-dim float32 embeddings, each
-    L2-normalized, averaged, then renormalized. A person with no usable
-    embeddings has its centroid set to NULL (it is still preserved by the
-    history rule, never by centroid similarity).
-    """
-    import numpy as np
-    rows = conn.execute(
-        "SELECT embedding FROM faces WHERE person_id = ? AND embedding IS NOT NULL",
-        (person_id,),
-    ).fetchall()
-    embeddings = []
-    for row in rows:
-        emb = np.frombuffer(row[0], dtype=np.float32)
-        if len(emb) == 512:
-            embeddings.append(emb / (np.linalg.norm(emb) + 1e-10))
-    if not embeddings:
-        conn.execute("UPDATE persons SET centroid = NULL WHERE id = ?", (person_id,))
-        return
-    centroid = np.mean(embeddings, axis=0).astype(np.float32)
-    centroid = centroid / (np.linalg.norm(centroid) + 1e-10)
-    conn.execute(
-        "UPDATE persons SET centroid = ? WHERE id = ?", (centroid.tobytes(), person_id)
-    )
 
 
 def reassign_faces_to_person(conn, person_id, face_ids):

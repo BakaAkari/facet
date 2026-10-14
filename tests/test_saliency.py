@@ -57,7 +57,7 @@ def _seed(tmp_path, *, with_thumb=True, faces=None, width=100, height=200):
         "CREATE TABLE photos (path TEXT PRIMARY KEY, thumbnail BLOB, "
         "image_width INTEGER, image_height INTEGER);"
         "CREATE TABLE faces (photo_path TEXT, face_index INTEGER, "
-        "bbox_x1 REAL, bbox_y1 REAL, bbox_x2 REAL, bbox_y2 REAL, landmark_2d_106 BLOB);"
+        "bbox_x1 REAL, bbox_y1 REAL, bbox_x2 REAL, bbox_y2 REAL, landmark_2d_106 BLOB, eyes_open_score REAL);"
     )
     conn.execute(
         "INSERT INTO photos VALUES (?, ?, ?, ?)",
@@ -65,8 +65,9 @@ def _seed(tmp_path, *, with_thumb=True, faces=None, width=100, height=200):
     )
     for i, f in enumerate(faces or []):
         conn.execute(
-            "INSERT INTO faces VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("/a.jpg", i, f["bbox"][0], f["bbox"][1], f["bbox"][2], f["bbox"][3], f["lm"]),
+            "INSERT INTO faces VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("/a.jpg", i, f["bbox"][0], f["bbox"][1], f["bbox"][2], f["bbox"][3], f["lm"],
+             f.get("eyes_open")),
         )
     conn.commit()
     conn.close()
@@ -129,6 +130,23 @@ class TestFaceMarkers:
         assert len(faces[0]["eyes"]) == 2
         # all-equal landmarks -> eye centre at (10,10) normalised
         assert faces[0]["eyes"][0] == pytest.approx([0.1, 0.05])
+
+    def test_sface_face_uses_the_stored_score_without_landmarks(self, http, tmp_path):
+        db = _seed(tmp_path, faces=[{"bbox": [10, 20, 60, 120], "lm": None, "eyes_open": 2.0}])
+        with mock.patch(f"{_MODULE}.get_db", _db_cm(db)):
+            face = http.get("/api/photo/face_markers", params={"path": "/a.jpg"}).json()["faces"][0]
+        assert face["eyes_open_score"] == 2.0
+        assert face["is_blink"] is True
+        assert face["eyes"] == []
+
+    def test_arcface_face_prefers_the_stored_score_over_the_landmark_one(self, http, tmp_path):
+        lm = (np.ones((106, 2), dtype=np.float32) * 10.0).tobytes()
+        db = _seed(tmp_path, faces=[{"bbox": [10, 20, 60, 120], "lm": lm, "eyes_open": 8.0}])
+        with mock.patch(f"{_MODULE}.get_db", _db_cm(db)):
+            face = http.get("/api/photo/face_markers", params={"path": "/a.jpg"}).json()["faces"][0]
+        assert face["eyes_open_score"] == 8.0
+        assert face["is_blink"] is False
+        assert len(face["eyes"]) == 2  # eye points still come from the landmarks
 
     def test_unknown_photo_404(self, http, tmp_path):
         db = _seed(tmp_path)

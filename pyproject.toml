@@ -65,6 +65,8 @@ dependencies = [
     # rather than at startup.
     "aiosqlite>=0.20.0",
     "imagehash>=4.3.0",
+    # BiRefNet's remote code imports it; it was only arriving through pyiqa.
+    "einops>=0.6.0",
     "rawpy>=0.18.0",
     # Lightroom Classic 13+ merged DNGs (HDR/Panorama/Enhance) are DNG 1.7 with
     # every image, previews included, JPEG XL compressed: LibRaw rejects them
@@ -72,8 +74,6 @@ dependencies = [
     # preview through tifffile, which decodes JPEG XL tiles via imagecodecs.
     "tifffile>=2024.1.1",
     "imagecodecs>=2024.1.1",
-    "insightface>=0.7.0",
-    "pyiqa>=0.1.16",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
     "hdbscan>=0.8.40",
@@ -109,8 +109,9 @@ gpu-clustering = [
 ]
 iqa-extended = [
     # Optional extended-IQA tier (scoring_config.json "iqa_extended"). Only
-    # aesthetic_v25 needs a package of its own; Q-ReAlign ships with pyiqa and
-    # runs unquantised (~3GB), and DeQA-Score loads via transformers.
+    # aesthetic_v25 needs a package of its own; Q-ReAlign loads natively via
+    # transformers (no pyiqa needed) and runs unquantised (~3GB), as does
+    # DeQA-Score.
     "aesthetic-predictor-v2-5",
 ]
 ocr = [
@@ -140,8 +141,31 @@ dev = [
     # real interpreter (bundles Lua 5.4; production Lightroom runs Lua 5.1).
     "lupa",
 ]
+faces-insightface = [
+    # RESTRICTED: InsightFace buffalo_l weights are non-commercial. Excluded from
+    # a commercial install (licensing.mode = commercial). onnxruntime is needed
+    # only by insightface (YuNet/SFace run on cv2), so it travels with it; the
+    # GPU variant (onnxruntime-gpu) is installed by install.sh.
+    "insightface>=0.7.0",
+    "onnxruntime>=1.15.0",
+]
+iqa = [
+    # RESTRICTED: pyiqa model weights (TOPIQ, LIQE, ...) carry
+    # non-commercial terms. setuptools<81 is here, not in the base set, because
+    # pyiqa's PyPI openai-clip imports pkg_resources (removed in setuptools 81).
+    "pyiqa>=0.1.16",
+    "setuptools<81",
+]
+commercial = [
+    # Runtime deps of mediapipe, declared WITHOUT mediapipe itself: mediapipe must
+    # be installed with `pip install mediapipe==0.10.35 --no-deps`, because its
+    # bundled opencv-contrib-python would double-install the cv2 namespace.
+    # python-ofiq (import name ofiq) has wheels for Linux x86-64 / macOS arm64 only, so it is not declared here.
+    "absl-py",
+    "flatbuffers",
+]
 all = [
-    "facet-photo[vlm,saliency,watch,vec]",
+    "facet-photo[vlm,saliency,watch,vec,faces-insightface,iqa]",
 ]
 
 [project.urls]
@@ -189,7 +213,7 @@ ignore_missing_imports = true
 warn_unused_ignores = false
 
 [tool.setuptools]
-py-modules = ["facet", "cli_args", "viewer", "database", "tag_existing", "calibrate", "validate_db", "diagnostics", "config_resolve", "int_affinity"]
+py-modules = ["facet", "cli_args", "viewer", "database", "tag_existing", "calibrate", "validate_db", "diagnostics", "config_resolve", "int_affinity", "licensing"]
 
 [tool.setuptools.packages.find]
 include = [

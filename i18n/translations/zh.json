@@ -1297,6 +1297,7 @@
   },
   "comparison": {
     "title": "权重调整",
+    "unavailable_commercial": "商业模式下不可用（评分时会跳过该指标；权重仍会保留）。",
     "category": "类别",
     "weights": "权重",
     "weight_sliders": "权重滑块",

@@ -15,9 +15,9 @@ from api.config import VIEWER_CONFIG, invalidate_stats_cache
 from api.database import get_async_db, get_db
 from api.db_helpers import (
     assert_faces_visible, reassign_faces_to_person, person_visibility_exists,
-    recompute_person_centroid,
 )
 from db import person_not_hidden_clause
+from db.person_centroids import recompute_person_centroid
 from api.models.culling import PersonsListResponse, PersonsNeedsNamingResponse
 
 logger = logging.getLogger(__name__)

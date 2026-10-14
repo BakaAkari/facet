@@ -23,6 +23,27 @@ from config_resolve import (  # noqa: F401 - atomic_write_json is re-exported fo
 
 logger = logging.getLogger(__name__)
 
+
+def child_process_env(extra=None):
+    """Environment for a ``facet.py`` child the viewer spawns.
+
+    ``licensing.set_policy`` is in-process only, so a child re-resolves the
+    policy from its own config (working directory first) and could land on
+    default mode while this server is commercial. Exporting
+    ``FACET_LICENSING_MODE=commercial`` makes the child inherit the restriction,
+    and ``FACET_LICENSING_ALLOW_UNCLEAR=0`` carries a forbidden ``allow_unclear``
+    so a working-directory config cannot admit the unclear-licence components the
+    server refuses. Both variables can only tighten, never relax.
+    """
+    import licensing
+
+    env = {**os.environ, **(extra or {})}
+    if licensing.is_commercial():
+        env[licensing.LICENSING_MODE_ENV] = licensing.MODE_COMMERCIAL
+        if not licensing.policy().allow_unclear:
+            env[licensing.LICENSING_ALLOW_UNCLEAR_ENV] = '0'
+    return env
+
 # --- CONFIG & SERVER SECRET (single parse of scoring_config.json) ---
 # Path to scoring_config.json — $FACET_CONFIG when set, else the repo-root file.
 # A Docker bind mount of a single file forces the daemon to create an absent host

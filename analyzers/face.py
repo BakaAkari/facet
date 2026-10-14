@@ -10,6 +10,8 @@ import sys
 import cv2
 import numpy as np
 
+import licensing
+
 logger = logging.getLogger("facet.face_analyzer")
 
 from utils.image_transforms import crop_face_with_padding
@@ -22,6 +24,7 @@ class FaceAnalyzer:
                  thumbnail_size=128, thumbnail_quality=85, blink_ear_threshold=0.21,
                  min_faces_for_group=4, enable_3d_landmarks=False,
                  enable_blendshapes=False, blendshape_min_crop=192):
+        licensing.require('insightface')
         self.available = False
         self.min_confidence = min_confidence
         self.min_face_size = min_face_size
@@ -69,6 +72,7 @@ class FaceAnalyzer:
                     sys.stdout = _stdout
             self.available = True
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.warning("InsightFace not available: %s", e)
 
     def _crop_face_thumbnail(self, img_cv, bbox, padding=0.3):
@@ -175,8 +179,12 @@ class FaceAnalyzer:
 
             # Eye sharpness using 106-point landmarks
             eye_score = 0
-            if hasattr(face, 'landmark_2d_106'):
-                l_eye, r_eye = face.landmark_2d_106[38], face.landmark_2d_106[92]
+            # hasattr is always True on an InsightFace Face (a dict whose missing
+            # keys read as None), so test the value: a face with no landmarks
+            # must score 0 here, not raise on None[38].
+            landmarks_106 = getattr(face, 'landmark_2d_106', None)
+            if landmarks_106 is not None:
+                l_eye, r_eye = landmarks_106[38], landmarks_106[92]
                 eye_dist = np.linalg.norm(l_eye - r_eye)
                 offset = int(eye_dist * 0.15)
 
@@ -473,7 +481,7 @@ class FaceAnalyzer:
         sufficiently turned (|yaw|>35° or |pitch|>35°), EAR becomes
         unreliable due to foreshortening — bail out instead of guessing.
         """
-        if not hasattr(face, 'landmark_2d_106'):
+        if getattr(face, 'landmark_2d_106', None) is None:
             return False
 
         if self.enable_3d_landmarks and hasattr(face, 'pose') and face.pose is not None:

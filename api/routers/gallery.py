@@ -1507,11 +1507,14 @@ def _find_similar_color(conn, source, photo_path, min_similarity, vis_sql, vis_p
 def _find_similar_person(conn, source, photo_path, min_similarity, vis_sql, vis_params, user_id=None):
     """Find photos containing the same person(s) via person_id or face embedding cosine."""
     import numpy as np
+    from db.embedding_space import (
+        active_embedding_model, expected_dim, model_filter_sql, tag_matches,
+    )
     from utils.embedding import bytes_to_normalized_embedding
 
     # Get faces for source photo
     faces = conn.execute(
-        "SELECT id, person_id, embedding FROM faces WHERE photo_path = ?",
+        "SELECT id, person_id, embedding, embedding_model FROM faces WHERE photo_path = ?",
         [photo_path],
     ).fetchall()
 
@@ -1539,10 +1542,17 @@ def _find_similar_person(conn, source, photo_path, min_similarity, vis_sql, vis_
         results.sort(key=lambda x: x.get('date_taken') or '', reverse=True)
         return results[:500], None
 
-    # Slow path: cosine similarity on face embeddings
+    # Slow path: cosine similarity on face embeddings. Only the active model's
+    # space is compared: a dot product across models is meaningless (and across
+    # lengths, an error).
+    model = active_embedding_model()
+    dim = expected_dim(model)
+    model_sql, model_params = model_filter_sql(model, 'f.embedding_model')
     src_embeddings = []
     for f in faces:
-        e = bytes_to_normalized_embedding(f['embedding'])
+        if not tag_matches(f['embedding_model'], model):
+            continue
+        e = bytes_to_normalized_embedding(f['embedding'], dim)
         if e is not None:
             src_embeddings.append(e)
 
@@ -1553,15 +1563,15 @@ def _find_similar_person(conn, source, photo_path, min_similarity, vis_sql, vis_
         SELECT f.photo_path as path, f.embedding, p.filename, p.date_taken, p.aggregate, p.aesthetic
         FROM faces f
         JOIN photos p ON p.path = f.photo_path
-        WHERE f.photo_path != ? AND f.embedding IS NOT NULL AND {p_vis_sql}
+        WHERE f.photo_path != ? AND f.embedding IS NOT NULL AND {model_sql} AND {p_vis_sql}
         LIMIT 50000
-    """, [photo_path] + p_vis_params).fetchall()
+    """, [photo_path] + model_params + p_vis_params).fetchall()
 
     # Group best similarity per photo
     photo_sims: dict = {}
     for r in all_faces:
         r = dict(r)
-        cand_emb = bytes_to_normalized_embedding(r['embedding'])
+        cand_emb = bytes_to_normalized_embedding(r['embedding'], dim)
         if cand_emb is None:
             continue
         best = max(float(np.dot(src_e, cand_emb)) for src_e in src_embeddings)
@@ -1724,12 +1734,13 @@ def _render_migration_status():
 @router.get("/api/config", response_model=ViewerConfigResponse, response_model_exclude_unset=True)
 def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
     """Get viewer configuration for Angular client initialization."""
-    from api.config import is_multi_user_enabled
+    from api.config import is_multi_user_enabled, server_scoring_config
     from api.auth import is_edition_enabled, is_edition_authenticated
     from api.raw_processing import get_cull_styles
     from api.routers.search import search_threshold_default
-    from api.types import SORT_OPTIONS, SORT_OPTIONS_GROUPED, QUALITY_LEVELS, TYPE_LABELS
+    from api.types import QUALITY_LEVELS, TYPE_LABELS, available_sort_options, unavailable_columns
 
+    sort_options, sort_options_grouped = available_sort_options()
     features = dict(VIEWER_CONFIG.get('features', {}))
     with get_db() as conn:
         has_embeddings = conn.execute(
@@ -1755,9 +1766,10 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
         except sqlite3.OperationalError:
             features['show_albums'] = False
 
-    return {
-        'sort_options': SORT_OPTIONS,
-        'sort_options_grouped': SORT_OPTIONS_GROUPED,
+    config = {
+        'sort_options': sort_options,
+        'sort_options_grouped': sort_options_grouped,
+        'unavailable_metrics': unavailable_columns(),
         'quality_levels': QUALITY_LEVELS,
         'type_labels': TYPE_LABELS,
         'defaults': VIEWER_CONFIG['defaults'],
@@ -1779,3 +1791,10 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
         'edition_authenticated': is_edition_authenticated(user),
         'render_migration': _render_migration_status(),
     }
+    try:
+        config['face_merge_threshold'] = server_scoring_config().get_face_clustering_settings()['merge_threshold']
+    except ValueError:
+        # No thresholds_by_model entry for the active model: omit the field and let the
+        # client wait for the first /merge_suggestions response rather than guess a default.
+        logger.warning("No merge threshold for the active face model; omitting face_merge_threshold")
+    return config

@@ -350,6 +350,23 @@ FACET_VRAM_PROFILE=8gb python facet.py /path/to/photos
 Os limites exatos que o `auto` aplica estão em
 [Configuração › Detecção automática de VRAM](CONFIGURATION.md#detecção-automática-de-vram).
 
+## Instalação comercial e pacotes restritos
+
+`insightface` e `pyiqa` (com `openai-clip`, `facexlib` e `onnxruntime`, que só eles usam) trazem pesos de modelos com termos não comerciais. Eles deixaram de fazer parte da instalação base: ficam nos extras `faces-insightface` e `iqa` e em `requirements.restricted.txt` (mais `requirements.restricted.lock.txt` e `requirements.legacy.restricted.lock.txt` para o Docker).
+
+> **Mudança incompatível.** `pip install -e .` e `pip install -r requirements.txt` sozinhos não incluem mais insightface nem pyiqa. Para o comportamento anterior, use `pip install -e .[all]` ou `pip install -r requirements.txt -r requirements.restricted.txt`. O `install.sh` e a imagem Docker padrão instalam ambos, então se comportam como antes.
+
+| Objetivo | Comando |
+|----------|---------|
+| Tudo (padrão) | `bash install.sh` ou `pip install -e .[all]` |
+| Adequado ao uso comercial | `bash install.sh --commercial` |
+| Comercial, manual | `pip install -r requirements.txt`, depois `pip install -e .[commercial]` e `pip install mediapipe==0.10.35 --no-deps` |
+| Comercial, Docker | `docker build --build-arg FACET_LICENSING=commercial .` |
+
+O `mediapipe` deve sempre ser instalado com `--no-deps`: o `opencv-contrib-python` que ele traz instalaria o namespace `cv2` em duplicidade. O extra `commercial` declara apenas as dependências de execução dele (`absl-py`, `flatbuffers`). O `python-ofiq` (os bindings OFIQ de qualidade facial) está no PyPI, mas só traz wheels para Linux x86-64 e macOS arm64, portanto não faz parte do extra; instale-o manualmente com `pip install python-ofiq` onde existir um wheel.
+
+Instalar para uso comercial não muda o modo sozinho. Defina-o no seu override de `scoring_config.json` (`{ "licensing": { "mode": "commercial" } }`); o argumento de build do Docker também define `FACET_LICENSING_MODE=commercial` na imagem. `python facet.py --doctor` mostra a situação de licenciamento ativa. No modo comercial, lista os componentes que uma varredura realmente carregaria (YuNet, SFace, Q-ReAlign), não os que o perfil apenas nomeia.
+
 ## Instalação manual, sem o install.sh
 
 Requer Python 3.12 (3.10+ funciona) e Node.js 20+ para compilar a galeria.
@@ -372,7 +389,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 # 3. Instale o restante de uma vez, para que o pip resolva todo o grafo de uma só vez.
 #    O requirements.txt já inclui transformers e accelerate, necessários para os
 #    modelos SigLIP/BiRefNet/VLM usados pelos perfis 8gb+.
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements.restricted.txt
 
 # 4. Instale UM ONNX Runtime para detecção de faces (veja a tabela abaixo)
 pip install onnxruntime-gpu>=1.17.0   # ou: pip install onnxruntime>=1.15.0
@@ -408,6 +425,7 @@ importações.
 | `--cuda VERSION` | Substitui a versão de CUDA detectada (ex.: `--cuda 12.8`) |
 | `--skip-client` | Pula a compilação do frontend Angular |
 | `--no-uv` | Usa pip em vez de uv |
+| `--commercial` | Instalação adequada ao uso comercial: omite insightface, pyiqa e ONNX Runtime, instala o mediapipe com `--no-deps`; você mesmo define `licensing.mode` como `commercial` |
 
 | Alvo do Make | Executa |
 |-------------|------|
@@ -653,7 +671,7 @@ Cada um desbloqueia um recurso; sem ele, o recurso é pulado ou um fallback é u
 | `rawpy` | Decodificação RAW (CR2/CR3/NEF/ARW/…) | Arquivos RAW pulados (já está no `requirements.txt` base) |
 | `cuml`, `cupy` | Agrupamento de faces acelerado por GPU (conda + CUDA) | O agrupamento roda em CPU via `hdbscan` (padrão) |
 | `onnxruntime-gpu` | Detecção de faces acelerada por GPU | `onnxruntime` em CPU (mais lento) |
-| `aesthetic-predictor-v2-5` | Camada de IQA estendida — pontuador `aesthetic_v25` (`pip install -e .[iqa-extended]`; `iqa_extended.aesthetic_v25` em `scoring_config.json`, desativada por padrão). **Descontinuado** — AGPL-3.0, sem manutenção desde 2024-12-18; prefira `qrealign`, que não precisa de nenhum pacote extra (vem com a dependência base `pyiqa`) | `aesthetic_v25` indisponível |
+| `aesthetic-predictor-v2-5` | Camada de IQA estendida — pontuador `aesthetic_v25` (`pip install -e .[iqa-extended]`; `iqa_extended.aesthetic_v25` em `scoring_config.json`, desativada por padrão). **Descontinuado** — AGPL-3.0, sem manutenção desde 2024-12-18; prefira `qrealign`, que não precisa de nenhum pacote extra (é carregado nativamente via `transformers`) | `aesthetic_v25` indisponível |
 | `darktable-cli` (sistema) | Exportação de perfil RAW/darktable a partir do visualizador | Apenas download original/embutido oferecido |
 | `exiftool` (sistema) | Melhor extração de EXIF/GPS | Recorre ao `exifread`, depois ao PIL |
 

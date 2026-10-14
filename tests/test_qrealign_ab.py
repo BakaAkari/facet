@@ -14,6 +14,7 @@ import sqlite3
 import pytest
 
 from db.schema import init_database
+from utils import image_bounds as ib
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -220,14 +221,14 @@ def test_resume_still_skips_done_pairs_after_ensure_fresh_partial_file(tmp_path)
 
 def test_bounded_size_shrinks_only_the_long_edge_overage():
     # 24MP landscape frame bounds to 1024 on the long edge, aspect kept
-    assert qab._bounded_size(6000, 4000, 1024) == (1024, 682)
+    assert ib.bounded_size(6000, 4000, 1024) == (1024, 682)
     # portrait orientation bounds on height
-    assert qab._bounded_size(4000, 6000, 1024) == (682, 1024)
+    assert ib.bounded_size(4000, 6000, 1024) == (682, 1024)
 
 
 def test_bounded_size_leaves_small_images_alone():
-    assert qab._bounded_size(640, 427, 1024) == (640, 427)
-    assert qab._bounded_size(1024, 683, 1024) == (1024, 683)
+    assert ib.bounded_size(640, 427, 1024) == (640, 427)
+    assert ib.bounded_size(1024, 683, 1024) == (1024, 683)
 
 
 # --- SRCC / PLCC / verdict ---

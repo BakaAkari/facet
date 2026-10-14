@@ -52,6 +52,7 @@ class TestScanStampsCurrentVersion:
         db_path = str(tmp_path / 'scan.db')
         init_database(db_path)
         facet = Facet.__new__(Facet)
+        facet._pending_centroid_persons = set()
         facet.db_path = db_path
         with mock.patch('processing.scorer.generate_photo_thumbnail', return_value=b'thumb'), \
              mock.patch('processing.scorer.thumbnail_source', return_value=None), \
@@ -74,6 +75,7 @@ class TestScanStampsCurrentVersion:
         conn.close()
 
         facet = Facet.__new__(Facet)
+        facet._pending_centroid_persons = set()
         facet.db_path = library_db
         with mock.patch('processing.scorer.generate_photo_thumbnail', return_value=b'new-thumb'), \
              mock.patch('processing.scorer.thumbnail_source', return_value=None), \

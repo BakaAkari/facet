@@ -9,12 +9,18 @@ volume, so a CWD-relative destination re-downloads the same file over and over.
 import hashlib
 import logging
 import os
+import shutil
 import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("facet.models")
+
+# Seconds a socket operation (connect, or waiting for the next chunk) may block.
+# Per operation, not a total: a 400 MB fetch on a slow link is legitimate, a
+# stalled connection holding a fetch lock for every face worker is not.
+DOWNLOAD_TIMEOUT_SECONDS = 60
 
 PRETRAINED_MODELS_DIR = Path(__file__).resolve().parent.parent / 'pretrained_models'
 
@@ -54,7 +60,18 @@ def download_weights(url: str, destination: Path, sha256: Optional[str] = None):
     fd, temp_path = tempfile.mkstemp(dir=str(destination.parent), suffix='.part')
     os.close(fd)
     try:
-        urllib.request.urlretrieve(url, temp_path)
+        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, \
+                open(temp_path, 'wb') as out:
+            shutil.copyfileobj(response, out, 1 << 20)
+            received = out.tell()
+        # HTTPResponse.read() does not raise on a short body, so check it ourselves.
+        headers = getattr(response, 'headers', None)
+        declared = headers.get('Content-Length') if headers else None
+        if declared is not None and declared.strip().isdigit() and received != int(declared):
+            raise ValueError(
+                f"Downloaded {url} is truncated: received {received} bytes, "
+                f"server declared Content-Length {declared}."
+            )
         if sha256 is not None:
             digest = _sha256_file(temp_path)
             if digest != sha256:
@@ -66,3 +83,20 @@ def download_weights(url: str, destination: Path, sha256: Optional[str] = None):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+# Permissive (commercial-mode) face pipeline weights, issue #185 W5. Pinned to the
+# opencv_zoo commit that last touched each file (not `main`) and SHA-256 checked.
+# Licences (verified against the repo LICENSE files): YuNet MIT, SFace Apache-2.0.
+YUNET_WEIGHTS_FILENAME = "face_detection_yunet_2023mar.onnx"
+YUNET_WEIGHTS_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/f12e12798e8314f7c074a6656816c048dcc95b7a/"
+    "models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+)
+YUNET_WEIGHTS_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+SFACE_WEIGHTS_FILENAME = "face_recognition_sface_2021dec.onnx"
+SFACE_WEIGHTS_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/ba91a3b91d00d76e86540d4013f944bd6b514e39/"
+    "models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
+)
+SFACE_WEIGHTS_SHA256 = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"

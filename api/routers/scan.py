@@ -6,7 +6,6 @@ Scan router — trigger and monitor photo scanning.
 import asyncio
 import json
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -103,7 +102,9 @@ def _cross_process_job_env():
     """Subprocess env marking a spawned job as viewer-origin for LibraryLock."""
     from facet import JOB_ORIGIN_ENV_VAR
 
-    return {**os.environ, JOB_ORIGIN_ENV_VAR: 'viewer'}
+    from api.config import child_process_env
+
+    return child_process_env({JOB_ORIGIN_ENV_VAR: 'viewer'})
 
 
 def _read_scan_output(proc):

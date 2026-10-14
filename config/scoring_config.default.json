@@ -3395,7 +3395,8 @@
     "poor_expression_min": 4.0,
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   },
   "monochrome_detection": {
@@ -3409,11 +3410,19 @@
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": {
+        "auto_merge_distance_percent": 15,
+        "merge_threshold": 0.6
+      },
+      "sface": {
+        "auto_merge_distance_percent": 27.5,
+        "merge_threshold": 0.65
+      }
+    }
   },
   "face_processing": {
     "crop_padding": 0.3,
@@ -3734,8 +3743,13 @@
   },
   "iqa_extended": {
     "qrealign": "auto",
+    "qrealign_size": "mini",
     "aesthetic_v25": false,
     "deqa": false
+  },
+  "licensing": {
+    "mode": "default",
+    "allow_unclear": false
   },
   "plugins": {
     "enabled": false,

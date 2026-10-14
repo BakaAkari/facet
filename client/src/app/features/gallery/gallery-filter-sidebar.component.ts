@@ -29,7 +29,8 @@ import { AuthService } from '../../core/services/auth.service';
 import { I18nService } from '../../core/services/i18n.service';
 import { SaveSmartAlbumDialogComponent } from '../albums/save-smart-album-dialog.component';
 import { folderDisplayName } from '../folders/folders.util';
-import { I18N_KEYS } from '../../core/i18n/keys';
+import { i18nKeys } from '../../core/i18n/keys';
+import { isUnavailableKey, unavailableSet } from '../../shared/utils/unavailable-metrics';
 
 export const ADDITIONAL_FILTERS: AdditionalFilterDef[] = [
   // Quality
@@ -843,7 +844,7 @@ function saveSectionStates(states: Record<string, boolean>): void {
   `,
 })
 export class GalleryFilterSidebarComponent {
-  protected readonly I18N = I18N_KEYS;
+  protected readonly I18N = i18nKeys();
   readonly store = inject(GalleryStore);
   readonly auth = inject(AuthService);
   private dialog = inject(MatDialog);
@@ -994,12 +995,22 @@ export class GalleryFilterSidebarComponent {
     return { ...def, sliderMin: lo, sliderMax: hi };
   }
 
+  /** Filters whose metric the licensing policy hides (commercial mode) are dropped entirely. */
+  private readonly filtersBySection = computed((): Record<string, AdditionalFilterDef[]> => {
+    const hidden = unavailableSet(this.store.config()?.unavailable_metrics);
+    if (!hidden.size) return FILTERS_BY_SECTION;
+    return Object.fromEntries(
+      Object.entries(FILTERS_BY_SECTION).map(([k, defs]) => [k, defs.filter(d => !isUnavailableKey(d.minKey, hidden))])
+    );
+  });
+
   private matchGroups(order: string[]): FilterGroup[] {
+    const bySection = this.filtersBySection();
     const q = this.filterQuery().trim().toLowerCase();
     const tr = q ? this.translatedDefs() : null;
     const out: FilterGroup[] = [];
     for (const sectionKey of order) {
-      const all = FILTERS_BY_SECTION[sectionKey];
+      const all = bySection[sectionKey];
       let defs = all;
       if (q && tr) {
         const sectionMatches = all.length > 0 && tr[all[0].id].section.includes(q);
@@ -1044,8 +1055,9 @@ export class GalleryFilterSidebarComponent {
       folder: f.path_prefix ? 1 : 0,
     };
     const fAny = f as Record<string, any>;
+    const bySection = this.filtersBySection();
     for (const sectionKey of SECTION_ORDER) {
-      counts[sectionKey] = FILTERS_BY_SECTION[sectionKey].filter(
+      counts[sectionKey] = bySection[sectionKey].filter(
         def => fAny[def.minKey] || fAny[def.maxKey]
       ).length;
     }

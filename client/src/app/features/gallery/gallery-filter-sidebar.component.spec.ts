@@ -81,6 +81,33 @@ describe('GalleryFilterSidebarComponent', () => {
     expect(component).toBeTruthy();
   });
 
+  describe('unavailable metrics (commercial mode)', () => {
+    const ids = () => component.advancedFilterGroups().flatMap(g => g.filters.map(f => f.id));
+
+    it('lists the extended-quality filters in default mode', () => {
+      expect(ids()).toEqual(expect.arrayContaining(['liqe_range', 'aesthetic_iaa_range', 'face_quality_iqa_range']));
+    });
+
+    it('drops filters for hidden metrics but keeps the rest', () => {
+      (mockStore['config'] as ReturnType<typeof signal<unknown>>).set({
+        unavailable_metrics: ['liqe_score', 'aesthetic_iaa', 'face_quality_iqa'],
+      });
+      const shown = ids();
+      expect(shown).not.toContain('liqe_range');
+      expect(shown).not.toContain('aesthetic_iaa_range');
+      expect(shown).not.toContain('face_quality_iqa_range');
+      expect(shown).toContain('qrealign_range');
+      expect(shown).toContain('face_quality_range');
+    });
+
+    it('does not count an active hidden filter in the section badge', () => {
+      (mockStore['config'] as ReturnType<typeof signal<unknown>>).set({ unavailable_metrics: ['liqe_score'] });
+      const filters = mockStore['filters'] as ReturnType<typeof signal<Record<string, unknown>>>;
+      filters.update(f => ({ ...f, min_liqe: '4' }));
+      expect(component.sectionActiveCounts()['gallery.sidebar.extended_quality']).toBe(0);
+    });
+  });
+
   describe('clampDef', () => {
     const scoreDef = {
       id: 'score_range', minKey: 'min_score', maxKey: 'max_score',

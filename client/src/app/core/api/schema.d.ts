@@ -2129,6 +2129,9 @@ export interface paths {
         /**
          * Get Merge Suggestions
          * @description Return merge suggestions as pairwise person comparisons.
+         *
+         *     Without ``threshold`` the active embedding model's ``merge_threshold`` from
+         *     ``face_clustering.thresholds_by_model`` applies.
          */
         get: operations["get_merge_suggestions_api_merge_suggestions_get"];
         put?: never;
@@ -5906,6 +5909,8 @@ export interface components {
         MergeSuggestionsResponse: {
             /** Suggestions */
             suggestions: components["schemas"]["MergeSuggestion"][];
+            /** Threshold */
+            threshold: number;
         };
         /**
          * NextPairResponse
@@ -7518,6 +7523,8 @@ export interface components {
             edition_authenticated: boolean;
             /** Edition Enabled */
             edition_enabled: boolean;
+            /** Face Merge Threshold */
+            face_merge_threshold?: number | null;
             /** Features */
             features: {
                 [key: string]: unknown;
@@ -7560,6 +7567,11 @@ export interface components {
             type_labels: {
                 [key: string]: string;
             };
+            /**
+             * Unavailable Metrics
+             * @default []
+             */
+            unavailable_metrics?: string[];
         };
         /** WeightSnapshotItem */
         WeightSnapshotItem: {
@@ -10549,7 +10561,7 @@ export interface operations {
     get_merge_suggestions_api_merge_suggestions_get: {
         parameters: {
             query?: {
-                threshold?: number;
+                threshold?: number | null;
             };
             header?: never;
             path?: never;

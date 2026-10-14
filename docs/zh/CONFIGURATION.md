@@ -1265,6 +1265,7 @@ IEC 61966-2-1。NCLX 传递特征值 16：ISO/IEC 23001-8 / ITU-T H.273。
 {
   "iqa_extended": {
     "qrealign": "auto",
+    "qrealign_size": "mini",
     "aesthetic_v25": true,
     "deqa": false
   }
@@ -1273,17 +1274,44 @@ IEC 61966-2-1。NCLX 传递特征值 16：ISO/IEC 23001-8 / ITU-T H.273。
 
 | 设置 | 默认值 | 可接受的取值 | 列 | 说明 |
 |---------|---------|-----------------|--------|-------------|
-| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B 基于 LLM 的 IQA（由 pyiqa 提供，Apache-2.0 权重，约 2-3GB 显存/内存）。`"auto"` 会在 `8gb`/`16gb`/`24gb` 配置档下开启它、在 `legacy`/CPU 下关闭它；`true`/`false` 则显式覆盖配置档默认值。 |
+| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B 基于 LLM 的 IQA（原生 `transformers` 加载器，不依赖 pyiqa，Apache-2.0 权重，约 2-3GB 显存/内存）。`"auto"` 会在 `8gb`/`16gb`/`24gb` 配置档下开启它、在 `legacy`/CPU 下关闭它；`true`/`false` 则显式覆盖配置档默认值。 |
+| `qrealign_size` | `"mini"` | `"mini"` · `"lite"` | - | 原生评分器加载的 Q-ReAlign 规格：`mini`（0.8B）或 `lite`（4B）。用于 `qrealign` 列，并在 `licensing.mode: "commercial"` 下作为主要的美学与质量模型。 |
 | `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5（SigLIP 头，约 2GB）。需要 `aesthetic-predictor-v2-5` 包。**已弃用：** 采用 AGPL-3.0 许可，且上游自 2024-12-18 起无人维护 — 请优先使用 `qrealign`。 |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score 视觉语言模型 IQA（需 16GB 以上 GPU；否则跳过并留作 NULL）。 |
 
-**请为你启用的功能安装可选依赖**：`pip install -e .[iqa-extended]`（会装上 `aesthetic-predictor-v2-5`），或者取消 `requirements.txt` 中对应那一行的注释。Q-ReAlign 随 `pyiqa` 一同提供；DeQA-Score 通过 `transformers` 下载。
+**请为你启用的功能安装可选依赖**：`pip install -e .[iqa-extended]`（会装上 `aesthetic-predictor-v2-5`），或者取消 `requirements.txt` 中对应那一行的注释。DeQA-Score 通过 `transformers` 下载。
 
 启用之后，每项指标都会被纳入加权聚合，但默认权重为 0，因此在你给它赋权之前，`--recompute-average` 的结果逐字节不变。运行 `python facet.py --eval-iqa-srcc` 可以衡量每项指标对照你自己的星级评分在图库上的排序表现如何。
 
 **在查看器中的呈现。** 当这些列中任何一列有值时，查看器会在照片详情的**画质**面板中显示该数值（`Q-ReAlign`、`Aesthetic V2.5`、`DeQA`），并在照片库筛选侧栏的**扩展画质指标**下提供相应的范围滑块（`min_qrealign`/`max_qrealign`、`min_aesthetic_v25`/`max_aesthetic_v25`、`min_deqa`/`max_deqa`）。在该层启用之前扫描的照片在这些列上是 `NULL`，而只要给其中某个滑块设置了最小值或最大值，这些照片就会被**排除** — `NULL` 永远不满足 `>=`/`<=` 比较。请在按新启用的指标筛选之前重新扫描，否则那些照片会悄无声息地从照片库中消失。
 
 **健壮性。** DeQA-Score 会加载远程的 `trust_remote_code` 代码，其前向调用签名在不同检查点修订版之间并不一致；它的评分器采取了防御式写法 — 任何预测失败（签名不符、输出形状异常、显存不足）都会被捕获，该图片的 `deqa_score` 留作 `NULL`，而不会让扫描崩溃。
+
+---
+
+## 许可（Licensing）
+
+控制 Facet 可以加载哪些模型组件。各组件的许可证表见 [THIRD_PARTY_MODELS.md](THIRD_PARTY_MODELS.md)。
+
+```json
+{
+  "licensing": {
+    "mode": "default",
+    "allow_unclear": false
+  }
+}
+```
+
+| 设置 | 默认值 | 可接受的值 | 说明 |
+|---------|---------|-----------------|-------------|
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` 加载所有模型（发布时的行为）。`"commercial"` 绝不导入、排队或下载许可证不适合商业使用的组件：`pyiqa`（TOPIQ、HyperIQA、LIQE 等）和 InsightFace 在每一层都会被拒绝。美学与质量由原生 Q-ReAlign 评分器提供，构图由基于规则的分析器提供，人脸由宽松许可的人脸流水线提供（YuNet 检测、128 维 SFace 特征向量，可选 MediaPipe 的眼睛/微笑和 OFIQ 人脸质量）。`liqe` 和 `aesthetic_iaa` 没有替代方案，保持为 `NULL`。 |
+| `allow_unclear` | `false` | `true` / `false` | 在商业模式下，同时允许许可证*不明确*的组件（SAMP-Net、U2-Net-P、LAION CLIP-MLP 美学头）。非商业许可的组件仍被拒绝。必须是 JSON 布尔值；其他任何值都是会中止启动的错误。 |
+
+被拒绝的组件会抛出 `LicenceError`，其中指明该组件及其替代项；所有可能吞掉它的处理器都会重新抛出它（有测试强制保证），因此拒绝会在启动时终止扫描，而不是变成逐张照片的失败或静默回退。仅依赖被拒绝组件的命令（`--score-topiq`、针对 pyiqa 模型的 `--recompute-iqa`、`--recompute-composition-gpu`）在商业模式下会带着该消息退出。该模式在启动时从解析后的配置中读取。查看器会在其启动的每个 `facet.py` 进程（扫描、重新计算）的环境中传入 `FACET_LICENSING_MODE=commercial`，因此子进程不会因工作目录不同而回落到默认模式。以上内容不构成法律建议。
+
+环境变量 `FACET_LICENSING_MODE` 优先于文件：`commercial` 强制使用商业模式，`default` 或为空表示不覆盖（它永远不会放宽写有 `commercial` 的文件），其他任何值都是会中止启动的错误（这样拼写错误就不会悄悄让商业安装以默认模式运行）。
+
+环境变量 `FACET_LICENSING_ALLOW_UNCLEAR` 同样只能收紧：`0`、`false`、`no` 或 `off` 会把 `licensing.allow_unclear` 强制设为关闭，即使文件中写的是 `true`；`1`、`true`、`yes`、`on` 或为空则不覆盖，也永远不会放开它。其他任何值都是错误。只要查看器自身的策略禁止“不明确”组件，它就会在其启动的每个 `facet.py` 进程的环境中设置 `FACET_LICENSING_ALLOW_UNCLEAR=0`，因此被启动的扫描无法借助工作目录中的配置放宽服务器的策略。`licensing.allow_unclear` 本身必须是 JSON 布尔值：像 `"false"` 这样的字符串或数字会在启动时被报错拒绝，而不是被当作 true。
 
 ---
 
@@ -1303,7 +1331,8 @@ InsightFace 人脸检测设置。
     "poor_expression_min": 4.0,
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -1312,7 +1341,7 @@ InsightFace 人脸检测设置。
 | 设置 | 默认值 | 说明 |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | 最低检测置信度 |
-| `min_face_size` | `20` | 最小人脸尺寸（像素） |
+| `min_face_size` | `20` | 最小人脸尺寸（像素） — 仅适用于 InsightFace：商业模式的 YuNet 检测器使用固定的实测值（置信度 0.7、30 像素），忽略 `min_confidence_percent` 和此设置。 |
 | `blink_ear_threshold` | `0.28` | 用于闭眼检测的眼睛纵横比 |
 | `min_faces_for_group` | `4` | 判定为合影所需的最少人脸数（在 `--recompute-average` 时重新计算） |
 | `enable_3d_landmarks` | `false` | 可选覆盖项（随附文件中没有；代码默认 `false`）。加载 InsightFace 的 `landmark_3d_68` 模块以提取头部姿态（偏航/俯仰/翻滚）。额外占用约 5MB 的 ONNX 权重。目前仅供参考；日后的侧脸/剪影优化会读取它。 |
@@ -1320,6 +1349,7 @@ InsightFace 人脸检测设置。
 | `poor_expression_min` | `4.0` | 单张人脸的微笑/表情评分（0–10），低于此值时暗房会标记表情欠佳。它驱动表情人脸圈和对应滑块（原本是硬编码常量） |
 | `blendshapes.enabled` | `true` | 当 MediaPipe 及 `face_landmarker.task` 模型包可用时，使用基于外观的 MediaPipe 混合形状评分来得到单张人脸的 `eyes_open_score` / `smile_score`；为 true 时它们会取代基于关键点几何的评分，否则会自动运行几何回退方案。这是可选依赖 — 请用 `pip install mediapipe==0.10.35 --no-deps` 安装（切勿直接 `pip install mediapipe`）。见 [FACE_RECOGNITION.md](FACE_RECOGNITION.md#逐张人脸的表情信号睁眼--微笑)。 |
 | `blendshapes.min_crop_size` | `192` | 若人脸带留白的裁切图短边小于此值（像素），则回退到几何评分，而不是把一张很小的人脸放大 |
+| `blendshapes.blink_pose_gate_deg` | `null` | 仅适用于商业模式的 MediaPipe 分析器。头部姿态阈值（度）：|yaw| 或 |pitch| 超过该值的人脸不给出眨眼判定，也不给出睁眼 / 微笑评分（NULL，未知），因为转头会让眼睛看起来像闭着。`null`（默认）= 不启用；默认保持关闭：在真实图库的留出一半数据上，20° 到 45° 之间的任何阈值都没有改善眨眼检测（每个阈值漏掉的真实眨眼都多于消除的误判），因此不提供默认值；仅当你的图库中有大量明显转头的人脸时才设置。仅对新扫描的照片生效；已有的 `is_blink` 值只有在重新扫描时才会改变。 必须是正的度数：0 或负值会在启动时被拒绝；`null` = 关闭。 |
 
 ---
 
@@ -1333,11 +1363,13 @@ InsightFace 人脸检测设置。
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -1347,11 +1379,12 @@ InsightFace 人脸检测设置。
 | `enabled` | `true` | 启用人脸聚类 |
 | `min_faces_per_person` | `2` | 每个人物最少的照片数 |
 | `min_samples` | `2` | HDBSCAN 的 min_samples 参数 |
-| `auto_merge_distance_percent` | `15` | 在此距离内自动合并 |
 | `clustering_algorithm` | `"best"` | HDBSCAN 算法 |
 | `leaf_size` | `40` | 树的叶子大小（仅 CPU） |
 | `use_gpu` | `"auto"` | GPU 模式：`auto`、`always`、`never`（见下文说明） |
-| `merge_threshold` | `0.6` | 用于匹配的质心相似度 |
+| `thresholds_by_model` | 见 JSON | 按识别模型分别设置：`auto_merge_distance_percent`（自动合并距离）和 `merge_threshold`（质心相似度）。默认值：ArcFace `15` / `0.6`，SFace `27.5` / `0.65` |
+
+`merge_threshold` 和 `auto_merge_distance_percent` 是单个识别模型特征向量空间内的相似度与距离，因此会针对**当前生效的**模型（默认 ArcFace，商业模式为 SFace）从 `thresholds_by_model` 读取。没有对应条目的模型会报错，而不是回退。直接放在 `face_clustering` 下的值不再被读取。
 
 **GPU 聚类说明（`use_gpu`）：**
 

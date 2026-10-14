@@ -209,7 +209,7 @@ Gli embedding alimentano il tagging semantico, il rilevamento dei duplicati, la 
 | Comando | Descrizione |
 |---------|-------------|
 | `python facet.py --extract-faces-gpu-incremental` | Estrae i volti per le nuove foto (GPU, parallelo) |
-| `python facet.py --extract-faces-gpu-force` | Elimina tutti i volti e li riestrae (GPU) |
+| `python facet.py --extract-faces-gpu-force` | Elimina tutti i volti e li riestrae (GPU; estrattore permissivo in modalità commerciale; le persone con nome vengono conservate) |
 | `python facet.py --cluster-faces-incremental` | Clustering HDBSCAN, preserva tutte le persone (CPU) |
 | `python facet.py --cluster-faces-incremental-named` | Clustering, preserva solo le persone con nome (CPU) |
 | `python facet.py --cluster-faces-force` | Riclustering completo, elimina tutte le persone (CPU) |
@@ -294,6 +294,7 @@ Sola lettura: decodifica un campione casuale direttamente dal disco e stampa la 
 | `python facet.py --train-keeper --train-keeper-force` | Persiste il keeper-ranking head anche se il suo vincolo di accuratezza non è soddisfatto (rispetta anche `--ranker-category` e `--user`) |
 | `python facet.py --report-unreviewed-bursts` | Riporta quanti gruppi di raffica restano da esaminare (sola lettura) |
 | `python facet.py --eval-iqa-srcc` | Riporta lo Spearman SRCC di ogni metrica IQA/estetica rispetto alle tue valutazioni a stelle (sola lettura) |
+| `python facet.py --evaluate-models SLOT` | Classifica i modelli candidati per uno slot (`aesthetic`, `quality`, `faces-detect`, `faces-recognize`, `faces-centroid`, `blink`, `face-quality`, `end-to-end`) in base a quanto concordano con le tue scelte a coppie nella tabella comparisons; `--candidates a,b` (`stored:<colonna>` o un nome registrato) e `--eval-out PERCORSO` (predefinito `.facet_cache/eval/<slot>-<timestamp>.json`) lo rifiniscono (sola lettura). Gli slot dei volti (`faces-detect`: `yunet`, `yunet@<conf>`, `blazeface`; `faces-recognize`: `sface`, `sface@<soglia>`; `faces-centroid`: regola il `merge_threshold` di SFace / l'unione automatica a livello di centroide rispetto alle persone InsightFace; `blink`: fa variare la soglia di ammiccamento dell'analizzatore permissivo rispetto ai flag di ammiccamento InsightFace memorizzati) misurano invece la concordanza con i volti InsightFace memorizzati su un campione con seme fisso, quindi valgono solo per librerie in modalità predefinita; `--limit N` limita le foto (predefinito 600) o i volti di riferimento (predefinito 1200) |
 | `python facet.py --mine-insights` | Report di data-mining: inventario delle etichette, correlazioni metrica-etichetta, distribuzione delle categorie, deriva dei percentili, salute dei confronti |
 | `python facet.py --mine-insights report.json` | Lo stesso, scrive anche il report completo come JSON |
 | `python calibrate.py --db <path> --ava-annotations AVA.txt` | Calibra i pesi di valutazione per categoria rispetto al [dataset AVA](https://github.com/imfing/ava_downloader) massimizzando lo SRCC rispetto ai mean opinion score di AVA (sola lettura; stampa i pesi proposti) |

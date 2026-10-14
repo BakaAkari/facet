@@ -1297,6 +1297,7 @@
   },
   "comparison": {
     "title": "Regolazione pesi",
+    "unavailable_commercial": "Non disponibile in modalità commerciale (questa metrica viene saltata nel punteggio; il peso viene conservato).",
     "category": "Categoria",
     "weights": "Pesi",
     "weight_sliders": "Cursori pesi",

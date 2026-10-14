@@ -8,8 +8,10 @@ Optionally translates captions to a configured target language via MarianMT.
 
 import asyncio
 import logging
+
 from typing import Optional
 
+import licensing
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -204,6 +206,7 @@ def _generate_caption(photo_path: str) -> Optional[str]:
         return caption.strip() if caption else None
 
     except Exception:
+        licensing.reraise_if_refused()
         logger.exception("VLM caption generation failed")
         return None
 

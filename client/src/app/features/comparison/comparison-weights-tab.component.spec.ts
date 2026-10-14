@@ -5,6 +5,7 @@ import { of, throwError } from 'rxjs';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { ApiService } from '../../core/services/api.service';
 import { I18nService } from '../../core/services/i18n.service';
+import { GalleryStore } from '../gallery/gallery.store';
 import { CompareFiltersService } from './compare-filters.service';
 import { ComparisonWeightsTabComponent } from './comparison-weights-tab.component';
 
@@ -13,6 +14,7 @@ describe('ComparisonWeightsTabComponent', () => {
   let mockApi: { get: Mock; post: Mock };
   let mockSnackBar: { open: Mock };
   let mockI18n: { t: Mock };
+  let galleryConfig: ReturnType<typeof signal<{ unavailable_metrics?: string[] } | null>>;
   let compareFilters: { selectedCategory: ReturnType<typeof signal<string>> };
 
   beforeEach(() => {
@@ -23,6 +25,7 @@ describe('ComparisonWeightsTabComponent', () => {
     mockSnackBar = { open: vi.fn() };
     mockI18n = { t: vi.fn((key: string) => key) };
     compareFilters = { selectedCategory: signal('') };
+    galleryConfig = signal<{ unavailable_metrics?: string[] } | null>(null);
 
     TestBed.configureTestingModule({
       providers: [
@@ -31,9 +34,27 @@ describe('ComparisonWeightsTabComponent', () => {
         { provide: MatSnackBar, useValue: mockSnackBar },
         { provide: I18nService, useValue: mockI18n },
         { provide: CompareFiltersService, useValue: compareFilters },
+        { provide: GalleryStore, useValue: { config: galleryConfig } },
       ],
     });
     component = TestBed.inject(ComparisonWeightsTabComponent);
+  });
+
+  describe('unavailableWeights', () => {
+    beforeEach(() => {
+      component.weights.set({ aesthetic_percent: 30, liqe_percent: 7, aesthetic_iaa_percent: 2, face_quality_iqa_percent: 0 });
+    });
+
+    it('is empty in default mode', () => {
+      expect(component.unavailableWeights()).toEqual({});
+    });
+
+    it('flags weights of hidden metrics (LIQE maps liqe_score to liqe_percent) without zeroing them', () => {
+      galleryConfig.set({ unavailable_metrics: ['liqe_score', 'aesthetic_iaa'] });
+      expect(component.unavailableWeights()).toEqual({ liqe_percent: true, aesthetic_iaa_percent: true });
+      expect(component.weights()['liqe_percent']).toBe(7);
+      expect(component.weightKeys()).toContain('liqe_percent');
+    });
   });
 
   describe('setWeight', () => {

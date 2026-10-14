@@ -18,8 +18,10 @@ const outPath = path.join(clientDir, 'src/app/core/api/schema.d.ts');
 
 function resolvePython() {
   if (process.env.PYTHON) return process.env.PYTHON;
-  const venv = path.join(repoRoot, 'venv/bin/python');
-  if (fs.existsSync(venv)) return venv;
+  for (const venv of ['venv/bin/python', 'venv/Scripts/python.exe']) {
+    const candidate = path.join(repoRoot, venv);
+    if (fs.existsSync(candidate)) return candidate;
+  }
   return 'python';
 }
 
@@ -39,19 +41,39 @@ function pinnedGeneratorSpec() {
 // the generator would promote those fields to required and the type would lie.
 const GENERATOR_ARGS = ['--default-non-nullable=false'];
 
+// The generator's JS entry point, run through `node` itself: on Windows the
+// node_modules/.bin shims are .cmd files, which execFileSync cannot spawn.
+function localGeneratorEntry() {
+  const pkgDir = path.join(clientDir, 'node_modules/openapi-typescript');
+  const pkgJson = path.join(pkgDir, 'package.json');
+  if (!fs.existsSync(pkgJson)) return null;
+  const { bin } = JSON.parse(fs.readFileSync(pkgJson, 'utf8'));
+  const rel = typeof bin === 'string' ? bin : bin?.['openapi-typescript'];
+  return rel ? path.join(pkgDir, rel) : null;
+}
+
+// `npx` is npx.cmd on Windows, which execFileSync cannot spawn without a shell;
+// npm ships npx-cli.js beside node.exe there, so run that through node instead.
+function npxCommand() {
+  const cli = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npx-cli.js');
+  if (process.platform === 'win32' && fs.existsSync(cli)) return [process.execPath, [cli]];
+  return ['npx', []];
+}
+
 function runGenerator(schemaPath) {
-  const local = path.join(clientDir, 'node_modules/.bin/openapi-typescript');
   const args = [schemaPath, ...GENERATOR_ARGS, '--output', outPath];
-  if (fs.existsSync(local)) {
-    execFileSync(local, args, { stdio: 'inherit', cwd: clientDir });
+  const local = localGeneratorEntry();
+  if (local) {
+    execFileSync(process.execPath, [local, ...args], { stdio: 'inherit', cwd: clientDir });
   } else {
     // --ignore-scripts: this branch downloads and installs openapi-typescript
     // (and its transitive tree) on demand, with no local lockfile to check
     // integrity hashes against, so nothing should be allowed to run an
     // install/postinstall lifecycle script.
+    const [command, prefix] = npxCommand();
     execFileSync(
-      'npx',
-      ['--yes', '--ignore-scripts', pinnedGeneratorSpec(), ...args],
+      command,
+      [...prefix, '--yes', '--ignore-scripts', pinnedGeneratorSpec(), ...args],
       { stdio: 'inherit', cwd: clientDir },
     );
   }

@@ -206,7 +206,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | 命令 | 说明 |
 |---------|-------------|
 | `python facet.py --extract-faces-gpu-incremental` | 为新照片提取人脸（GPU，并行） |
-| `python facet.py --extract-faces-gpu-force` | 删除全部人脸并重新提取（GPU） |
+| `python facet.py --extract-faces-gpu-force` | 删除全部人脸并重新提取（GPU；商用模式下使用宽松许可的提取器；已命名人物会保留） |
 | `python facet.py --cluster-faces-incremental` | HDBSCAN 聚类，保留所有人物（CPU） |
 | `python facet.py --cluster-faces-incremental-named` | 聚类，仅保留已命名的人物（CPU） |
 | `python facet.py --cluster-faces-force` | 完整重新聚类，删除所有人物（CPU） |
@@ -291,6 +291,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --train-keeper --train-keeper-force` | 即使未通过准确率门槛也保存保留照片排序头（同样支持 `--ranker-category` 和 `--user`） |
 | `python facet.py --report-unreviewed-bursts` | 报告还有多少个连拍分组尚未复核（只读） |
 | `python facet.py --eval-iqa-srcc` | 报告各 IQA／美学指标与你的星级评分之间的 Spearman SRCC（只读） |
+| `python facet.py --evaluate-models SLOT` | 按与你在 comparisons 表中的成对选择的一致程度，对某个槽位（`aesthetic`、`quality`、`faces-detect`、`faces-recognize`、`faces-centroid`、`blink`、`face-quality`、`end-to-end`）的候选模型排序；可用 `--candidates a,b`（`stored:<列名>` 或已注册名称）和 `--eval-out 路径`（默认 `.facet_cache/eval/<slot>-<时间戳>.json`）进一步指定（只读） 人脸槽位（`faces-detect`：`yunet`、`yunet@<conf>`、`blazeface`；`faces-recognize`：`sface`、`sface@<阈值>`；`faces-centroid`：针对 InsightFace 人物在质心层面调节 SFace 的 `merge_threshold` / 自动合并；`blink`：针对已存储的 InsightFace 眨眼标记扫描宽松分析器的眨眼阈值）则改为在固定种子的样本上衡量与已存储 InsightFace 人脸的一致程度，因此仅适用于默认模式的照片库；`--limit N` 限制照片数（默认 600）或参考人脸数（默认 1200） |
 | `python facet.py --mine-insights` | 数据挖掘报告：标注清单、指标与标注的相关性、类别分布、百分位漂移、比较数据健康度 |
 | `python facet.py --mine-insights report.json` | 同上，并把完整报告另存为 JSON |
 | `python calibrate.py --db <path> --ava-annotations AVA.txt` | 以最大化与 AVA 平均主观评分的 SRCC 为目标，针对 [AVA 数据集](https://github.com/imfing/ava_downloader) 校准各类别的评分权重（只读；打印建议的权重） |

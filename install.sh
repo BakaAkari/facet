@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Facet — automated installation script
-# Usage: bash install.sh [--cpu] [--cuda VERSION] [--skip-client] [--no-uv]
+# Usage: bash install.sh [--cpu] [--cuda VERSION] [--skip-client] [--no-uv] [--commercial]
 set -euo pipefail
 
 # --- Defaults ---
@@ -8,6 +8,7 @@ FORCE_CPU=0
 CUDA_OVERRIDE=""
 SKIP_CLIENT=0
 NO_UV=0
+COMMERCIAL=0
 
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
@@ -16,6 +17,7 @@ while [[ $# -gt 0 ]]; do
         --cuda)       CUDA_OVERRIDE="$2"; shift 2 ;;
         --skip-client) SKIP_CLIENT=1; shift ;;
         --no-uv)      NO_UV=1; shift ;;
+        --commercial) COMMERCIAL=1; shift ;;
         -h|--help)
             echo "Usage: bash install.sh [OPTIONS]"
             echo ""
@@ -24,6 +26,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --cuda VERSION  Override detected CUDA version (e.g. --cuda 12.8)"
             echo "  --skip-client   Skip Angular frontend build"
             echo "  --no-uv         Use pip instead of uv"
+            echo "  --commercial    Commercial-safe install: skip insightface/pyiqa/onnxruntime,"
+            echo "                  install mediapipe (--no-deps). Does NOT edit your config: it"
+            echo "                  prints the licensing.mode=commercial setting to add yourself"
             echo "  -h, --help      Show this help"
             exit 0
             ;;
@@ -203,14 +208,28 @@ else
 fi
 ok "PyTorch installed"
 
-# --- Step 6: Install ONNX Runtime ---
-info "Installing ONNX Runtime ($ONNX_PACKAGE)..."
-$INSTALLER install "$ONNX_PACKAGE"
-ok "ONNX Runtime installed"
+# --- Step 6: Install ONNX Runtime (insightface only; skipped with --commercial) ---
+if [[ "$COMMERCIAL" -eq 0 ]]; then
+    info "Installing ONNX Runtime ($ONNX_PACKAGE)..."
+    $INSTALLER install "$ONNX_PACKAGE"
+    ok "ONNX Runtime installed"
+else
+    info "Skipping ONNX Runtime (--commercial: insightface is not installed)"
+fi
 
 # --- Step 7: Install project dependencies ---
 info "Installing Facet dependencies..."
-$INSTALLER install -r requirements.txt
+if [[ "$COMMERCIAL" -eq 0 ]]; then
+    # Default: base + restricted (insightface, pyiqa) — the full feature set.
+    $INSTALLER install -r requirements.txt -r requirements.restricted.txt
+else
+    # Commercial: base only. mediapipe MUST go in with --no-deps (its bundled
+    # opencv-contrib-python would double-install the cv2 namespace), then its
+    # real runtime deps separately.
+    $INSTALLER install -r requirements.txt
+    $INSTALLER install mediapipe==0.10.35 --no-deps
+    $INSTALLER install absl-py flatbuffers
+fi
 ok "Dependencies installed"
 
 # --- Step 8: Install transformers + accelerate (needed for 8gb+ profiles) ---
@@ -250,10 +269,22 @@ fi
 # --- Step 11: Verify imports ---
 echo ""
 info "Verifying installation..."
-if $PYTHON -c "import torch, cv2, fastapi, insightface, open_clip, numpy, scipy, PIL, imagehash, rawpy, tqdm, exifread" 2>/dev/null; then
+CORE_IMPORTS="torch, cv2, fastapi, open_clip, numpy, scipy, PIL, imagehash, rawpy, tqdm, exifread"
+if [[ "$COMMERCIAL" -eq 0 ]]; then
+    CORE_IMPORTS="$CORE_IMPORTS, insightface"
+fi
+if $PYTHON -c "import $CORE_IMPORTS" 2>/dev/null; then
     ok "All core imports successful"
 else
     err "Some imports failed — run 'python facet.py --doctor' for diagnostics"
+fi
+
+# --- Commercial mode: licensing.mode is configuration, not an install side effect ---
+if [[ "$COMMERCIAL" -eq 1 ]]; then
+    echo ""
+    info "Commercial install: enable commercial mode in your scoring_config.json override:"
+    echo '       { "licensing": { "mode": "commercial" } }'
+    echo "     (or export FACET_LICENSING_MODE=commercial). Check with: python facet.py --doctor"
 fi
 
 # --- Summary ---

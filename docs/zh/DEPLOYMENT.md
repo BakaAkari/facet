@@ -271,6 +271,8 @@ Plus 系列 NAS 支持 Docker（Container Manager）。
 
 **版本化标签。** `:latest`、`:latest-cuda` 和 `:latest-cuda-legacy` 每次发版都会移动；如果你不希望 NAS 上的镜像悄悄变化，请固定到某个版本（`:1.7.2`、`:1.7`、`:1.7.2-cuda`、`:1.7.2-cuda-legacy` 等）。三个变体都由同一个 `Dockerfile` 构建，通过 `BASE_IMAGE`、`STRIP_TORCH`、`INSTALL_CUML` 和 `REQUIREMENTS_LOCK` 这几个构建参数区分，具体取值在 `.github/workflows/docker-publish.yml` 里按变体设置。该工作流还接受手动的 `workflow_dispatch` 运行，可以基于 `master` 重新发布 `latest` / `latest-cuda` / `latest-cuda-legacy`，而不必发布正式版本或生成版本化标签。
 
+**商业构建。** 添加 `--build-arg FACET_LICENSING=commercial`（compose：`build.args.FACET_LICENSING: commercial`）即可跳过受限 lock（`insightface`、`pyiqa` 及仅由它们使用的包），并在镜像中设置 `FACET_LICENSING_MODE=commercial`。默认的 `FACET_LICENSING=default` 会安装它们，因此已发布的镜像不变。受限 lock 由 `REQUIREMENTS_LOCK` 推导而来（legacy lock 对应 `requirements.legacy.restricted.lock.txt`）。参见 [Installation](INSTALLATION.md)。
+
 如果是只跑查看器、镜像必须尽量小（不带 CUDA）的 NAS，可以改为构建一个精简镜像。注意 CI 守卫要求每个 `COPY` 源都被 git 跟踪，因此构建上下文必须包含所列的文件 —— 这也是这里不复制 `scoring_config.json` 的原因：那是逐个安装实例独有的覆盖文件，不纳入版本控制，它缺席只意味着容器跑在 `config/` 里的默认值上。
 
 ```dockerfile

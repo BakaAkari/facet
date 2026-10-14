@@ -230,3 +230,7 @@ Ejecuta `python facet.py --doctor` para diagnosticar problemas con la GPU.
 ## Licencia
 
 [MIT](LICENSE)
+
+### Licencias
+
+El código de Facet tiene licencia MIT. Algunos de los modelos por defecto **no** están licenciados para uso comercial: pyiqa (TOPIQ, LIQE y otros) y los pesos de InsightFace son no comerciales. El ajuste `licensing.mode: commercial` limita Facet a modelos con licencia permisiva: los componentes restringidos nunca se importan ni se descargan, y cada ranura se redirige a un reemplazo permisivo (véase [Licencias](docs/es/CONFIGURATION.md#licencias)). Consulte [Modelos de terceros y licencias](docs/es/THIRD_PARTY_MODELS.md).

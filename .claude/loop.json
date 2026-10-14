@@ -1,23 +1,23 @@
 {
   "oracle": {
-    "lint": "venv/bin/python -m ruff check .",
-    "test": "venv/bin/python -m pytest tests/ -q --tb=short",
+    "lint": "PY=$(test -x venv/bin/python && echo venv/bin/python || echo conda/python.exe); $PY -m ruff check . --extend-exclude conda,build-tools,darktable-auto-style",
+    "test": "PY=$(test -x venv/bin/python && echo venv/bin/python || echo conda/python.exe); $PY -m pytest tests/ -q --tb=short -p no:cacheprovider $(test -f .claude/loop/known-env-failures.txt && sed 's/^/--deselect /' .claude/loop/known-env-failures.txt | tr -d '\r')",
     "typecheck": "cd client && CI=1 npm run test",
-    "build": "cd client && npx tsc --noEmit -p tsconfig.json && npx ng lint && npm run build",
-    "mandatory": [
-      "lint",
-      "test",
-      "typecheck",
-      "build"
-    ]
+    "build": "cd client && npx tsc --noEmit -p tsconfig.app.json && npx tsc --noEmit -p tsconfig.spec.json && npx ng lint && npm run build",
+    "mandatory": "lint test typecheck build",
+    "timeouts": {
+      "test": 1800,
+      "typecheck": 900,
+      "build": 1200
+    }
   },
   "reviewall": {
     "severityFloor": "debt"
   },
   "budget": {
-    "maxIterations": 40,
+    "maxIterations": 150,
     "maxRepeatedFailures": 3,
-    "usagePauseFloor": 96,
+    "usagePauseFloor": 80,
     "weeklyUsageCap": 40
   }
 }

@@ -74,6 +74,7 @@ def seeded(tmp_path):
     db = str(tmp_path / "single_pass.db")
     init_database(db)
     facet = Facet.__new__(Facet)  # bypass heavy __init__; only db_path/config used
+    facet._pending_centroid_persons = set()
     facet.db_path = db
     facet.config = SimpleNamespace(version_hash='v1')
     # Resolved the same way production's _base_record (multi_pass.py) resolves
@@ -233,9 +234,22 @@ def test_new_photo_gets_row_with_computed_columns_and_thumbnail(seeded, tmp_path
         assert row['aesthetic'] is None          # not computed by this pass
 
 
-def test_full_scan_path_unchanged(seeded):
-    """The non-restricted branch is byte-identical: it still overwrites unscored
-    columns with defaults and unconditionally refreshes faces."""
+def test_full_scan_path_stores_a_computed_aesthetic(seeded):
+    """Null-honesty only changes the absent case: a computed aesthetic is stored as is."""
+    path, facet, db = seeded
+    proc = _processor(facet, [['saliency']], restricted=False)
+
+    proc._save_results({path: {**_SALIENCY, 'aesthetic': 7.25}}, _images(path))
+
+    with get_connection(db, row_factory=True) as conn:
+        assert conn.execute(
+            "SELECT aesthetic FROM photos WHERE path=?", (path,)).fetchone()['aesthetic'] == 7.25
+
+
+def test_full_save_without_aesthetic_or_face_pass_stores_unknown(seeded):
+    """The non-restricted branch is null-honest (issue #185): a metric whose pass did
+    not run is stored NULL rather than a neutral default, and a save with no face
+    pass (face_details None) keeps the stored faces instead of dropping them."""
     path, facet, db = seeded
     proc = _processor(facet, [['saliency']], restricted=False)
 
@@ -246,10 +260,10 @@ def test_full_scan_path_unchanged(seeded):
             "SELECT aesthetic, tags, face_count, subject_sharpness FROM photos WHERE path=?",
             (path,),
         ).fetchone()
-        assert row['aesthetic'] == 5.0           # full save resets to default
+        assert row['aesthetic'] is None          # no aesthetic pass ran: unknown, stored NULL (was 5.0)
         assert row['tags'] is None
-        assert row['face_count'] == 0
+        assert row['face_count'] is None         # no face pass ran: unknown, stored NULL (was 0)
         assert row['subject_sharpness'] == 7.0
         assert conn.execute(
             "SELECT COUNT(*) FROM faces WHERE photo_path=?", (path,)
-        ).fetchone()[0] == 0                      # full save drops the face
+        ).fetchone()[0] == 1                      # no face pass ran (face_details None): stored face kept (was dropped)

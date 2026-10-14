@@ -1303,6 +1303,7 @@ Exécutez `python facet.py --detect-duplicates` pour détecter et regrouper les 
 {
   "iqa_extended": {
     "qrealign": "auto",
+    "qrealign_size": "mini",
     "aesthetic_v25": true,
     "deqa": false
   }
@@ -1311,17 +1312,44 @@ Exécutez `python facet.py --detect-duplicates` pour détecter et regrouper les 
 
 | Réglage | Défaut | Valeurs acceptées | Colonne | Description |
 |---------|--------|-------------------|---------|-------------|
-| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | IQA fondé sur un LLM Q-ReAlign-Mini 0.8B (basé sur pyiqa, poids Apache-2.0, ~2-3 Go VRAM/RAM). `"auto"` l'active pour les profils `8gb`/`16gb`/`24gb` et la désactive pour `legacy`/CPU ; `true`/`false` outrepassent explicitement le défaut du profil. |
+| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | IQA fondé sur un LLM Q-ReAlign-Mini 0.8B (chargeur natif `transformers`, sans pyiqa ; poids Apache-2.0, ~2-3 Go VRAM/RAM). `"auto"` l'active pour les profils `8gb`/`16gb`/`24gb` et la désactive pour `legacy`/CPU ; `true`/`false` outrepassent explicitement le défaut du profil. |
+| `qrealign_size` | `"mini"` | `"mini"` · `"lite"` | - | Taille de Q-ReAlign chargée par l'évaluateur natif : `mini` (0.8B) ou `lite` (4B). Utilisée pour la colonne `qrealign` et, avec `licensing.mode: "commercial"`, comme modèle principal d'esthétique et de qualité. |
 | `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (tête SigLIP, ~2 Go). Nécessite le paquet `aesthetic-predictor-v2-5`. **Déprécié :** sous licence AGPL-3.0 et sans maintenance depuis le 2024-12-18 — préférez `qrealign`. |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | IQA VLM DeQA-Score (GPU 16 Go+ ; ignoré et laissé à NULL sinon). |
 
-**Installez les dépendances optionnelles** correspondant à ce que vous activez : `pip install -e .[iqa-extended]` (ajoute `aesthetic-predictor-v2-5`), ou décommentez la ligne correspondante dans `requirements.txt`. Q-ReAlign est livré avec `pyiqa` ; DeQA-Score se télécharge via `transformers`.
+**Installez les dépendances optionnelles** correspondant à ce que vous activez : `pip install -e .[iqa-extended]` (ajoute `aesthetic-predictor-v2-5`), ou décommentez la ligne correspondante dans `requirements.txt`. DeQA-Score se télécharge via `transformers`.
 
 Lorsqu'elle est activée, chaque métrique est exposée à l'agrégat pondéré mais avec une pondération par défaut de 0, de sorte que `--recompute-average` reste identique au bit près jusqu'à ce que vous lui attribuiez une pondération. Exécutez `python facet.py --eval-iqa-srcc` pour mesurer la qualité du classement de votre photothèque par chaque métrique au regard de vos propres notes en étoiles.
 
 **Affichage dans la visionneuse.** Lorsqu'une de ces colonnes est renseignée, la visionneuse affiche la valeur dans le panneau **Quality** du détail de la photo (`Q-ReAlign`, `Aesthetic V2.5`, `DeQA`) et expose un curseur de plage correspondant dans la barre latérale de filtres de la galerie, sous **Extended Quality** (`min_qrealign`/`max_qrealign`, `min_aesthetic_v25`/`max_aesthetic_v25`, `min_deqa`/`max_deqa`). Les photos analysées avant l'activation du niveau ont `NULL` dans ces colonnes, et définir un minimum ou un maximum sur l'un de ces curseurs **les exclut** : un `NULL` ne satisfait jamais une comparaison `>=`/`<=`. Relancez une analyse avant de filtrer sur une métrique fraîchement activée, sinon ces photos disparaîtront silencieusement de la galerie.
 
 **Robustesse.** DeQA-Score charge du code `trust_remote_code` distant dont la signature de forward varie selon les révisions de checkpoint ; son évaluateur est défensif — toute défaillance de prédiction (mauvaise signature, forme de sortie inattendue, OOM) est interceptée et le `deqa_score` de l'image reste à `NULL` au lieu de faire planter l'analyse.
+
+---
+
+## Licences
+
+Détermine quels composants de modèles Facet peut charger. Voir [THIRD_PARTY_MODELS.md](THIRD_PARTY_MODELS.md) pour le tableau des licences par composant.
+
+```json
+{
+  "licensing": {
+    "mode": "default",
+    "allow_unclear": false
+  }
+}
+```
+
+| Réglage | Défaut | Valeurs acceptées | Description |
+|---------|--------|-------------------|-------------|
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` charge tous les modèles (comportement livré). `"commercial"` n'importe, ne planifie ni ne télécharge jamais les composants dont la licence n'est pas compatible avec un usage commercial : `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) et InsightFace sont refusés à chaque niveau. L'esthétique et la qualité viennent de l'évaluateur natif Q-ReAlign, la composition de l'analyseur à base de règles et les visages du pipeline facial permissif (détection YuNet, embeddings SFace de 128 dimensions, et en option MediaPipe pour les yeux/le sourire et la qualité de visage OFIQ). `liqe` et `aesthetic_iaa` n'ont pas de remplaçant et restent à `NULL`. |
+| `allow_unclear` | `false` | `true` / `false` | En mode commercial, autorise aussi les composants à licence *incertaine* (SAMP-Net, U2-Net-P, la tête esthétique CLIP-MLP de LAION). Les composants à licence non commerciale restent refusés. Doit être un booléen JSON ; toute autre valeur est une erreur qui interrompt le démarrage. |
+
+Un composant refusé lève une `LicenceError` qui nomme le composant et son remplaçant ; tout gestionnaire susceptible de l'absorber la relève (un test l'impose), de sorte qu'un refus arrête le scan au démarrage au lieu de devenir des échecs par photo ou un repli silencieux. Les commandes qui ne dépendent que d'un composant refusé (`--score-topiq`, `--recompute-iqa` pour les modèles pyiqa, `--recompute-composition-gpu`) se terminent avec ce message en mode commercial. Le mode est lu dans la configuration résolue au démarrage. La visionneuse passe `FACET_LICENSING_MODE=commercial` dans l'environnement de chaque processus `facet.py` qu'elle lance (scans, recalculs), de sorte qu'un enfant ne retombe jamais en mode par défaut depuis un autre répertoire de travail. Rien ici ne constitue un avis juridique.
+
+La variable d'environnement `FACET_LICENSING_MODE` prévaut sur le fichier : `commercial` force le mode commercial, `default` ou vide signifie aucune surcharge (elle ne peut jamais assouplir un fichier indiquant `commercial`), et toute autre valeur est une erreur qui interrompt le démarrage (une faute de frappe ne laisse donc pas silencieusement une installation commerciale tourner en mode par défaut).
+
+La variable d'environnement `FACET_LICENSING_ALLOW_UNCLEAR` ne peut elle aussi que durcir : `0`, `false`, `no` ou `off` force `licensing.allow_unclear` à désactivé même si le fichier indique `true`, tandis que `1`, `true`, `yes`, `on` ou vide ne surcharge rien et ne l'accorde jamais. Toute autre valeur est une erreur. Le viewer définit `FACET_LICENSING_ALLOW_UNCLEAR=0` dans l'environnement de chaque processus `facet.py` qu'il lance dès que sa propre politique interdit les composants incertains, de sorte qu'un scan lancé ne peut pas assouplir la politique du serveur depuis une configuration du répertoire de travail. `licensing.allow_unclear` doit lui-même être un booléen JSON : une chaîne comme `"false"` ou un nombre est rejeté avec une erreur au démarrage au lieu d'être lu comme vrai.
 
 ---
 
@@ -1341,7 +1369,8 @@ Réglages de détection des visages InsightFace.
     "poor_expression_min": 4.0,
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -1350,7 +1379,7 @@ Réglages de détection des visages InsightFace.
 | Réglage | Défaut | Description |
 |---------|--------|-------------|
 | `min_confidence_percent` | `65` | Confiance de détection minimale |
-| `min_face_size` | `20` | Taille minimale du visage en pixels |
+| `min_face_size` | `20` | Taille minimale du visage en pixels — InsightFace uniquement : le détecteur YuNet du mode commercial utilise des valeurs fixes mesurées (confiance 0,7, 30 px) et ignore `min_confidence_percent` ainsi que ce réglage. |
 | `blink_ear_threshold` | `0.28` | Rapport d'aspect de l'œil (EAR) pour la détection de clignement |
 | `min_faces_for_group` | `4` | Nombre minimal de visages pour classer en portrait de groupe (recalculé lors de `--recompute-average`) |
 | `enable_3d_landmarks` | `false` | Surcharge optionnelle (absente du fichier livré ; défaut du code `false`). Charge le module InsightFace `landmark_3d_68` pour l'extraction de la pose de tête (lacet/tangage/roulis). Coûte ~5 Mo de poids ONNX supplémentaires. Actuellement informatif ; de futurs affinements de profil/silhouette le liront. |
@@ -1358,6 +1387,7 @@ Réglages de détection des visages InsightFace.
 | `poor_expression_min` | `4.0` | Score de sourire/expression par visage (0–10) en dessous duquel la chambre noire signale une expression faible. Pilote l'anneau de visage d'expression et le curseur (déplacé depuis une constante codée en dur) |
 | `blendshapes.enabled` | `true` | Utilise les scores blendshapes de MediaPipe (basés sur l'apparence) pour `eyes_open_score` / `smile_score` par visage quand MediaPipe et le modèle `face_landmarker.task` sont disponibles ; quand `true`, ils remplacent les scores de géométrie des points de repère, sinon le repli géométrique s'exécute automatiquement. Dépendance optionnelle — installer avec `pip install mediapipe==0.10.35 --no-deps` (jamais un simple `pip install mediapipe`). Voir [FACE_RECOGNITION.md](FACE_RECOGNITION.md#signaux-dexpression-par-visage-yeux-ouverts--sourire). |
 | `blendshapes.min_crop_size` | `192` | Les visages dont le recadrage rembourré est plus petit que cette valeur (px, côté le plus court) retombent sur le score géométrique plutôt que d'agrandir un visage minuscule |
+| `blendshapes.blink_pose_gate_deg` | `null` | Analyseur MediaPipe du mode commercial uniquement. Seuil de pose de la tête en degrés : un visage dont |yaw| ou |pitch| le dépasse n'a ni verdict de clignement ni score yeux ouverts / sourire (NULL, inconnu), car une tête tournée ressemble à des yeux fermés. `null` (défaut) = pas de filtre ; il reste désactivé par défaut : sur une moitié réservée d'une vraie bibliothèque, aucun seuil entre 20° et 45° n'a amélioré la détection des clignements (chacun perdait plus de vrais clignements que de faux), donc aucun n'est fourni ; ne le définissez que si votre bibliothèque contient beaucoup de visages très tournés. S'applique aux photos nouvellement analysées ; les valeurs `is_blink` existantes ne changent qu'au rescan. Doit être un nombre positif de degrés : 0 ou une valeur négative est refusé au démarrage ; `null` = désactivé. |
 
 ---
 
@@ -1371,11 +1401,13 @@ Regroupement HDBSCAN pour la reconnaissance des visages.
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -1385,11 +1417,12 @@ Regroupement HDBSCAN pour la reconnaissance des visages.
 | `enabled` | `true` | Activer le regroupement des visages |
 | `min_faces_per_person` | `2` | Nombre minimal de photos par personne |
 | `min_samples` | `2` | Paramètre min_samples de HDBSCAN |
-| `auto_merge_distance_percent` | `15` | Fusion automatique dans cette distance |
 | `clustering_algorithm` | `"best"` | Algorithme HDBSCAN |
 | `leaf_size` | `40` | Taille des feuilles de l'arbre (CPU uniquement) |
 | `use_gpu` | `"auto"` | Mode GPU : `auto`, `always`, `never` |
-| `merge_threshold` | `0.6` | Similarité de centroïde pour la correspondance |
+| `thresholds_by_model` | voir JSON | Par modèle de reconnaissance : `auto_merge_distance_percent` (distance de fusion automatique) et `merge_threshold` (similarité des centroïdes). Valeurs par défaut : ArcFace `15` / `0.6`, SFace `27.5` / `0.65` |
+
+`merge_threshold` et `auto_merge_distance_percent` sont des similarités et des distances dans l'espace d'embedding d'un seul modèle de reconnaissance ; ils sont donc lus dans `thresholds_by_model` pour le modèle **actif** (ArcFace par défaut, SFace en mode commercial). Un modèle sans entrée est une erreur, pas un repli. Les valeurs placées directement sous `face_clustering` ne sont plus lues.
 
 **Algorithmes de regroupement :**
 

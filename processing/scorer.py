@@ -21,9 +21,14 @@ import logging
 import functools
 import re as _re
 from pathlib import Path
+import licensing
 from int_affinity import storable_int
+from licensing import LicenceError
 from db import init_database, get_connection
 from db.render_version import DISPLAY_RENDER_VERSION
+from db.embedding_space import SFACE_MODEL, active_embedding_model
+from db.person_carry_over import replace_photo_faces
+from db.person_centroids import recompute_person_centroid
 from db.schema import FACES_UPSERT_SQL, face_upsert_row
 from db.scoring_overrides import get_photo_scoring_overrides
 from db.vec import sync_vec_batch
@@ -104,6 +109,7 @@ logging.getLogger('exifread').setLevel(logging.ERROR)
 
 # Import config module (lightweight, no cv2/torch dependency)
 from config import ScoringConfig
+from config.category_filter import with_face_defaults
 
 logger = logging.getLogger("facet.scorer")
 
@@ -479,7 +485,7 @@ SCORING_METRIC_KEYS = (
 )
 
 
-def build_metric_vector(m, cfg, category, weights=None, penalties=None):
+def build_metric_vector(m, cfg, category, weights=None, penalties=None, unavailable=()):
     """Build the per-metric 0-10 scoring vector (pre-weighting).
 
     Single source of truth for the metric values that feed the weighted
@@ -492,6 +498,9 @@ def build_metric_vector(m, cfg, category, weights=None, penalties=None):
              redistribution); defaults to cfg.get_weights(category).
     penalties: precomputed _calculate_scoring_penalties result, to avoid a second
                pass when the caller already has it.
+    unavailable: metric keys to leave out instead of substituting the neutral
+                 5.0 (commercial mode). Only scoring passes it; the optimizer
+                 keeps the default () and so sees every metric.
     """
     safe_float = _safe_float
     w = weights if weights is not None else (cfg.get_weights(category) if cfg else {})
@@ -598,7 +607,53 @@ def build_metric_vector(m, cfg, category, weights=None, penalties=None):
         if ext.get('deqa'):
             result['deqa'] = safe_float(m.get('deqa_score'), 5.0)
 
+    for key in unavailable:
+        result.pop(key, None)
     return result
+
+
+# Every key of a weights dict that names a scored metric (the rest are bonus,
+# penalty multipliers and underscore flags). 'quality' is folded into
+# 'aesthetic' by build_metric_vector but still carries weight.
+_WEIGHTED_METRIC_KEYS = frozenset(SCORING_METRIC_KEYS) | {
+    'quality', 'symmetry', 'balance', 'edge_entropy', 'fractal', 'color_harmony',
+    'qrealign', 'aesthetic_v25', 'deqa',
+}
+
+
+def unavailable_for_config(cfg):
+    """Metric keys this install cannot compute, memoised on the config object.
+
+    Keyed on the env override and the file's mode so a mode change is seen
+    without recomputing the policy per photo.
+    """
+    if cfg is None:
+        return frozenset()
+    import licensing
+    key = (os.environ.get(licensing.LICENSING_MODE_ENV, ''),
+           ((getattr(cfg, 'config', None) or {}).get('licensing') or {}).get('mode'))
+    cache = cfg.__dict__.setdefault('_unavailable_metrics_cache', {})
+    if key not in cache:
+        cache[key] = frozenset(licensing.unavailable_metrics(licensing.resolve_policy(cfg.config)))
+    return cache[key]
+
+
+def renormalise_weights(weights, unavailable):
+    """Scoring-time weights with ``unavailable`` metrics dropped and the rest summing to 1.
+
+    Returns a copy; ``weights`` (the raw config values) is never modified.
+    """
+    out = dict(weights)
+    for key in unavailable:
+        out[key] = 0.0
+    remaining = sum(v for k, v in out.items()
+                    if k in _WEIGHTED_METRIC_KEYS and isinstance(v, (int, float)) and v > 0)
+    if remaining > 0:
+        for k in list(out):
+            v = out[k]
+            if k in _WEIGHTED_METRIC_KEYS and isinstance(v, (int, float)) and v > 0:
+                out[k] = v / remaining
+    return out
 
 
 def build_scoring_metrics(
@@ -736,6 +791,9 @@ class Facet:
         self.db_path = db_path
         self.lightweight = lightweight
         self._face_analyzer = None
+        # Named persons whose centroid a rescan batch left stale; rebuilt once per
+        # scan by flush_person_centroids() instead of once per batch.
+        self._pending_centroid_persons = set()
 
         # Load scoring configuration
         self.config = ScoringConfig(config_path)
@@ -782,6 +840,7 @@ class Facet:
                         if self.vlm_composition:
                             logger.info("Qwen2-VL composition analyzer initialized")
                     except Exception as e:
+                        licensing.reraise_if_refused()
                         logger.info("Qwen2-VL not available: %s", e)
                         self.vlm_composition = None
                 else:
@@ -789,7 +848,7 @@ class Facet:
 
                 # Try to load SAMP-Net for composition (8GB profile)
                 samp_config = self.config.get_samp_net_config()
-                if self.config.is_using_samp_net():
+                if self.config.is_using_samp_net() and licensing.allowed('samp_net'):
                     try:
                         model_path = samp_config['model_path']
                         _load_samp_net_module()
@@ -801,6 +860,7 @@ class Facet:
                         self.samp_scorer.ensure_loaded()
                         logger.info("SAMP-Net composition scorer initialized")
                     except Exception as e:
+                        licensing.reraise_if_refused()
                         logger.info("SAMP-Net not available: %s", e)
                         self.samp_scorer = None
                 else:
@@ -905,6 +965,12 @@ class Facet:
             self.aesthetic_head = None
             return
 
+        # Commercial mode: the LAION head is not permitted, the native Q-ReAlign
+        # scorer provides the aesthetic score instead.
+        if not licensing.allowed('clip_mlp_head'):
+            self.aesthetic_head = None
+            return
+
         self.aesthetic_head = load_aesthetic_head(self.device)
 
     @property
@@ -924,13 +990,36 @@ class Facet:
         which is how the scan paths are tested with a stand-in.
         """
         if self._face_analyzer is None and not self.lightweight:
-            from models.model_manager import build_face_analyzer
-            self._face_analyzer = build_face_analyzer(self.config, self.device)
+            from models.model_manager import build_face_analyzer, build_permissive_face_analyzer
+            if licensing.loader_allowed('insightface'):
+                self._face_analyzer = build_face_analyzer(self.config, self.device)
+            else:
+                self._face_analyzer = build_permissive_face_analyzer(self.config)
         return self._face_analyzer
 
     @face_analyzer.setter
     def face_analyzer(self, analyzer):
         self._face_analyzer = analyzer
+
+    def preflight_models(self):
+        """Resolve the lazily built scan models once, before any per-image work.
+
+        The single-pass and dry-run paths otherwise build the face analyzer and
+        the commercial aesthetic scorer inside a per-image handler, so a startup
+        refusal (a licence gate, a missing package) would be recorded as one
+        failure per photo after the GPU had already worked. Raising here stops
+        the scan before the first image.
+        """
+        analyzer = self.face_analyzer
+        ensure_models = getattr(analyzer, 'ensure_models', None)
+        if ensure_models is not None and not ensure_models():
+            raise RuntimeError(
+                "The permissive face models (YuNet, SFace) could not be loaded -- the "
+                "first run downloads them into pretrained_models/, so check the network "
+                "connection, or this OpenCV build lacks FaceDetectorYN/FaceRecognizerSF. "
+                "Stopping the scan: it would otherwise record every photo as having no faces.")
+        if licensing.is_commercial() and self.aesthetic_head is None:
+            self._commercial_aesthetic_scorer()
 
     @property
     def uses_transformers_backend(self):
@@ -1019,6 +1108,10 @@ class Facet:
         Returns: (aesthetic, clip_embedding_bytes, quality_score, scoring_model)
         """
         clip_aesthetic, clip_embedding = self.get_aesthetic_with_embedding(pil_img)
+        if self.aesthetic_head is None and licensing.is_commercial():
+            # No head to fall back on: the commercial scorer decides, exactly as
+            # in the batch path, never a neutral 5.0 labelled clip-mlp.
+            return self._commercial_aesthetic_result(pil_img, clip_embedding)
         return clip_aesthetic, clip_embedding, None, 'clip-mlp'
 
     def get_aesthetic_and_quality_batch(self, pil_images, clip_inputs=None):
@@ -1043,6 +1136,11 @@ class Facet:
                 clip_aesthetic = float(clip_scores[i])
                 clip_embedding = embeddings[i].astype(np.float32).tobytes()
                 results.append((clip_aesthetic, clip_embedding, None, 'clip-mlp'))
+        elif licensing.is_commercial():
+            results = [
+                self._commercial_aesthetic_result(pil, embeddings[i].astype(np.float32).tobytes())
+                for i, pil in enumerate(pil_images)
+            ]
         else:
             results = []
             for i in range(n):
@@ -1050,6 +1148,22 @@ class Facet:
                 results.append((5.0, clip_embedding, None, 'topiq'))
 
         return results
+
+    def _commercial_aesthetic_result(self, pil_img, clip_embedding):
+        """One ``(aesthetic, embedding, quality, scoring_model)`` tuple from native Q-ReAlign."""
+        scored = self._commercial_aesthetic_scorer().score_tasks(pil_img, ('aesthetic', 'quality'))
+        return scored['aesthetic'], clip_embedding, scored['quality'], 'qrealign'
+
+    def _commercial_aesthetic_scorer(self):
+        """The native Q-ReAlign scorer the single-pass path uses in commercial mode."""
+        scorer = getattr(self, '_qrealign_native', None)
+        if scorer is None:
+            licensing.require('qrealign_native')
+            from models.qrealign_native import QReAlignNativeScorer
+            scorer = QReAlignNativeScorer(size=self.config.get_qrealign_size(), device=self.device)
+            scorer.load()
+            self._qrealign_native = scorer
+        return scorer
 
     def get_composition_scores(self, pil_img, img_cv, base_comp_data):
         """
@@ -1136,7 +1250,7 @@ class Facet:
                 return category_override
 
         # Build photo_data dict for config-driven category determination
-        photo_data = {
+        photo_data = with_face_defaults({
             'tags': m.get('tags', '') or '',
             'face_count': int(safe_float(m.get('face_count'), 0)),
             'face_ratio': safe_float(m.get('face_ratio'), 0),
@@ -1148,7 +1262,7 @@ class Facet:
             'shutter_speed': self._parse_shutter_speed(m.get('shutter_speed')),
             'focal_length': m.get('focal_length'),
             'f_stop': m.get('f_stop'),
-        }
+        })
         scoring_context = m.get('scoring_context')
 
         # Delegate to config-driven category determination
@@ -1194,12 +1308,16 @@ class Facet:
         # Determine photo category and load weights
         category = self._determine_photo_category(m, cfg)
         w = cfg.get_weights(category) if cfg else {}
+        unavailable = unavailable_for_config(cfg)
+        if unavailable:
+            w = renormalise_weights(w, unavailable)
 
         # =================================================================
         # DATA-DRIVEN SCORING: weighted sum over the shared metric vector
         # (same feature space used by the weight optimizer for training)
         # =================================================================
-        metric_values = build_metric_vector(m, cfg, category, weights=w, penalties=penalties)
+        metric_values = build_metric_vector(m, cfg, category, weights=w, penalties=penalties,
+                                            unavailable=unavailable)
 
         # Get category flags from config (with sensible defaults)
         # Face categories get blink penalty by default
@@ -1381,6 +1499,7 @@ class Facet:
                 shutter_speed=exif_data.get('shutter_speed'),
                 quality_score=quality_score,
                 scoring_model=scoring_model,
+                face_quality_iqa=face_res.get('face_quality_iqa'),
                 form_data=form_data,
                 scoring_context=photo_override.get('scoring_context'),
                 category_override=photo_override.get('category_override'),
@@ -1453,6 +1572,8 @@ class Facet:
                 'scoring_model': scoring_model,
                 # SAMP-Net composition pattern
                 'composition_pattern': composition_pattern,
+                # OFIQ face quality (permissive analyzer only; None otherwise)
+                'face_quality_iqa': face_res.get('face_quality_iqa'),
                 # Face details for face recognition
                 'face_details': face_res.get('face_details', []),
             }
@@ -1461,6 +1582,7 @@ class Facet:
 
             return res
         except Exception as e:
+            licensing.reraise_if_refused()
             logger.error("Error scoring %s: %s", original_path, e)
             return None
 
@@ -1824,8 +1946,17 @@ class Facet:
 
         logger.info("Saving results to database...")
         with get_connection(self.db_path) as conn:
-            # Reset all photos with faces to non-blink status first
-            conn.execute("UPDATE photos SET is_blink = 0 WHERE face_count >= 1")
+            # Master's reset, kept for every default-mode / ArcFace row: all photos
+            # with a face go back to non-blink, then the re-derived values are
+            # written. The one exemption is a photo whose faces are ALL SFace rows
+            # (commercial mode): they carry no 106-point landmarks to re-derive
+            # from, so zeroing would overwrite the scan's measured (possibly NULL =
+            # unknown) blink with a false "not a blink".
+            conn.execute(
+                "UPDATE photos SET is_blink = 0 WHERE face_count >= 1 AND NOT ("
+                "EXISTS (SELECT 1 FROM faces f WHERE f.photo_path = photos.path) "
+                "AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.photo_path = photos.path "
+                "AND COALESCE(f.embedding_model, '') <> ?))", (SFACE_MODEL,))
             update_data = [(status, path) for path, status in photo_blink_status.items()]
             conn.executemany("UPDATE photos SET is_blink = ? WHERE path = ?", update_data)
             conn.commit()
@@ -2051,14 +2182,17 @@ class Facet:
     def _IQA_MODELS(self):
         """Base IQA models plus any config-enabled extended pyiqa models.
 
-        Q-ReAlign is pyiqa-backed, so when ``iqa_extended.qrealign`` resolves to
-        enabled it slots into the same VRAM-aware multi-pass scoring as the base
-        models (writing the qrealign_score column). Its default is ``"auto"``,
+        Q-ReAlign is a native ``transformers`` scorer (no pyiqa); when
+        ``iqa_extended.qrealign`` resolves to enabled it slots into the same
+        VRAM-aware multi-pass scoring as the base models (writing the
+        qrealign_score column). Its default is ``"auto"``,
         which is on for every profile but legacy — at ~3GB it fits from the 8gb
         profile up. Non-pyiqa extended scorers (Aesthetic V2.5, DeQA) have their
         own loaders and are not part of this list.
         """
-        models = list(self._BASE_IQA_MODELS)
+        # Commercial mode keeps only the models the registry allows (none of the
+        # pyiqa-backed base models); a refused model must not even be listed.
+        models = [(m, c) for m, c in self._BASE_IQA_MODELS if licensing.loader_allowed(m)]
         try:
             if self.config.get_extended_iqa_settings().get('qrealign'):
                 models.append(('qrealign', 'qrealign_score'))
@@ -2082,10 +2216,13 @@ class Facet:
         Skips face_quality_iqa for photos without faces.
         """
         import time
-        from models.pyiqa_scorer import PYIQA_MODELS
         from models.model_manager import ModelManager
 
         columns = [col for _, col in self._IQA_MODELS]
+        if not columns:
+            raise LicenceError(
+                "No IQA model is available to recompute under the active licensing policy: "
+                "the pyiqa models are refused in commercial mode and iqa_extended.qrealign is off.")
 
         start_time = time.time()
 
@@ -2109,7 +2246,7 @@ class Facet:
         # Auto-detect VRAM and group models into passes
         vram_gb = ModelManager.detect_vram()
         model_names = [m for m, _ in self._IQA_MODELS]
-        total_model_vram = sum(PYIQA_MODELS[m]['vram_gb'] for m in model_names)
+        total_model_vram = sum(self._iqa_model_vram_gb(m) for m in model_names)
 
         if vram_gb >= total_model_vram + IQA_PASS_VRAM_MARGIN_GB:
             passes = [model_names]  # all at once
@@ -2137,11 +2274,31 @@ class Facet:
             logger.error("  %s thumbnail decode errors", counters['errors'])
         logger.info("Run --recompute-average to update aggregate scores with new IQA metrics.")
 
+    def _iqa_model_vram_gb(self, model_name):
+        """VRAM budget of one recompute-iqa model: pyiqa table, or the native Q-ReAlign size."""
+        from models.model_manager import ModelManager
+        if model_name == 'qrealign':
+            return (ModelManager.QREALIGN_LITE_VRAM_GB if self.config.get_qrealign_size() == 'lite'
+                    else ModelManager.MODEL_VRAM_REQUIREMENTS['qrealign'])
+        from models.pyiqa_scorer import PYIQA_MODELS
+        return PYIQA_MODELS[model_name]['vram_gb']
+
+    def _make_iqa_scorer(self, model_name):
+        """Loaded scorer for one recompute-iqa model; Q-ReAlign is native, the rest pyiqa."""
+        if model_name == 'qrealign':
+            licensing.require('qrealign_native')
+            from models.qrealign_native import QReAlignNativeScorer
+            scorer = QReAlignNativeScorer(size=self.config.get_qrealign_size(), device=self.device)
+        else:
+            from models.pyiqa_scorer import PyIQAScorer
+            scorer = PyIQAScorer(model_name=model_name)
+        scorer.load()
+        return scorer
+
     def _run_iqa_pass(self, model_names, batch_size, counters):
         """Run one IQA pass with the given models loaded simultaneously."""
         from io import BytesIO
         from PIL import Image
-        from models.pyiqa_scorer import PyIQAScorer
 
         col_map = dict(self._IQA_MODELS)  # model_name -> column
         pass_columns = [col_map[m] for m in model_names]
@@ -2150,9 +2307,7 @@ class Facet:
         scorers = {}
         for model_name in model_names:
             column = col_map[model_name]
-            scorer = PyIQAScorer(model_name=model_name)
-            scorer.load()
-            scorers[column] = scorer
+            scorers[column] = self._make_iqa_scorer(model_name)
 
         where_null = " OR ".join(f"{c} IS NULL" for c in pass_columns)
 
@@ -2358,11 +2513,13 @@ class Facet:
         # Phase 2: Collect all face records for batch insert (including thumbnails,
         # landmarks and per-face quality signals — shared upsert: see db.schema)
         face_records = []
+        embedding_model = active_embedding_model()
         for res, _ in results_with_images:
-            face_details = res.get('face_details', [])
+            # face_details None = faces unknown (the face pass failed): not []
+            face_details = res.get('face_details') or []
             for face in face_details:
                 if face.get('embedding'):
-                    face_records.append(face_upsert_row(res['path'], face))
+                    face_records.append(face_upsert_row(res['path'], face, embedding_model))
 
         # Phase 3: Fast DB inserts (short transaction)
         from analyzers.form_facet import FORM_METRIC_COLUMNS
@@ -2427,12 +2584,16 @@ class Facet:
             # Refresh faces for every photo we just wrote (the UPSERT no longer
             # cascade-deletes them) — this also clears stale faces on a photo
             # that lost all its faces on re-scan — then batch-insert the fresh rows.
-            conn.executemany(
-                "DELETE FROM faces WHERE photo_path = ?",
-                [(res['path'],) for res, _ in results_with_images],
-            )
-            if face_records:
-                conn.executemany(FACES_UPSERT_SQL, face_records)
+            # A photo whose face analysis failed (face_details is None) keeps its
+            # stored faces: unknown is not "lost all its faces".
+            # Named persons keep their faces across the replacement: the new rows
+            # are re-attached by box overlap (db.person_carry_over).
+            replace_photo_faces(
+                conn,
+                [res['path'] for res, _ in results_with_images
+                 if not ('face_details' in res and res['face_details'] is None)],
+                face_records, FACES_UPSERT_SQL,
+                defer_centroids=self._pending_centroid_persons)
 
             # Sync clip embeddings to photos_vec for vector search
             vec_records = [
@@ -2490,22 +2651,23 @@ class Facet:
 
         face_records = []
         if refresh_faces:
+            embedding_model = active_embedding_model()
             for res, _, _ in batch:
-                for face in res.get('face_details', []):
+                for face in res.get('face_details') or []:
                     if face.get('embedding'):
-                        face_records.append(face_upsert_row(res['path'], face))
+                        face_records.append(face_upsert_row(res['path'], face, embedding_model))
 
         with get_connection(self.db_path, row_factory=False) as conn:
             for res, _, computed_columns in batch:
                 conn.execute(_photos_partial_upsert(computed_columns), res)
 
             if refresh_faces:
-                conn.executemany(
-                    "DELETE FROM faces WHERE photo_path = ?",
-                    [(res['path'],) for res, _, _ in batch],
-                )
-                if face_records:
-                    conn.executemany(FACES_UPSERT_SQL, face_records)
+                replace_photo_faces(
+                    conn,
+                    [res['path'] for res, _, _ in batch
+                     if not ('face_details' in res and res['face_details'] is None)],
+                    face_records, FACES_UPSERT_SQL,
+                    defer_centroids=self._pending_centroid_persons)
 
             sync_vec_batch(conn, [
                 (res['path'], res['clip_embedding'])
@@ -2545,6 +2707,25 @@ class Facet:
     def commit(self):
         with get_connection(self.db_path, row_factory=False) as conn:
             conn.commit()
+
+    def flush_person_centroids(self):
+        """Rebuild the centroid of every person a rescan batch re-attached faces to.
+
+        ``save_photos_batch`` / ``save_photos_partial`` defer this (a person with
+        thousands of faces would otherwise have every embedding re-read per
+        batch). Call it once when the scan ends, in a ``finally`` and after the
+        worker threads are joined. Returns the number of persons rebuilt.
+        """
+        pending = self._pending_centroid_persons
+        if not pending:
+            return 0
+        person_ids = sorted(pending)
+        with get_connection(self.db_path, row_factory=False) as conn:
+            for person_id in person_ids:
+                recompute_person_centroid(conn, person_id)
+            conn.commit()
+        pending.difference_update(person_ids)
+        return len(person_ids)
 
 
 # ============================================
@@ -2707,4 +2888,5 @@ def process_single_photo(photo_path, scorer):
         res = scorer.score_photo_from_pil(current_pil, img_cv, str(photo_path))
         return res, current_pil
     except Exception as e:
+        licensing.reraise_if_refused()
         return None, str(e)

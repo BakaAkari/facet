@@ -80,7 +80,7 @@ Vedi [Integrazione nel visualizzatore](#integrazione-nel-visualizzatore) per il 
 | Impostazione | Predefinito | Descrizione |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | Confidenza minima di rilevamento |
-| `min_face_size` | `20` | Dimensione minima del volto in pixel |
+| `min_face_size` | `20` | Dimensione minima del volto in pixel — Solo InsightFace: il rilevatore YuNet della modalità commerciale usa valori fissi misurati (confidenza 0,7, 30 px) e ignora `min_confidence_percent` e questa impostazione. |
 | `blink_ear_threshold` | `0.28` | Eye Aspect Ratio per il rilevamento degli occhi chiusi |
 
 ### Raggruppamento dei volti
@@ -91,11 +91,13 @@ Vedi [Integrazione nel visualizzatore](#integrazione-nel-visualizzatore) per il 
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -104,7 +106,7 @@ Vedi [Integrazione nel visualizzatore](#integrazione-nel-visualizzatore) per il 
 |---------|---------|-------------|
 | `min_faces_per_person` | `2` | Numero minimo di foto per creare una persona |
 | `min_samples` | `2` | Parametro min_samples di HDBSCAN |
-| `merge_threshold` | `0.6` | Somiglianza del centroide per l'abbinamento |
+| `thresholds_by_model` | vedi JSON | Per modello di riconoscimento: `auto_merge_distance_percent` (distanza di unione automatica) e `merge_threshold` (similarità dei centroidi). Valori predefiniti: ArcFace `15` / `0.6`, SFace `27.5` / `0.65` |
 | `use_gpu` | `"auto"` | Modalità GPU: `auto`, `always`, `never` |
 
 ### Elaborazione dei volti
@@ -192,12 +194,16 @@ Il raggruppamento su CPU con un `algorithm` fisso è deterministico a parità di
 
 Tutte le modalità tranne `--cluster-faces-force` conservano i record delle persone, ma tutte cancellano le assegnazioni volto→persona e le ricostruiscono. Un gruppo ricostruito viene restituito a una persona quando:
 
-1. il suo embedding medio rientra in `merge_threshold` (0,6 coseno per impostazione predefinita) rispetto al centroide memorizzato di quella persona, **oppure**
+1. il suo embedding medio rientra in `merge_threshold` (0,6 coseno per impostazione predefinita per ArcFace, 0,65 per SFace) rispetto al centroide memorizzato di quella persona, **oppure**
 2. almeno metà dei suoi volti apparteneva a quella persona prima dell'esecuzione.
 
 La seconda regola pesa più di quanto sembri. Il centroide di una persona è un singolo vettore medio: chi è stato fotografato per anni copre una regione ampia, e HDBSCAN lo divide correttamente in sottogruppi compatti che finiscono lontano da quella media e falliscono la regola 1. Nella libreria sopra, la sola regola 1 restituiva il 38% dei volti collegati a persone nominate; con la regola 2 si arriva al 96%.
 
 Poiché la regola 2 si affida all'assegnazione precedente, un errore passato viene riportato anziché corretto. È il contratto di una modalità il cui scopo è preservare le persone esistenti: usa `--cluster-faces-force` per ricalcolare tutto da zero.
+
+## Qualità del volto OFIQ opzionale (modalità commerciale)
+
+In modalità commerciale il modello ristretto di qualità del volto non è disponibile. Come sostituto opzionale, installa `python-ofiq` (binding UNICEF su OFIQ del BSI, ISO/IEC 29794-5; MIT; compatibile con numpy 2 e OpenCV 4.8+) con `pip install python-ofiq`. Offre wheel solo per Linux x86-64 e macOS arm64 (su Windows: WSL2 o Docker). I modelli OFIQ (circa 400 MB, MIT/Apache-2.0) non sono mai inclusi: al primo utilizzo Facet li scarica, con SHA-256 fissato, in `pretrained_models/ofiq/`. La pipeline facciale commerciale divide per 10 il punteggio unificato OFIQ (0-100) e lo salva in `face_quality_iqa`; il valore di una foto è 0,7 x il suo volto peggiore + 0,3 x la media. Se `python-ofiq` manca, la colonna resta NULL e il suo peso viene rinormalizzato.
 
 ## Rilevamento degli occhi chiusi
 
@@ -276,7 +282,8 @@ ripiega sui punteggi geometrici.
   "face_detection": {
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -287,6 +294,7 @@ ripiega sui punteggi geometrici.
   su `false` per forzare la sola geometria.
 - `min_crop_size` (predefinito `192`): i volti il cui ritaglio con padding è più piccolo di questo
   valore (px, lato più corto) ripiegano sulla geometria invece di ingrandire un volto minuscolo.
+- `blink_pose_gate_deg` (predefinito `null` = disattivato): solo l'analizzatore MediaPipe della modalità commerciale. Un volto con |yaw| o |pitch| (gradi, dalla matrice di trasformazione del Face Landmarker) oltre questo valore non riceve verdetto di ammiccamento né punteggio occhi aperti / sorriso (NULL = sconosciuto), perché una testa girata sembra avere gli occhi chiusi. Disattivato per impostazione predefinita: su una metà riservata di una libreria reale, nessuna soglia tra 20° e 45° ha migliorato il rilevamento degli ammiccamenti (ognuna perdeva più veri ammiccamenti che falsi), quindi non ne viene fornita alcuna; impostala solo se la tua libreria contiene molti volti fortemente girati; vale per le foto scansionate di nuovo, i valori `is_blink` esistenti cambiano solo con una nuova scansione. Deve essere un numero positivo di gradi: 0 o un valore negativo viene rifiutato all'avvio; `null` = disattivato.
 
 ### Ricalcolo
 
@@ -446,7 +454,7 @@ in **spazi vettoriali incompatibili** e non devono mai essere raggruppati insiem
 produce silenziosamente persone errate senza alcun errore.
 
 `FaceClusterer.load_embeddings()` carica quindi solo lo spazio di embedding **attivo**
-(`ACTIVE_EMBEDDING_MODEL` in `faces/clusterer.py`; un tag `NULL` viene trattato
+(`active_embedding_model()` in `db/embedding_space.py`; un tag `NULL` viene trattato
 come lo spazio ArcFace legacy) e registra un avviso ben visibile se sono presenti
 volti di qualsiasi altro spazio, che vengono esclusi. Si tratta di una protezione per la compatibilità futura:
 rende sicura per costruzione una futura sostituzione del modello di riconoscimento.
@@ -465,13 +473,20 @@ validato senza dati reali. Per farlo correttamente è necessario:
    `face` di InsightFace ma non vengono persistiti, quindi AdaFace non può essere applicato retroattivamente offline —
    deve essere eseguito durante l'estrazione). Verificare che BGR/normalizzazione corrispondano al checkpoint.
 3. **Interruttore di configurazione** — aggiungere `face_detection.recognition_model: arcface|adaface`
-   e risolvere `ACTIVE_EMBEDDING_MODEL` da esso; taggare di conseguenza i nuovi volti.
+   e risolvere `active_embedding_model()` da esso; taggare di conseguenza i nuovi volti.
 4. **Ri-estrazione completa + ri-raggruppamento** — `--extract-faces-gpu-force` quindi
    `--cluster-faces-force`, perché gli embedding ArcFace e AdaFace non sono
    confrontabili. Il marcatore dello spazio degli embedding descritto sopra impedisce a un database parzialmente migrato di
    raggruppare silenziosamente insieme i due spazi (avvisa ed esclude invece).
 5. **Validazione della qualità** — misurare la qualità dei cluster rispetto a identità etichettate;
    "viene eseguito ed emette vettori a 512 dimensioni" non dimostra che il preprocessing sia corretto.
+
+### Librerie miste, ri-estrazione e valori sconosciuti
+
+- **Librerie miste.** Una libreria può contenere insieme volti ArcFace (512-d) e SFace (128-d). Il clustering, i suggerimenti di unione, la ricerca di persona simile e i centroidi delle persone usano ciascuno un solo modello alla volta (`persons.centroid_model` indica quale); le modalità di clustering incrementale e «solo persone con nome» non toccano i volti né le persone dell'altro modello, ma `--cluster-faces-force` azzera tutte le assegnazioni volto→persona ed elimina tutte le persone, comprese quelle con nome, qualunque sia il loro modello. Per portare una libreria sul modello attivo, esegui `--extract-faces-gpu-force` (in modalità commerciale usa l'estrattore permissivo; le persone con nome vengono conservate) e poi `--cluster-faces-incremental`.
+- **Avvisi.** Una scansione registra un avviso quando esistono volti salvati di un modello diverso da quello attivo, e `--doctor` segnala la stessa discrepanza rispetto al modello attivo. In modalità commerciale `--doctor` elenca i componenti che una scansione caricherebbe davvero (YuNet, SFace, Q-ReAlign, più OFIQ quando `python-ofiq` è installato), non quelli che il profilo VRAM si limita a nominare; TOPIQ, LIQE e InsightFace non compaiono quindi più come avvisi.
+- **Le persone con nome sopravvivono alla ri-estrazione.** Prima che `--extract-faces-gpu-force` elimini le righe dei volti, Facet memorizza il riquadro di ogni volto di una persona con nome; poi ogni volto rilevato di nuovo torna alla persona il cui vecchio riquadro lo sovrappone con IoU >= 0,5 (uno a uno, prima la sovrapposizione migliore) e i centroidi vengono ricalcolati per modello. Un volto senza vecchio riquadro corrispondente resta non assegnato fino al prossimo clustering. I riquadri memorizzati sono salvati nella tabella `face_reextract_snapshot` nella stessa transazione dell'eliminazione, quindi un'esecuzione interrotta viene ripresa dall'estrazione successiva. Ri-scansionare una foto conserva le sue persone con nome allo stesso modo. I centroidi delle persone che una nuova scansione ha lasciato obsoleti vengono ricostruiti una sola volta al termine della scansione (anche se interrotta), non una volta per batch; i conteggi e i volti rappresentativi continuano a essere aggiornati per batch.
+- **Sconosciuto non è zero.** Senza MediaPipe l'analizzatore permissivo non può misurare occhi, sorriso e ammiccamenti; questi valori sono salvati come NULL (non 0 e non «ammicca»). Il filtro e la penalità di ammiccamento trattano NULL come «non è un ammiccamento». I lettori dei 106 punti di riferimento saltano i volti senza punti. Una foto la cui passata sui volti fallisce viene salvata con `face_count`, `face_ratio` e `is_group_portrait` a NULL (sconosciuto), non a 0, e i suoi volti salvati vengono mantenuti; il punteggio la tratta come senza volti finché non viene riscansionata.
 
 ## Risoluzione dei problemi
 
@@ -483,4 +498,4 @@ validato senza dati reali. Per farlo correttamente è necessario:
 | Il raggruppamento su GPU fallisce | Verifica l'installazione di cuML, usa `"never"` per forzare la CPU |
 | Miniature mancanti | Esegui `--refill-face-thumbnails-incremental` |
 | Rilevamento errato degli occhi chiusi | Regola `blink_ear_threshold`, esegui `--recompute-blinks` |
-| Avviso "Excluded N faces from non-active embedding space" | Una modifica del modello di riconoscimento ha lasciato embedding misti — esegui `--extract-faces-gpu-force` quindi `--cluster-faces-force` |
+| Avviso "Excluded N faces from non-active embedding space" | Una modifica del modello di riconoscimento ha lasciato embedding misti — esegui `--extract-faces-gpu-force` quindi `--cluster-faces-incremental` |

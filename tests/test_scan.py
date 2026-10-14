@@ -1815,9 +1815,9 @@ _LOCK_EXEMPT_WRITERS = {
 }
 
 _JOB_MODIFIERS = frozenset({
-    "apply", "apply_recommendations", "config", "copy_keepers", "cull_group_by",
+    "apply", "apply_recommendations", "candidates", "config", "copy_keepers", "cull_group_by",
     "cull_min_keep", "cull_min_score", "cull_strictness", "cull_trim_brackets", "db",
-    "discover_min_cluster_size", "dry_run",
+    "discover_min_cluster_size", "dry_run", "eval_out",
     "dry_run_count", "embed_originals", "force", "force_library_lock", "force_low_space",
     "force_since", "limit", "merge_threshold", "optimize_category", "optimize_force",
     "optimize_sources", "ranker_category", "refresh_thumbnails_workers", "resume",
@@ -1828,7 +1828,7 @@ _JOB_MODIFIERS = frozenset({
 
 _READ_ONLY_LIBRARY_COMMANDS = frozenset({
     "auto_tune_categories", "check_raw_rendering", "comparison_stats", "doctor",
-    "eval_iqa_srcc", "export_csv",
+    "eval_iqa_srcc", "evaluate_models", "export_csv",
     "export_json", "export_manifest", "immich_sync", "immich_test", "list_models",
     "mine_insights", "report_unreviewed_bursts", "suggest_person_merges",
     "sweep_dedup_thresholds", "validate_categories",

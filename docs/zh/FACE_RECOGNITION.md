@@ -80,7 +80,7 @@ python facet.py --suggest-person-merges --merge-threshold 0.7  # 更严格
 | 设置项 | 默认值 | 说明 |
 |---------|---------|-------------|
 | `min_confidence_percent` | `65` | 最低检测置信度 |
-| `min_face_size` | `20` | 最小人脸尺寸（像素） |
+| `min_face_size` | `20` | 最小人脸尺寸（像素） — 仅适用于 InsightFace：商业模式的 YuNet 检测器使用固定的实测值（置信度 0.7、30 像素），忽略 `min_confidence_percent` 和此设置。 |
 | `blink_ear_threshold` | `0.28` | 用于闭眼检测的 Eye Aspect Ratio |
 
 ### 人脸聚类
@@ -91,11 +91,13 @@ python facet.py --suggest-person-merges --merge-threshold 0.7  # 更严格
     "enabled": true,
     "min_faces_per_person": 2,
     "min_samples": 2,
-    "auto_merge_distance_percent": 15,
     "clustering_algorithm": "best",
     "leaf_size": 40,
     "use_gpu": "auto",
-    "merge_threshold": 0.6
+    "thresholds_by_model": {
+      "arcface_buffalo_l": { "auto_merge_distance_percent": 15, "merge_threshold": 0.6 },
+      "sface": { "auto_merge_distance_percent": 27.5, "merge_threshold": 0.65 }
+    }
   }
 }
 ```
@@ -104,7 +106,7 @@ python facet.py --suggest-person-merges --merge-threshold 0.7  # 更严格
 |---------|---------|-------------|
 | `min_faces_per_person` | `2` | 创建一个人物所需的最少照片数 |
 | `min_samples` | `2` | HDBSCAN 的 min_samples 参数 |
-| `merge_threshold` | `0.6` | 用于匹配的质心相似度 |
+| `thresholds_by_model` | 见 JSON | 按识别模型分别设置：`auto_merge_distance_percent`（自动合并距离）和 `merge_threshold`（质心相似度）。默认值：ArcFace `15` / `0.6`，SFace `27.5` / `0.65` |
 | `use_gpu` | `"auto"` | GPU 模式：`auto`、`always`、`never` |
 
 ### 人脸处理
@@ -192,12 +194,16 @@ cuML 的划分略微更细，噪声率相当，聚类规模中位数完全一致
 
 除 `--cluster-faces-force` 之外的所有模式都会保留已有的人物记录，但所有模式都会清除人脸→人物的归属关系并重建。重建后的聚类在满足以下任一条件时会重新归入某个人物：
 
-1. 它的平均特征向量与该人物已存储的质心之间的差距在 `merge_threshold` 以内（默认 0.6 余弦），**或者**
+1. 它的平均特征向量与该人物已存储的质心之间的差距在 `merge_threshold` 以内（ArcFace 默认 0.6 余弦，SFace 为 0.65），**或者**
 2. 它至少有一半的人脸在本次运行前就属于该人物。
 
 第二条规则的作用比听上去更大。人物质心只是一个平均向量，因此跨越多年被拍摄的同一个人会占据很宽的区域——HDBSCAN 会正确地把他们拆成若干紧凑的子聚类，而每个子聚类都远离那个平均值，无法满足规则 1。在上述照片库中，仅靠规则 1 只能找回 38% 原本归属于已命名人物的人脸；加入规则 2 后可找回 96%。
 
 由于规则 2 以先前的归属为准，早先的错误归属会被延续而不是被纠正。对于一个以保留已有人物为目的的模式，这正是预期的行为——若要从零重新推导全部结果，请使用 `--cluster-faces-force`。
+
+## 可选的 OFIQ 人脸质量（商业模式）
+
+商业模式下受限的人脸质量模型不可用。可选的替代方案是安装 `python-ofiq`（UNICEF 对 BSI OFIQ 的绑定，ISO/IEC 29794-5；MIT；可与 numpy 2 和 OpenCV 4.8+ 共存），命令为 `pip install python-ofiq`。它只提供 Linux x86-64 和 macOS arm64 的 wheel（Windows 请用 WSL2 或 Docker）。OFIQ 模型（约 400 MB，MIT/Apache-2.0）从不随 Facet 分发：首次使用时 Facet 会以固定的 SHA-256 下载到 `pretrained_models/ofiq/`。商业模式的人脸流水线会把 OFIQ 统一分数（0-100）除以 10 后存入 `face_quality_iqa`；一张照片的值为 0.7 x 最差人脸 + 0.3 x 平均值。未安装 `python-ofiq` 时该列为 NULL，其权重会被重新归一化。
 
 ## 闭眼检测
 
@@ -276,7 +282,8 @@ pip install absl-py flatbuffers
   "face_detection": {
     "blendshapes": {
       "enabled": true,
-      "min_crop_size": 192
+      "min_crop_size": 192,
+      "blink_pose_gate_deg": null
     }
   }
 }
@@ -286,6 +293,7 @@ pip install absl-py flatbuffers
   变形分数；否则自动运行几何方式回退。设为 `false` 可强制只用几何方式。
 - `min_crop_size`（默认 `192`）：带边距裁剪图小于该尺寸（像素，取短边）
   的人脸会回退到几何方式，而不是把一张很小的人脸放大。
+- `blink_pose_gate_deg`（默认 `null` = 关闭）：仅适用于商业模式的 MediaPipe 分析器。|yaw| 或 |pitch|（度，来自 Face Landmarker 的变换矩阵）超过该值的人脸不给出眨眼判定，也不给出睁眼 / 微笑评分（NULL = 未知），因为转头会让眼睛看起来像闭着。默认保持关闭：在真实图库的留出一半数据上，20° 到 45° 之间的任何阈值都没有改善眨眼检测（每个阈值漏掉的真实眨眼都多于消除的误判），因此不提供默认值；仅当你的图库中有大量明显转头的人脸时才设置；对新扫描的照片生效，已有的 `is_blink` 值只有在重新扫描时才会改变。 必须是正的度数：0 或负值会在启动时被拒绝；`null` = 关闭。
 
 ### 重新计算
 
@@ -444,7 +452,7 @@ python facet.py --refill-face-thumbnails-force
 绝不能放在一起聚类——那样会在不报错的情况下悄悄产生垃圾人物。
 
 因此 `FaceClusterer.load_embeddings()` 只加载**当前生效的**特征向量空间
-（`faces/clusterer.py` 中的 `ACTIVE_EMBEDDING_MODEL`；`NULL` 标记按旧的
+（`db/embedding_space.py` 中的 `active_embedding_model()`；`NULL` 标记按旧的
 ArcFace 空间处理），并在存在并排除了其他空间的人脸时输出醒目的警告。
 这是一道向前兼容的防线：它从结构上保证了将来更换识别模型是安全的。
 
@@ -462,13 +470,20 @@ HDBSCAN），但**尚未实现**，因为没有真实数据就无法验证。要
    `face` 对象上但并未持久化，因此 AdaFace 无法离线回填——
    它必须在提取过程中运行）。还需确认 BGR 通道顺序与归一化方式和检查点一致。
 3. **配置开关**——新增 `face_detection.recognition_model: arcface|adaface`
-   并据此解析 `ACTIVE_EMBEDDING_MODEL`；同时为新人脸打上相应标记。
+   并据此解析 `active_embedding_model()`；同时为新人脸打上相应标记。
 4. **完全重新提取 + 重新聚类**——先 `--extract-faces-gpu-force` 再
    `--cluster-faces-force`，因为 ArcFace 与 AdaFace 的特征向量不可比较。
    上面的特征向量空间标记可以防止迁移到一半的数据库悄悄把两个空间混在
    一起聚类（它会改为发出警告并排除）。
 5. **质量验证**——用带标注的身份数据衡量聚类质量；「能跑通并输出 512 维
    向量」并不能证明预处理是正确的。
+
+### 混合库、重新提取与未知值
+
+- **混合库。**同一个库可以同时包含 ArcFace（512 维）和 SFace（128 维）人脸。聚类、合并建议、相似人物搜索和人物质心每次都只使用一个模型（`persons.centroid_model` 记录质心由哪个模型生成）；增量聚类与仅保留已命名人物的聚类模式不会改动另一个模型的人脸和人物，但 `--cluster-faces-force` 会清除所有人脸→人物的归属并删除所有人物（包括已命名的），不论其模型。要把库迁移到当前模型，请运行 `--extract-faces-gpu-force`（商用模式下使用宽松许可的提取器；已命名人物会保留），然后运行 `--cluster-faces-incremental`。
+- **警告。**扫描时若存储的人脸属于非当前模型，会记录一条警告；`--doctor` 会针对当前模型报告同样的不一致。在商业模式下，`--doctor` 会列出扫描实际会加载的组件（YuNet、SFace、Q-ReAlign，以及已安装 `python-ofiq` 时的 OFIQ），而不是 VRAM 配置档仅仅点名的那些，因此 TOPIQ、LIQE 和 InsightFace 不再显示为警告。
+- **已命名人物在重新提取后保留。**在 `--extract-faces-gpu-force` 删除人脸行之前，Facet 会记住已命名人物每张人脸的边框；之后，每张重新检测到的人脸会还给与其旧边框 IoU >= 0.5 的人物（一对一，重叠最大者优先），并按模型重建质心。没有匹配旧边框的人脸保持未分配，等待下次聚类。被记住的边框与删除操作在同一事务中写入 `face_reextract_snapshot` 表，因此中断的运行会由下一次提取接续。重新扫描照片时，已命名人物同样会被保留。重新扫描后变得过时的人物质心会在扫描结束时重建一次（即使扫描被中断），而不是每个批次重建一次；计数和代表性人脸仍按批次更新。
+- **未知不等于零。**没有 MediaPipe 时，宽松分析器无法测量眼睛、微笑和眨眼，这些值存为 NULL（不是 0，也不是“眨眼”）；眨眼过滤和眨眼扣分把 NULL 视为“不是眨眼”。106 点关键点的读取方会跳过没有关键点的人脸。人脸处理失败的照片，其 `face_count`、`face_ratio` 和 `is_group_portrait` 会存为 NULL（未知）而不是 0，并保留其已存储的人脸；在重新扫描之前，评分会将其视为没有人脸。
 
 ## 故障排查
 
@@ -480,4 +495,4 @@ HDBSCAN），但**尚未实现**，因为没有真实数据就无法验证。要
 | GPU 聚类失败 | 检查 cuML 安装，用 `"never"` 强制使用 CPU |
 | 缩略图缺失 | 运行 `--refill-face-thumbnails-incremental` |
 | 闭眼检测不准 | 调整 `blink_ear_threshold`，然后运行 `--recompute-blinks` |
-| 出现「Excluded N faces from non-active embedding space」警告 | 识别模型变更导致特征向量混杂——请先运行 `--extract-faces-gpu-force`，再运行 `--cluster-faces-force` |
+| 出现「Excluded N faces from non-active embedding space」警告 | 识别模型变更导致特征向量混杂——请先运行 `--extract-faces-gpu-force`，再运行 `--cluster-faces-incremental` |

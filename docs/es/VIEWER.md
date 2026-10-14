@@ -181,6 +181,10 @@ Una opción de ordenación de primer nivel respaldada por el `learned_score` del
 
 Controlada por `viewer.features.show_my_taste` (predeterminado: `true`). El estado del clasificador se expone mediante `GET /api/ranker/status`.
 
+### Métricas ocultas en modo comercial
+
+Con `licensing.mode` en `commercial`, el visor oculta las métricas cuyos modelos no pueden usarse comercialmente: los filtros de rango de LIQE, Aesthetic IAA y (salvo que OFIQ esté instalado) Face Quality IQA, sus chips de filtro y sus opciones de ordenación. `/api/config` las lista en `unavailable_metrics`. En la página de ajuste de pesos sus controles siguen visibles pero deshabilitados, con un tooltip; los pesos se conservan, porque la puntuación los descarta y renormaliza. Reinicie el visor tras cambiar el modo de licencia.
+
 ## Funciones de la galería
 
 ### Tarjetas de foto

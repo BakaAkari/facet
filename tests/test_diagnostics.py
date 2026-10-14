@@ -838,3 +838,50 @@ class TestRtx5070TiScenario:
         assert "GPU (simulated)" in out
         assert "16.0 GB" in out
         assert "16gb" in out
+
+
+class TestDoctorListsWhatIsRouted:
+    """The doctor reports the components a scan loads, not those merely configured."""
+
+    DEFAULT_IDS = {
+        'legacy': ['clip_mlp_head', 'clip', 'topiq_iaa', 'topiq_nr_face', 'liqe', 'samp_net',
+                   'u2netp', 'birefnet', 'insightface', 'mediapipe_face_landmarker'],
+        '8gb': ['clip_mlp_head', 'clip', 'topiq_iaa', 'topiq_nr_face', 'liqe', 'samp_net',
+                'u2netp', 'birefnet', 'insightface', 'mediapipe_face_landmarker',
+                'qrealign_native'],
+        '16gb': ['topiq', 'siglip2', 'qwen3_5_2b', 'topiq_iaa', 'topiq_nr_face', 'liqe',
+                 'samp_net', 'u2netp', 'birefnet', 'insightface', 'mediapipe_face_landmarker',
+                 'qrealign_native'],
+        '24gb': ['topiq', 'siglip2', 'qwen3_5_4b', 'topiq_iaa', 'topiq_nr_face', 'liqe',
+                 'samp_net', 'u2netp', 'birefnet', 'insightface', 'mediapipe_face_landmarker',
+                 'qrealign_native'],
+    }
+
+    @staticmethod
+    def _cfg():
+        import config_resolve
+        return config_resolve.load_resolved(None)
+
+    @pytest.mark.parametrize('profile', ['legacy', '8gb', '16gb', '24gb'])
+    def test_default_mode_ids_are_unchanged(self, profile):
+        import licensing
+        from diagnostics import _components_in_use
+        ids = _components_in_use(self._cfg(), profile, licensing.Policy('default', False))
+        assert ids == self.DEFAULT_IDS[profile]
+
+    @pytest.mark.parametrize('profile', ['legacy', '8gb', '16gb', '24gb'])
+    def test_commercial_mode_lists_the_permissive_stack_and_nothing_refused(self, profile):
+        import licensing
+        from diagnostics import _components_in_use
+        ids = _components_in_use(self._cfg(), profile, licensing.Policy('commercial', False))
+        assert {'yunet', 'sface', 'qrealign_native'} <= set(ids)
+        for refused in ('topiq', 'insightface', 'liqe', 'topiq_iaa', 'topiq_nr_face', 'clip_mlp_head'):
+            assert refused not in ids
+        assert all(licensing.allowed(i, licensing.Policy('commercial', False)) for i in ids)
+
+    def test_the_wrapper_and_the_doctor_share_one_router(self):
+        """_select_models is a thin wrapper: both answer from route_models."""
+        import inspect
+
+        from processing import multi_pass
+        assert 'route_models(' in inspect.getsource(multi_pass.ChunkedMultiPassProcessor._select_models)

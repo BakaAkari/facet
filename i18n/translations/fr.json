@@ -1297,6 +1297,7 @@
   },
   "comparison": {
     "title": "Réglage des poids",
+    "unavailable_commercial": "Indisponible en mode commercial (cette métrique est ignorée lors du score ; le poids est conservé).",
     "category": "Catégorie",
     "weights": "Poids",
     "weight_sliders": "Curseurs de poids",

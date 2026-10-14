@@ -184,6 +184,10 @@ python database.py --migrate-user-preferences --user alice
 
 由 `viewer.features.show_my_taste` 控制（默认：`true`）。模型状态通过 `GET /api/ranker/status` 暴露。
 
+### 商业模式下隐藏的指标
+
+当 `licensing.mode` 设为 `commercial` 时，查看器会隐藏模型不可商用的指标：LIQE、Aesthetic IAA 以及（未安装 OFIQ 时）Face Quality IQA 的范围筛选器、筛选标签和排序选项。`/api/config` 在 `unavailable_metrics` 中列出这些指标。在权重调整页面，它们的滑块仍可见但被禁用，并带有提示；权重会被保留，因为评分时会跳过并重新归一化。更改许可模式后请重启查看器。
+
 ## 照片库功能
 
 ### 照片卡片
