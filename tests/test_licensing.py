@@ -13,7 +13,6 @@ import pytest
 import licensing
 from db.schema import init_database
 from diagnostics import run_doctor
-from models.pyiqa_scorer import PYIQA_MODELS
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,6 +31,9 @@ def _routing_names():
 
 class TestRegistryCoverage:
     def test_every_pyiqa_model_is_registered(self):
+        pytest.importorskip("torch")  # models.pyiqa_scorer imports torch at module level
+        from models.pyiqa_scorer import PYIQA_MODELS
+
         missing = [k for k in PYIQA_MODELS if k not in licensing.COMPONENTS]
         assert not missing
 

@@ -272,6 +272,7 @@ class TestLoaderLayer:
 
 class TestLeafLayer:
     def test_pyiqa_scorer_refuses_before_import(self, commercial, poison):
+        pytest.importorskip("torch")
         from models.pyiqa_scorer import PyIQAScorer
         with pytest.raises(LicenceError):
             PyIQAScorer('topiq', device='cpu').load()
@@ -284,11 +285,13 @@ class TestLeafLayer:
         assert poison.attempts == []
 
     def test_aesthetic_head_refuses(self, commercial):
+        pytest.importorskip("torch")
         from models.aesthetic_head import load_aesthetic_head
         with pytest.raises(LicenceError):
             load_aesthetic_head('cpu')
 
     def test_samp_net_refuses(self, commercial):
+        pytest.importorskip("torch")
         from models.samp_net import SAMPNetScorer
         with pytest.raises(LicenceError):
             SAMPNetScorer(model_path='x.pth', device='cpu')
@@ -306,6 +309,8 @@ def download_calls(monkeypatch):
     transformers binds ``hf_hub_download`` at import, so patching only the defining
     module leaves their copies live and the tripwire inert.
     """
+    for module in ("torch", "transformers", "huggingface_hub"):
+        pytest.importorskip(module)
     import huggingface_hub
     import transformers.utils.hub as transformers_hub
     import models.aesthetic_head as aesthetic_head

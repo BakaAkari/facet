@@ -360,6 +360,9 @@ class TestEmptyPassExit:
         monkeypatch.setattr("plugins.init_global_plugin_manager", lambda *a, **k: None)
         monkeypatch.setattr("processing.multi_pass.run_single_pass",
                             lambda paths, name, scorer, mm: processed)
+        # The post-scan auto-tag step would load a real CLIP model.
+        monkeypatch.setattr("tag_existing.resolve_scan_tagger", lambda scorer: None)
+        monkeypatch.setattr("tag_existing.run_tagging", lambda *a, **k: 0)
         monkeypatch.setattr(sys, "argv", ["facet.py", str(photo_dir), "--db", db_path,
                                           "--pass", "tags"])
         code = 0

@@ -2,10 +2,13 @@
 import os
 
 import pytest
-import torch
-from PIL import Image
 
-from models import qrealign_native as qn
+pytest.importorskip("torch")
+
+import torch  # noqa: E402
+from PIL import Image  # noqa: E402
+
+from models import qrealign_native as qn  # noqa: E402
 
 
 class _Tok:
