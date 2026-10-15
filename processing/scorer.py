@@ -32,6 +32,7 @@ from db.person_carry_over import replace_photo_faces
 from db.person_centroids import recompute_person_centroid
 from db.schema import FACES_UPSERT_SQL, IQA_SCAN_FINGERPRINT_SQL, face_upsert_row
 from db.scoring_overrides import get_photo_scoring_overrides
+from db.tags import sync_photo_tags
 from db.vec import sync_vec_batch
 from processing.progress import emit_progress
 from utils.histogram import unpack_histogram
@@ -2714,6 +2715,9 @@ class Facet:
             ]
             sync_vec_batch(conn, vec_records)
 
+            # Every row above rewrote `tags`; keep an in-use photo_tags lookup in step.
+            sync_photo_tags(conn, [res['path'] for res, _ in results_with_images])
+
             # Commit the entire batch in one transaction
             conn.commit()
 
@@ -2784,6 +2788,11 @@ class Facet:
                 (res['path'], res['clip_embedding'])
                 for res, _, computed_columns in batch
                 if 'clip_embedding' in computed_columns and res.get('clip_embedding')
+            ])
+
+            sync_photo_tags(conn, [
+                res['path'] for res, _, computed_columns in batch
+                if 'tags' in computed_columns
             ])
 
             conn.commit()

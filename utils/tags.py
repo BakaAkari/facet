@@ -39,14 +39,19 @@ def get_tag_params(config):
     """
     Extract tagging parameters from config.
 
+    The threshold is ``tag_threshold_percent`` of the ACTIVE profile's clip
+    block (``get_clip_config()`` resolves 'auto'), so it always belongs to the
+    model whose embeddings are being tagged. The old
+    ``similarity_threshold_percent`` key is deliberately not read.
+
     Args:
         config: ScoringConfig instance
 
     Returns:
         tuple: (threshold, max_tags) for tag generation
     """
-    clip_settings = config.get_clip_settings()
+    clip_cfg = config.get_clip_config()
     tag_settings = config.get_tagging_settings()
-    threshold = clip_settings.get('similarity_threshold_percent', 22) / 100
+    threshold = clip_cfg.get('tag_threshold_percent', 8) / 100
     max_tags = tag_settings.get('max_tags', 5)
     return threshold, max_tags

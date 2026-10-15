@@ -12,7 +12,7 @@ logger = logging.getLogger("facet.tag_existing")
 
 from models.tagger import CLIPTagger
 from utils import tags_to_string, get_tag_params
-from db.tags import migrate_tags_to_lookup
+from db.tags import migrate_tags_to_lookup, write_photo_tags
 
 # The ONE definition of "a photo the auto-tag step would tag": it has a stored
 # embedding and no tags yet. The tagging query, the CLI's pending count and the
@@ -70,18 +70,19 @@ def tag_untagged_photos(db_path, tagger, threshold=0.22, max_tags=5, verbose=Fal
         if not rows:
             return 0
 
-        tagged_count = 0
+        tagged = []
         for row in rows:
             tag_list = tagger.get_tags_from_embedding(
                 row['clip_embedding'], threshold=threshold, max_tags=max_tags
             )
             if tag_list:
                 tags_str = tags_to_string(tag_list)
-                conn.execute('UPDATE photos SET tags = ? WHERE path = ?', (tags_str, row['path']))
-                tagged_count += 1
+                tagged.append((row['path'], tags_str))
                 if verbose:
                     logger.info("  %s: %s", row['filename'], tags_str)
 
+        write_photo_tags(conn, tagged)
+        tagged_count = len(tagged)
         conn.commit()
         skipped = getattr(tagger, 'skipped_dim_mismatch', 0)
         if skipped:
@@ -176,11 +177,9 @@ def main():
     # Load config
     from config import ScoringConfig
     config = ScoringConfig(args.config)
-    clip_settings = config.get_clip_settings()
-    tag_settings = config.get_tagging_settings()
-
-    threshold = args.threshold or clip_settings.get('similarity_threshold_percent', 22) / 100
-    max_tags = args.max_tags or tag_settings.get('max_tags', 5)
+    config_threshold, config_max_tags = get_tag_params(config)
+    threshold = args.threshold or config_threshold
+    max_tags = args.max_tags or config_max_tags
 
     logger.info("Loading CLIP model for tagging...")
     logger.info("  Threshold: %s", threshold)

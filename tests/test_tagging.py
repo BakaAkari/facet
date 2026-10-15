@@ -316,3 +316,106 @@ class TestEmbeddingDimensionMismatch:
 
         assert tagger.skipped_dim_mismatch == 50
         assert len([r for r in caplog.records if "1152-dim" in r.getMessage()]) == 1
+
+
+# ---------------------------------------------------------------------------
+# 5. The tag gate follows the ACTIVE profile's clip block (tag_threshold_percent)
+# ---------------------------------------------------------------------------
+
+def _config_from_file(tmp_path, monkeypatch, models):
+    """A ScoringConfig loaded from an operator file, so the defaults merge is in the loop."""
+    import json
+
+    from config.scoring_config import ScoringConfig
+
+    monkeypatch.delenv("FACET_VRAM_PROFILE", raising=False)
+    path = tmp_path / "scoring_config.json"
+    path.write_text(json.dumps({"models": models}), encoding="utf-8")
+    return ScoringConfig(str(path), validate=False)
+
+
+def _detect_profile(monkeypatch, profile):
+    """Pin what 'auto' resolves to -- never touches the real GPU probe."""
+    from config.scoring_config import ScoringConfig
+
+    monkeypatch.setattr(
+        ScoringConfig, "suggest_vram_profile",
+        staticmethod(lambda vram_gb=None: (profile, None, f"pinned {profile}")),
+    )
+
+
+class TestTagThresholdFollowsActiveProfile:
+    def test_tag_threshold_reads_active_profile_block(self, tmp_path, monkeypatch):
+        from utils.tags import get_tag_params
+
+        blocks = {"clip_legacy": {"tag_threshold_percent": 11},
+                  "clip": {"tag_threshold_percent": 8}}
+        cfg = _config_from_file(tmp_path, monkeypatch, {"vram_profile": "8gb", **blocks})
+        assert get_tag_params(cfg) == (0.11, 5)
+        cfg = _config_from_file(tmp_path, monkeypatch, {"vram_profile": "16gb", **blocks})
+        assert get_tag_params(cfg) == (0.08, 5)
+
+    @pytest.mark.parametrize("detected, expected", [("16gb", 0.08), ("legacy", 0.11)])
+    def test_auto_profile_threshold_follows_detected_profile(
+        self, tmp_path, monkeypatch, detected, expected,
+    ):
+        """The trap: reading get_clip_config() unresolved gives an auto->16gb
+        install the legacy block's value."""
+        from utils.tags import get_tag_params
+
+        _detect_profile(monkeypatch, detected)
+        cfg = _config_from_file(tmp_path, monkeypatch, {
+            "vram_profile": "auto",
+            "clip_legacy": {"tag_threshold_percent": 11},
+            "clip": {"tag_threshold_percent": 8},
+        })
+        assert get_tag_params(cfg)[0] == pytest.approx(expected)
+
+    @pytest.mark.parametrize("profile", ["8gb", "legacy", "16gb"])
+    def test_old_full_config_with_stale_22_keeps_effective_threshold(
+        self, tmp_path, monkeypatch, profile,
+    ):
+        """A pre-1.14.3 full config still carries clip_legacy.similarity_threshold_percent: 22.
+
+        That key is no longer read, so the effective gate stays 0.08 -- exactly
+        what it has always been. Reviving the old name would flip such an
+        install to 0.22 (almost no tags on ViT-L-14 cosines)."""
+        from utils.tags import get_tag_params
+
+        cfg = _config_from_file(tmp_path, monkeypatch, {
+            "vram_profile": profile,
+            "clip": {"model_name": "google/siglip2-so400m-patch16-naflex",
+                     "similarity_threshold_percent": 8},
+            "clip_legacy": {"model_name": "ViT-L-14", "pretrained": "laion2b_s32b_b82k",
+                            "similarity_threshold_percent": 22},
+        })
+        assert get_tag_params(cfg)[0] == pytest.approx(0.08)
+
+    def test_get_clip_settings_is_gone(self):
+        import json
+        import os
+
+        from config.scoring_config import ScoringConfig
+        from config_resolve import defaults_path
+
+        assert not hasattr(ScoringConfig, "get_clip_settings")
+
+        with open(defaults_path(), encoding="utf-8") as f:
+            models = json.load(f)["models"]
+        for block in ("clip", "clip_legacy"):
+            assert "similarity_threshold_percent" not in models[block]
+            assert models[block]["tag_threshold_percent"] == 8
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        skip = {"tests", "conda", "venv", "node_modules", ".git", "client"}
+        hits = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames
+                           if d not in skip and not d.startswith(".")]
+            for name in filenames:
+                if name.endswith(".py"):
+                    full = os.path.join(dirpath, name)
+                    with open(full, encoding="utf-8", errors="replace") as f:
+                        if "get_clip_settings" in f.read():
+                            hits.append(os.path.relpath(full, root))
+        assert hits == []

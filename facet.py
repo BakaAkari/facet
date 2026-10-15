@@ -80,7 +80,7 @@ if _script_dir not in sys.path:
 import json
 from pathlib import Path
 from datetime import datetime
-from db import DEFAULT_DB_PATH, init_database, get_connection, check_disk_space
+from db import DEFAULT_DB_PATH, init_database, get_connection, check_disk_space, write_photo_tags
 from db.render_version import raw_path_predicate
 
 try:
@@ -3568,13 +3568,10 @@ def main():
 
                 if images:
                     tags_batch = tagger.tag_batch(images, max_tags=max_tags)
-                    for path, tag_list in zip(paths, tags_batch):
-                        tags = tags_to_string(tag_list) if tag_list else None
-                        conn.execute(
-                            "UPDATE photos SET tags = ? WHERE path = ?",
-                            (tags, path)
-                        )
-                        updated += 1
+                    tag_rows = [(path, tags_to_string(tag_list) if tag_list else None)
+                                for path, tag_list in zip(paths, tags_batch)]
+                    write_photo_tags(conn, tag_rows)
+                    updated += len(tag_rows)
                 conn.commit()
 
         if model_manager is not None:
@@ -3638,12 +3635,8 @@ def main():
         if tag_model == 'clip':
             # Use CLIP embeddings for tagging
             scorer = Facet(db_path=args.db, config_path=args.config)
-            clip_settings = config.get_clip_settings()
-            tagging_settings = config.get_tagging_settings()
-            threshold, max_tags = (
-                clip_settings.get('similarity_threshold_percent', 22) / 100,
-                tagging_settings.get('max_tags', 5)
-            )
+            from utils import get_tag_params
+            threshold, max_tags = get_tag_params(config)
 
             updated = 0
             with get_connection(args.db) as conn:
@@ -3651,17 +3644,17 @@ def main():
                 cursor = conn.execute(
                     "SELECT path, clip_embedding FROM photos WHERE clip_embedding IS NOT NULL"
                 )
+                tag_rows = []
                 for row in tqdm(cursor, desc="Tagging", total=photo_count):
                     if row['clip_embedding']:
                         tag_list = scorer.tagger.get_tags_from_embedding(
                             row['clip_embedding'], threshold=threshold, max_tags=max_tags
                         )
-                        tags = tags_to_string(tag_list) if tag_list else None
-                        conn.execute(
-                            "UPDATE photos SET tags = ? WHERE path = ?",
-                            (tags, row['path'])
-                        )
-                        updated += 1
+                        tag_rows.append((row['path'], tags_to_string(tag_list) if tag_list else None))
+                # Written after the read cursor is drained: an UPDATE of the
+                # table being iterated is avoided rather than relied upon.
+                write_photo_tags(conn, tag_rows)
+                updated = len(tag_rows)
                 conn.commit()
             logger.info("Updated tags for %d photos", updated)
 
@@ -3689,6 +3682,7 @@ def main():
                     cursor = conn.execute(
                         "SELECT path, thumbnail FROM photos WHERE clip_embedding IS NOT NULL"
                     )
+                    tag_rows = []
                     for row in tqdm(cursor, desc="Tagging (thumbnail)", total=photo_count):
                         thumb_blob = row['thumbnail']
                         if not thumb_blob:
@@ -3700,12 +3694,9 @@ def main():
                             continue
 
                         tag_list = tagger.tag_image(pil_img, max_tags=max_tags)
-                        tags = tags_to_string(tag_list) if tag_list else None
-                        conn.execute(
-                            "UPDATE photos SET tags = ? WHERE path = ?",
-                            (tags, row['path'])
-                        )
-                        updated += 1
+                        tag_rows.append((row['path'], tags_to_string(tag_list) if tag_list else None))
+                    write_photo_tags(conn, tag_rows)
+                    updated = len(tag_rows)
                     conn.commit()
             else:
                 # VLM taggers load full images from disk
@@ -3732,13 +3723,10 @@ def main():
 
                         if images:
                             tags_batch = tagger.tag_batch(images, max_tags=max_tags)
-                            for path, tag_list in zip(paths, tags_batch):
-                                tags = tags_to_string(tag_list) if tag_list else None
-                                conn.execute(
-                                    "UPDATE photos SET tags = ? WHERE path = ?",
-                                    (tags, path)
-                                )
-                                updated += 1
+                            tag_rows = [(path, tags_to_string(tag_list) if tag_list else None)
+                                        for path, tag_list in zip(paths, tags_batch)]
+                            write_photo_tags(conn, tag_rows)
+                            updated += len(tag_rows)
 
                     conn.commit()
 

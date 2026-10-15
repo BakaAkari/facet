@@ -31,7 +31,9 @@ from db.scoring_overrides import (
 from db.stats_cache import (
     refresh_stats_cache, get_cached_stat, get_stats_cache_info,
 )
-from db.tags import migrate_tags_to_lookup, get_photo_tags_count
+from db.tags import (
+    migrate_tags_to_lookup, get_photo_tags_count, iter_tag_pairs, sync_photo_tags, write_photo_tags,
+)
 from db.vec import populate_vec_table, sync_vec_row, sync_vec_batch, get_vec_count
 from db.fts import rebuild_fts, has_fts_table
 from db.info import get_schema_info, get_user_version
