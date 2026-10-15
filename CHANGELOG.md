@@ -4,6 +4,8 @@ All notable changes to Facet are documented in this file.
 
 ## [Unreleased]
 
+## [1.20.0] "Épreuve" — 2026-10-15
+
 ### Added
 
 - **Commercial-use mode (#185).** Setting `licensing.mode` to `"commercial"` in your `scoring_config.json` override, or `FACET_LICENSING_MODE=commercial` in the environment, makes Facet refuse every component whose licence is not commercial-safe: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) and InsightFace are never imported, queued or downloaded. SAMP-Net, U2-Net-P and the LAION CLIP-MLP aesthetic head have an unclear licence and are excluded too unless `licensing.allow_unclear` is `true`. Each slot is routed to a permissive replacement: native Q-ReAlign for aesthetic and quality, the rule-based analyser for composition, and YuNet + SFace + MediaPipe for faces, with OFIQ as an optional face-quality scorer. The environment variable can only tighten (`default` or empty means no override; any other value is an error that stops startup), and the viewer passes it, plus `FACET_LICENSING_ALLOW_UNCLEAR=0` when its own policy forbids the unclear components, to every `facet.py` process it spawns. `licensing.allow_unclear` must be a JSON boolean: a string such as `"false"` is rejected at startup instead of being read as true. A refused component raises a `LicenceError` naming the component and its replacement, so a scan stops at startup instead of failing photo by photo. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#licensing).
