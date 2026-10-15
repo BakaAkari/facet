@@ -552,6 +552,29 @@ class SaliencyScorer:
         }
 
     @staticmethod
+    def _masked_variance(lap, mask, n):
+        """Population variance of the CV_16S plane ``lap`` over the ``n`` pixels set in ``mask``.
+
+        ``cv2.meanStdDev`` multiplies its integer sums by ``1/n`` instead of dividing, so the
+        mean of ``n`` equal values is not that value (49 ones give 0.9999999999999999) and a
+        constant non-zero region reports a std of about 1e-8 where ``np.var`` gives exactly 0.
+        A variance that small is cancellation noise, not signal, and the caller branches on
+        ``variance > 0``, so it is recomputed from exact integer sums: ``n * sum(x^2) -
+        sum(x)^2`` is zero if and only if the region is constant, and ``sum(x^2)`` stays below
+        2**53 (the Laplacian is within +-2040) so every cv2 sum is exact. Any other region keeps
+        the fast value, which agrees with ``np.var`` to about 1e-15 relative.
+        """
+        mean, std = cv2.meanStdDev(lap, mask=mask)
+        variance = float(std[0][0]) ** 2
+        mean = float(mean[0][0])
+        if variance > 1e-13 * (mean * mean + variance) + 1e-12:
+            return variance
+        inside = cv2.bitwise_and(lap, lap, mask=mask)
+        total = int(cv2.sumElems(inside)[0])
+        total_sq = int(cv2.sumElems(cv2.multiply(inside, inside, dtype=cv2.CV_32S))[0])
+        return (n * total_sq - total * total) / (n * n)
+
+    @staticmethod
     def _region_variances(gray, fg, total_pixels):
         """Laplacian variance over the subject (``fg``) and over everything else.
 
@@ -559,16 +582,17 @@ class SaliencyScorer:
         exactly the values ``CV_64F`` would; only the summation order of the variance
         differs from ``np.var`` (relative 1e-15, far below the 2-decimal rounding the
         callers apply). A region with no pixels has variance 0, as before, and a constant
-        region gives exactly 0.0 (integer sums, no cancellation).
+        region gives exactly 0.0 (see ``_masked_variance``).
         """
         lap = cv2.Laplacian(gray, cv2.CV_16S)
         n_subject = cv2.countNonZero(fg)
         if n_subject > 0:
-            subject_variance = float(cv2.meanStdDev(lap, mask=fg)[1][0][0]) ** 2
+            subject_variance = SaliencyScorer._masked_variance(lap, fg, n_subject)
         else:
             subject_variance = 0.0
         if total_pixels - n_subject > 0:
-            bg_variance = float(cv2.meanStdDev(lap, mask=cv2.bitwise_not(fg))[1][0][0]) ** 2
+            bg_variance = SaliencyScorer._masked_variance(
+                lap, cv2.bitwise_not(fg), total_pixels - n_subject)
         else:
             bg_variance = 0.0
         return subject_variance, bg_variance

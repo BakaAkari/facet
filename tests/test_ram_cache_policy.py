@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import types
+import weakref
 from unittest import mock
 
 import pytest
@@ -147,7 +148,9 @@ class TestAdmissionReserve:
                                      CPU_CACHEABLE_MODELS=ModelManager.CPU_CACHEABLE_MODELS)
         assert ModelManager._can_cache_to_ram(stub, 'clip')
 
-    @pytest.mark.parametrize('bad', ['abc', -0.5, -1, None, True, float('nan'), float('inf'), [4]])
+    @pytest.mark.parametrize('bad', [
+        'abc', '4', '4.5', ' 2 ', '1e3', '0x10', 'nan', '', -0.5, -1, None, True, False,
+        float('nan'), float('inf'), -float('inf'), [4], {'gb': 4}, 10**400, -10**400])
     def test_an_invalid_reserve_raises_naming_the_key(self, bad):
         with pytest.raises(ValueError, match='ram_cache_reserve_gb'):
             _manager(ram_cache_reserve_gb=bad)
@@ -208,6 +211,17 @@ class TestEvictCpuCacheWithoutTarget:
         monkeypatch.setattr(system_memory, 'release_freed_heap', release)
         _cached_manager().evict_cpu_cache()
         release.assert_called_once_with()
+
+    def test_the_evicted_models_are_unreachable_when_the_heap_is_released(self, monkeypatch):
+        """``gc.collect`` + ``release_freed_heap`` free nothing while ``evict_cpu_cache`` still
+        holds the evicted models in its own locals (the ``dropped`` dict, the loop variable)."""
+        m = _cached_manager()
+        refs = [weakref.ref(s) for s in m._cpu_cache.values()]
+        alive_at_release = []
+        monkeypatch.setattr(system_memory, 'release_freed_heap',
+                            lambda: alive_at_release.append([r() is not None for r in refs]) or True)
+        assert m.evict_cpu_cache() == ['a', 'b', 'c']
+        assert alive_at_release == [[False, False, False]]
 
 
 class TestEvictCpuCacheWithTarget:

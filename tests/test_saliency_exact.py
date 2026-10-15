@@ -201,6 +201,66 @@ class TestBinaryMasks:
 
 
 # ---------------------------------------------------------------------------
+# constant NON-zero Laplacian regions: cv2.meanStdDev reports ~1e-8 std for them
+
+def _quadratic_ramp_scene(a, width, height):
+    """A gray plane whose columns are ``a * x**2`` (second difference ``2a``, constant), subject = last column."""
+    row = (a * np.arange(width) ** 2).astype(np.uint8)
+    gray = np.tile(row, (height, 1))
+    mask = np.zeros((height, width), np.uint8)
+    mask[:, width - 1] = 255
+    return mask, gray
+
+
+class TestConstantNonZeroLaplacianRegion:
+    # (a, W, H): scenes where cv2.meanStdDev alone flipped bg_separation 10.0 -> 0.0 (359 of 6090 did)
+    @pytest.mark.parametrize('a,width,height', [
+        (1, 4, 166), (1, 4, 79), (1, 8, 249), (1, 12, 250), (1, 16, 196), (2, 8, 119), (2, 12, 136)])
+    def test_quadratic_ramp_matches_the_reference(self, a, width, height):
+        mask, gray = _quadratic_ramp_scene(a, width, height)
+        check(mask, gray)
+
+    def test_the_ramp_scene_has_a_perfectly_separated_background(self):
+        """Background Laplacian constant and non-zero: the reference says 10.0, not 0.0."""
+        mask, gray = _quadratic_ramp_scene(1, 4, 166)
+        assert check(mask, gray)['bg_separation'] == 10.0
+
+    def test_every_quadratic_ramp_scene_matches_the_reference(self):
+        for a in (1, 2, 3):
+            for width in range(4, 17):
+                if a * (width - 1) ** 2 > 255:
+                    continue
+                for height in range(50, 260, 7):
+                    check(*_quadratic_ramp_scene(a, width, height))
+
+    @pytest.mark.parametrize('n', [1, 3, 49, 77, 331, 5000])
+    @pytest.mark.parametrize('c', [1, 3, -3, 100, 1020, -2040])
+    def test_a_constant_region_has_exactly_zero_variance(self, n, c):
+        lap = np.full((1, n + 5), 9, np.int16)
+        lap[0, :n] = c
+        mask = np.zeros((1, n + 5), np.uint8)
+        mask[0, :n] = 255
+        assert SaliencyScorer._masked_variance(lap, mask, n) == 0.0
+
+    def test_a_non_constant_region_keeps_the_fast_value(self):
+        rng = np.random.default_rng(11)
+        lap = rng.integers(-2040, 2041, (200, 300)).astype(np.int16)
+        mask = np.zeros((200, 300), np.uint8)
+        mask[20:150, 30:260] = 255
+        got = SaliencyScorer._masked_variance(lap, mask, int(cv2.countNonZero(mask)))
+        want = float(np.var(lap[mask > 0].astype(np.float64)))
+        assert got == pytest.approx(want, rel=1e-12)
+
+    def test_one_odd_pixel_in_a_constant_region_is_not_zero(self):
+        lap = np.full((1, 1000), 5, np.int16)
+        lap[0, 500] = 6
+        mask = np.full((1, 1000), 255, np.uint8)
+        want = float(np.var(lap.astype(np.float64)))
+        assert want > 0
+        assert SaliencyScorer._masked_variance(lap, mask, 1000) == pytest.approx(want, rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
 # non-binary uint8 masks: asserted against the REFERENCE (three different thresholds, spec D22)
 
 class TestNonBinaryUint8Masks:

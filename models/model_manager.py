@@ -182,18 +182,21 @@ class ModelManager:
     def _parse_ram_cache_reserve_gb(value) -> float:
         """Validate ``models.ram_cache_reserve_gb``: a finite number >= 0.
 
-        A boolean is refused although ``float(True)`` works: ``true`` in that
-        key is a misplaced switch, not a one-gigabyte reserve.
+        Only a JSON number is accepted. A boolean is refused although
+        ``float(True)`` works (``true`` in that key is a misplaced switch, not a
+        one-gigabyte reserve), and so is a string although ``float("4")`` works
+        (``"4"`` is a quoted number the operator did not mean to quote). An int
+        too large for a float is out of range, not an ``OverflowError``.
         """
-        try:
-            if isinstance(value, bool):
-                raise TypeError('a boolean is not a size')
-            reserve = float(value)
-        except (TypeError, ValueError):
-            reserve = None
+        reserve = None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                reserve = float(value)
+            except OverflowError:
+                pass
         if reserve is None or not math.isfinite(reserve) or reserve < 0:
             raise ValueError(
-                f"models.ram_cache_reserve_gb must be a number of GB >= 0, got {value!r}")
+                f"models.ram_cache_reserve_gb must be a number of GB >= 0, got {value!r:.40}")
         return reserve
 
     def _available_bytes(self) -> int:
