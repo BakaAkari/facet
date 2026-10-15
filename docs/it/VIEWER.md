@@ -1040,6 +1040,14 @@ python database.py --refresh-stats   # Precalcola le aggregazioni
 python database.py --optimize        # Deframmenta il database
 ```
 
+### Indici della galleria e cache dei conteggi
+
+Il conteggio della galleria, il suo riepilogo delle foto nascoste e ogni pagina leggono le stesse colonne di visibilità nelle loro clausole di occultamento (occhi chiusi, raffiche, duplicati, bracketing, panorami, scartate, spazzatura). Otto indici di copertura (`idx_gallery_aggregate`, `idx_gallery_date_desc`, `idx_gallery_date_asc`, `idx_gallery_category`, `idx_gallery_camera`, `idx_star_rating_path`, `idx_gallery_iaa_asc` e `idx_stats_categories`, definiti in `db/schema.py`) contengono queste colonne accanto alla colonna di ordinamento, così queste query vengono servite dall'indice invece di scorrere l'intera tabella `photos`. Su una libreria da 130k foto, la pagina predefinita della galleria è passata da circa 1,2 s a circa 30 ms.
+
+- **Costruiti una sola volta, all'avvio del viewer.** Il primo avvio dopo un aggiornamento costruisce ogni indice mancante: circa 142 s e circa 106-111 MB di dimensione aggiuntiva del database su una libreria da 130k foto (misurato). Esegui prima `python database.py` per costruirli senza avviare il viewer. Per il lock della libreria, `--workers N` e Docker vedi [DEPLOYMENT.md](DEPLOYMENT.md#avvio-del-viewer-e-indici-della-galleria).
+- **Scritture leggermente più lente.** Il salvataggio di una riga completa durante una scansione costa circa 0,9 ms in più per foto, e l'aggiornamento di una singola colonna di occultamento circa 0,5-0,6 ms in più per riga (misurato sulla stessa libreria).
+- **Cache dei conteggi.** I conteggi e i riepiloghi delle foto nascoste sono tenuti in cache per 5 minuti. La chiave della cache include un token di modifica del database, quindi un commit di qualsiasi connessione di qualsiasi processo sullo stesso host (compresi i comandi `--detect-junk` e `--recompute-*`) la invalida. Un commit fatto da un'altra macchina tramite una condivisione di rete non viene visto finché la voce non scade.
+
 ### SQLite asincrono (opt-in, per percorsi di lettura ad alta concorrenza)
 
 `api.database.get_async_db()` è un gestore di contesto asincrono basato su aiosqlite,

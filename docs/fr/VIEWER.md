@@ -1041,6 +1041,14 @@ python database.py --refresh-stats   # Precompute aggregations
 python database.py --optimize        # Defragment database
 ```
 
+### Index de la galerie et cache des comptages
+
+Le comptage de la galerie, son résumé des photos masquées et chaque page lisent les mêmes colonnes de visibilité dans leurs clauses de masquage (clignements, rafales, doublons, bracketings, panoramas, rejets, indésirables). Huit index couvrants (`idx_gallery_aggregate`, `idx_gallery_date_desc`, `idx_gallery_date_asc`, `idx_gallery_category`, `idx_gallery_camera`, `idx_star_rating_path`, `idx_gallery_iaa_asc` et `idx_stats_categories`, définis dans `db/schema.py`) contiennent ces colonnes à côté de la colonne de tri, si bien que ces requêtes sont servies par l'index au lieu de parcourir toute la table `photos`. Sur une bibliothèque de 130k photos, la page par défaut de la galerie est ainsi passée d'environ 1,2 s à environ 30 ms.
+
+- **Construits une seule fois, au démarrage de la visionneuse.** Le premier démarrage après une mise à niveau construit chaque index manquant : environ 142 s et environ 106 à 111 Mo de taille supplémentaire de la base sur une bibliothèque de 130k photos (mesuré). Lancez `python database.py` au préalable pour les construire sans démarrer la visionneuse. Pour le verrou de bibliothèque, `--workers N` et Docker, voir [DEPLOYMENT.md](DEPLOYMENT.md#démarrage-de-la-visionneuse-et-index-de-la-galerie).
+- **Écritures légèrement plus lentes.** L'enregistrement d'une ligne complète par un scan coûte environ 0,9 ms de plus par photo, et la mise à jour d'une seule colonne de masquage environ 0,5 à 0,6 ms de plus par ligne (mesuré sur la même bibliothèque).
+- **Cache des comptages.** Les comptages et les résumés des photos masquées sont mis en cache pendant 5 minutes. La clé du cache inclut un jeton de changement de la base : un commit de n'importe quelle connexion de n'importe quel processus du même hôte (y compris les commandes `--detect-junk` et `--recompute-*`) l'invalide. Un commit fait depuis une autre machine via un partage réseau n'est vu qu'à l'expiration de l'entrée.
+
 ### SQLite asynchrone (optionnel, pour les chemins de lecture à forte concurrence)
 
 `api.database.get_async_db()` est un gestionnaire de contexte asynchrone adossé à aiosqlite,

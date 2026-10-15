@@ -377,7 +377,7 @@ Vérifications : plages de scores, métriques de visages, corruption de BLOB, ta
 
 | Commande | Description |
 |---------|-------------|
-| `python database.py` | Initialise/met à niveau le schéma |
+| `python database.py` | Initialise/met à niveau le schéma (construit aussi les index couvrants de la galerie ; la visionneuse construit les index manquants au démarrage, voir [VIEWER.md](VIEWER.md#index-de-la-galerie-et-cache-des-comptages)) |
 | `python database.py --info` | Affiche les informations du schéma |
 | `python database.py --migrate-tags` | Remplit la table de correspondance photo_tags (requêtes 10-50x plus rapides) |
 | `python database.py --rebuild-fts` | Reconstruit l'index de recherche plein texte FTS5 à partir des légendes/étiquettes |

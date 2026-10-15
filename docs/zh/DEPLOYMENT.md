@@ -615,6 +615,15 @@ photos.yourdomain.com {
 
 那个锁是内核文件锁，因此它**只在一台机器内**互斥。当数据库通过 SMB/CIFS 访问时 —— 例如一台 Windows 工作站给 NAS 共享上的照片评分 —— 每台机器各自取到自己的一份锁，谁也看不见谁。Facet 会检测到这类挂载，并在取锁时打印一条警告，但它无法跨主机强制任何约束：请一次只从一台机器上运行库任务。Linux 客户端之间的 NFS 不受影响 —— 在那里 `flock` 会变成由服务器仲裁的 POSIX 记录锁。
 
+### 查看器启动与图库索引
+
+查看器在启动的表结构步骤中使用同一把锁，因为升级后的第一次启动会构建八个图库覆盖索引（参见 [VIEWER.md](VIEWER.md#图库索引与计数缓存)）：在一个 13 万张照片的图库上，约 142 秒，并使数据库增大约 106 至 111 MB（实测）。每个索引都在各自的事务中构建，并在开始前以 INFO 级别记入日志（`Creating index ...`），因此中途被终止的启动会保留已完成的索引，下一次启动继续构建。
+
+- **有图库任务正在运行。** 如果扫描、`--recompute-average` 或其他任务持有这把锁，查看器会记录一条指明该任务的警告，仍然迁移表和列，并跳过索引构建。查看器会继续提供服务（较慢），直到下一次启动（或 `python database.py`）构建这些索引。查看器构建期间启动的扫描，会以常见的“已在运行”消息被拒绝，而不是在 `database is locked` 上超时。
+- **`--workers N`。** 恰有一个 worker 持有锁并构建；其余的推迟构建并提供服务。
+- **Docker。** 在构建完成之前，容器可能被报告为 unhealthy（`docker-compose.yml` 中的 `start_period` 为 30 秒）。请先对数据库运行 `python database.py`，或在升级时加长 `start_period`。
+- **查看器运行期间的文件。** 查看器保持一个只读的数据库连接，因此运行期间 `-wal` 和 `-shm` 文件会一直存在，单独的 `.db` 并不包含最近的提交。请在停止查看器之后再复制或替换数据库；每次正常关闭时它都会执行一次 WAL 检查点（即使设置了 `performance.wal_checkpoint_minutes: 0`）。
+
 ## 密钥的存放与轮换
 
 有一个密钥同时用于签发每一次登录会话（JWT）和每一个相框链接。它**不是** `scoring_config.json` 里的键：它保存在配置文件旁边的 `.facet_secret` 中，首次运行时以 `0600` 权限创建，并已加入 gitignore。
@@ -703,7 +712,7 @@ SQLite 数据库可能会涨到几十 GB（评分 2 万张以上照片后，`pho
 
 Facet 并不捆绑 Litestream。请在运行查看器／评分的主机上安装一次；它作为附属进程运行，对应用完全透明。
 
-Facet 本来就使用 WAL 模式（`db/connection.py:apply_pragmas`），周期性的检查点线程（默认每 30 分钟一次，可通过 `performance.wal_checkpoint_minutes` 配置）会把 WAL 控制在有限大小内。复制期间读取不会被阻塞。
+Facet 本来就使用 WAL 模式（`db/connection.py:apply_pragmas`），周期性的检查点线程（默认每 30 分钟一次，可通过 `performance.wal_checkpoint_minutes` 配置）会把 WAL 控制在有限大小内（`0` 会禁用该线程；查看器正常关闭时的检查点始终会执行）。复制期间读取不会被阻塞。
 
 ### 最小 Litestream 配置
 

@@ -559,6 +559,15 @@ Um escaneamento, `--recompute-average`, `--upgrade-db` e um treinamento do ranqu
 
 Esse bloqueio é um bloqueio de arquivo do kernel, portanto exclui trabalhos **apenas em uma máquina**. Quando o banco de dados é acessado por SMB/CIFS — por exemplo, uma estação de trabalho Windows pontuando fotos em um compartilhamento de NAS —, cada máquina toma sua própria cópia do bloqueio e nenhuma enxerga a outra. O Facet detecta a montagem e registra um aviso ao tomar o bloqueio, mas não pode impor nada entre máquinas: execute os trabalhos de biblioteca a partir de uma única máquina por vez. NFS entre clientes Linux não é afetado — lá o `flock` vira um bloqueio de registro POSIX arbitrado pelo servidor.
 
+### Início do visualizador e índices da galeria
+
+O visualizador toma esse mesmo bloqueio para a etapa de schema da sua inicialização, porque a primeira inicialização após uma atualização cria oito índices de cobertura da galeria (veja [VIEWER.md](VIEWER.md#índices-da-galeria-e-cache-de-contagens)): cerca de 142 s e cerca de 106 a 111 MB de tamanho adicional do banco de dados numa biblioteca de 130k fotos (medido). Cada índice é criado na sua própria transação e registrado no nível INFO antes de começar (`Creating index ...`), de modo que uma inicialização interrompida no meio mantém os índices que terminou e a seguinte continua.
+
+- **Há um trabalho de biblioteca em andamento.** Se uma varredura, `--recompute-average` ou outro trabalho detém o bloqueio, o visualizador registra um aviso que o nomeia, ainda migra tabelas e colunas e pula a criação dos índices. O visualizador atende, mais devagar, até que a próxima inicialização (ou `python database.py`) crie os índices. Uma varredura iniciada durante a criação é recusada com a mensagem habitual de «já em execução», em vez de esgotar o tempo com `database is locked`.
+- **`--workers N`.** Exatamente um worker toma o bloqueio e cria; os outros adiam e atendem.
+- **Docker.** O contêiner pode ser reportado como «unhealthy» até a criação terminar (`start_period` em `docker-compose.yml` é de 30 s). Execute antes `python database.py` no banco de dados ou aumente `start_period` durante a atualização.
+- **Arquivos enquanto o visualizador roda.** O visualizador mantém uma conexão somente leitura com o banco de dados, então os arquivos `-wal` e `-shm` persistem enquanto ele roda, e o `.db` sozinho não contém os commits recentes. Copie ou substitua o banco de dados somente depois de parar o visualizador, que faz um checkpoint do WAL em cada encerramento limpo (também com `performance.wal_checkpoint_minutes: 0`).
+
 ## Armazenamento e rotação do segredo
 
 Um único segredo assina cada sessão de login (JWT) e cada link do porta-retratos digital. **Não** é uma chave de `scoring_config.json`: ele fica em `.facet_secret`, ao lado da configuração, criado com modo `0600` na primeira execução e ignorado pelo git.
@@ -647,7 +656,7 @@ O banco de dados SQLite pode crescer para dezenas de gigabytes (`photo_scores_pr
 
 O Facet não inclui o Litestream. Instale-o uma vez no host que executa o visualizador/pontuação; ele roda como um processo sidecar, transparente para a aplicação.
 
-O Facet já usa o modo WAL (`db/connection.py:apply_pragmas`), e a thread de checkpoint periódico (padrão a cada 30 min, configurável via `performance.wal_checkpoint_minutes`) mantém o WAL limitado. As leituras permanecem desbloqueadas durante a replicação.
+O Facet já usa o modo WAL (`db/connection.py:apply_pragmas`), e a thread de checkpoint periódico (padrão a cada 30 min, configurável via `performance.wal_checkpoint_minutes`) mantém o WAL limitado (`0` desativa essa thread; o checkpoint em um encerramento limpo do visualizador sempre é executado). As leituras permanecem desbloqueadas durante a replicação.
 
 ### Configuração mínima do Litestream
 

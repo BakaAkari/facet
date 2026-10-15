@@ -2037,7 +2037,7 @@ Performance-Einstellungen der Datenbank.
 |---------|---------|-------------|
 | `mmap_size_mb` | `2048` | Größe des speicher-gemappten I/O von SQLite |
 | `cache_size_mb` | `128` | SQLite-Cache-Größe |
-| `wal_checkpoint_minutes` | `30` | Optionale Überschreibung (in der ausgelieferten Datei nicht vorhanden). Intervall in Minuten für das Hintergrund-`PRAGMA wal_checkpoint(TRUNCATE)` des Viewers. Verhindert WAL-Aufblähung bei langlaufenden Deployments. Auf `0` setzen zum Deaktivieren. |
+| `wal_checkpoint_minutes` | `30` | Optionale Überschreibung (in der ausgelieferten Datei nicht vorhanden). Intervall in Minuten für das Hintergrund-`PRAGMA wal_checkpoint(TRUNCATE)` des Viewers. Verhindert WAL-Aufblähung bei langlaufenden Deployments. Auf `0` setzen, um den periodischen Thread zu deaktivieren; der Checkpoint beim sauberen Herunterfahren läuft immer. |
 | `slow_request_ms` | `1000` | Viewer-API-Anfragen, die langsamer als diese Anzahl Millisekunden sind, werden auf WARNING mit einem `SLOW`-Marker protokolliert. Auf `0` setzen zum Deaktivieren. |
 
 ---

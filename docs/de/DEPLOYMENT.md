@@ -560,6 +560,15 @@ Ein Scan, `--recompute-average`, `--upgrade-db` und ein Training des persönlich
 
 Diese Sperre ist eine Kernel-Dateisperre und schließt Aufträge daher **nur auf einer Maschine** aus. Wenn die Datenbank über SMB/CIFS erreicht wird — etwa eine Windows-Workstation, die Fotos auf einer NAS-Freigabe bewertet —, nimmt jede Maschine ihre eigene Kopie der Sperre und keine sieht die andere. Facet erkennt die Einhängung und protokolliert beim Nehmen der Sperre eine Warnung, kann aber maschinenübergreifend nichts erzwingen: Führen Sie Bibliotheksaufträge immer nur von einer Maschine aus. NFS zwischen Linux-Clients ist nicht betroffen — dort wird `flock` zu einer POSIX-Datensatzsperre, die der Server arbitriert.
 
+### Viewer-Start und die Galerie-Indizes
+
+Der Viewer nimmt für den Schema-Schritt seines Starts dieselbe Sperre, weil der erste Start nach einem Upgrade acht abdeckende Galerie-Indizes baut (siehe [VIEWER.md](VIEWER.md#galerie-indizes-und-zähler-cache)): etwa 142 s und etwa 106 bis 111 MB zusätzliche Datenbankgröße auf einer Bibliothek mit 130k Fotos (gemessen). Jeder Index wird in einer eigenen Transaktion gebaut und vor dem Start auf INFO-Ebene protokolliert (`Creating index ...`); ein auf halbem Weg abgebrochener Start behält die fertigen Indizes, und der nächste Start setzt fort.
+
+- **Ein Bibliotheksauftrag läuft.** Hält ein Scan, `--recompute-average` oder ein anderer Auftrag die Sperre, protokolliert der Viewer eine Warnung mit dem Namen des Auftrags, migriert weiterhin Tabellen und Spalten und überspringt den Index-Bau. Der Viewer liefert dann langsam aus, bis der nächste Start (oder `python database.py`) die Indizes baut. Ein Scan, der während des Baus gestartet wird, wird mit der üblichen Meldung „läuft bereits" abgelehnt, statt mit `database is locked` in ein Timeout zu laufen.
+- **`--workers N`.** Genau ein Worker nimmt die Sperre und baut; die anderen stellen den Bau zurück und liefern aus.
+- **Docker.** Der Container kann bis zum Ende des Baus als „unhealthy" gemeldet werden (`start_period` in `docker-compose.yml` beträgt 30 s). Führe vorher `python database.py` auf der Datenbank aus oder verlängere `start_period` für das Upgrade.
+- **Dateien, während der Viewer läuft.** Der Viewer hält eine schreibgeschützte Verbindung zur Datenbank offen; deshalb bleiben die Dateien `-wal` und `-shm` bestehen, solange er läuft, und die `.db` allein enthält die jüngsten Commits nicht. Kopiere oder ersetze die Datenbank erst nach dem Stoppen des Viewers; er führt bei jedem sauberen Herunterfahren einen WAL-Checkpoint aus (auch mit `performance.wal_checkpoint_minutes: 0`).
+
 ## Speicherung und Rotation des Secrets
 
 Ein einziges Secret signiert jede Anmeldesitzung (JWT) und jeden Fotorahmen-Link. Es ist **kein** Schlüssel in `scoring_config.json`: Es liegt in `.facet_secret` neben der Konfiguration, wird beim ersten Start mit Modus `0600` angelegt und von git ignoriert.
@@ -648,7 +657,7 @@ Die SQLite-Datenbank kann auf zehntausende Gigabyte anwachsen (`photo_scores_pro
 
 Facet bündelt Litestream nicht. Installieren Sie es einmal auf dem Host, der den Viewer/die Bewertung ausführt; es läuft als Sidecar-Prozess, transparent für die Anwendung.
 
-Facet verwendet bereits den WAL-Modus (`db/connection.py:apply_pragmas`), und der periodische Checkpoint-Thread (standardmäßig alle 30 Min., konfigurierbar über `performance.wal_checkpoint_minutes`) hält das WAL begrenzt. Lesevorgänge bleiben während der Replikation unblockiert.
+Facet verwendet bereits den WAL-Modus (`db/connection.py:apply_pragmas`), und der periodische Checkpoint-Thread (standardmäßig alle 30 Min., konfigurierbar über `performance.wal_checkpoint_minutes`) hält das WAL begrenzt (`0` deaktiviert diesen Thread; der Checkpoint beim sauberen Herunterfahren des Viewers läuft immer). Lesevorgänge bleiben während der Replikation unblockiert.
 
 ### Minimale Litestream-Konfiguration
 

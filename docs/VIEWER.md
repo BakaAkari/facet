@@ -1112,6 +1112,14 @@ python database.py --refresh-stats   # Precompute aggregations
 python database.py --optimize        # Defragment database
 ```
 
+### Gallery Indexes and the Count Cache
+
+The gallery's count, its hidden-photo summary and every page read the same visibility columns in their hide clauses (blinks, bursts, duplicates, brackets, panoramas, rejects, junk). Eight covering indexes (`idx_gallery_aggregate`, `idx_gallery_date_desc`, `idx_gallery_date_asc`, `idx_gallery_category`, `idx_gallery_camera`, `idx_star_rating_path`, `idx_gallery_iaa_asc` and `idx_stats_categories`, defined in `db/schema.py`) hold those columns next to the sort column, so these statements are answered from the index instead of by walking the whole `photos` table. On a 130k-photo library this took the default gallery page from about 1.2 s to about 30 ms.
+
+- **Built at viewer start, once.** The first start after an upgrade builds any missing index: about 142 s and about 106 to 111 MB of extra database size on a 130k-photo library (measured). Run `python database.py` beforehand to build them without starting the viewer. See [DEPLOYMENT.md](DEPLOYMENT.md#viewer-start-and-the-gallery-indexes) for the library lock, `--workers N` and Docker.
+- **Slightly slower writes.** A scan's full-row save costs about 0.9 ms more per photo, and an update of a single hide column about 0.5 to 0.6 ms per row (measured on the same library).
+- **Count cache.** Counts and hidden summaries are cached for 5 minutes. The cache key includes a database change token, so a commit by any connection of any process on the same host (the `--detect-junk` and `--recompute-*` commands included) invalidates it. A commit made from another machine over a network share is not seen until the entry expires.
+
 ### Async SQLite (opt-in, for high-concurrency read paths)
 
 `api.database.get_async_db()` is an aiosqlite-backed async context manager

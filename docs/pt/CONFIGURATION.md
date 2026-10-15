@@ -2029,7 +2029,7 @@ Configurações de desempenho do banco de dados.
 |--------------|--------|-----------|
 | `mmap_size_mb` | `2048` | Tamanho de E/S mapeada em memória do SQLite |
 | `cache_size_mb` | `128` | Tamanho do cache do SQLite |
-| `wal_checkpoint_minutes` | `30` | Override opcional (ausente no arquivo distribuído). Intervalo em minutos para o `PRAGMA wal_checkpoint(TRUNCATE)` em segundo plano do visualizador. Evita o inchaço do WAL em implantações de longa duração. Defina como `0` para desativar. |
+| `wal_checkpoint_minutes` | `30` | Override opcional (ausente no arquivo distribuído). Intervalo em minutos para o `PRAGMA wal_checkpoint(TRUNCATE)` em segundo plano do visualizador. Evita o inchaço do WAL em implantações de longa duração. Defina como `0` para desativar a thread periódica; o checkpoint em um encerramento limpo sempre é executado. |
 | `slow_request_ms` | `1000` | Requisições da API do visualizador mais lentas que esta quantidade de milissegundos são registradas em WARNING com um marcador `SLOW`. Defina como `0` para desativar. |
 
 ---

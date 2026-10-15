@@ -566,6 +566,15 @@ Un escaneo, `--recompute-average`, `--upgrade-db` y un entrenamiento del clasifi
 
 Ese bloqueo es un bloqueo de archivo del núcleo, por lo que excluye trabajos **solo en una máquina**. Cuando se accede a la base de datos por SMB/CIFS —por ejemplo, una estación de trabajo Windows que puntúa fotos en un recurso compartido de un NAS—, cada máquina toma su propia copia del bloqueo y ninguna ve a la otra. Facet detecta el montaje y registra una advertencia al tomar el bloqueo, pero no puede imponer nada entre máquinas: ejecuta los trabajos de biblioteca desde una sola máquina a la vez. NFS entre clientes Linux no se ve afectado: allí `flock` se convierte en un bloqueo de registro POSIX que el servidor arbitra.
 
+### Arranque del visor e índices de la galería
+
+El visor toma ese mismo bloqueo para el paso de esquema de su arranque, porque el primer inicio tras una actualización construye ocho índices de cobertura de la galería (consulta [VIEWER.md](VIEWER.md#índices-de-la-galería-y-caché-de-recuentos)): unos 142 s y unos 106 a 111 MB de tamaño adicional de la base de datos en una biblioteca de 130k fotos (medido). Cada índice se construye en su propia transacción y se registra a nivel INFO antes de empezar (`Creating index ...`), de modo que un inicio interrumpido a medias conserva los índices que terminó y el siguiente continúa.
+
+- **Hay un trabajo de biblioteca en curso.** Si un escaneo, `--recompute-average` u otro trabajo tiene el bloqueo, el visor registra una advertencia con su nombre, sigue migrando tablas y columnas, y omite la construcción de índices. El visor sirve, más lento, hasta que el siguiente inicio (o `python database.py`) construya los índices. Un escaneo iniciado mientras el visor construye se rechaza con el mensaje habitual de «ya se está ejecutando» en lugar de agotar el tiempo con `database is locked`.
+- **`--workers N`.** Exactamente un worker toma el bloqueo y construye; los demás lo aplazan y sirven.
+- **Docker.** El contenedor puede figurar como «unhealthy» hasta que termine la construcción (`start_period` en `docker-compose.yml` es de 30 s). Ejecuta antes `python database.py` sobre la base de datos o alarga `start_period` durante la actualización.
+- **Archivos mientras el visor está en marcha.** El visor mantiene una conexión de solo lectura a la base de datos, por lo que los archivos `-wal` y `-shm` persisten mientras se ejecuta y el `.db` por sí solo no contiene los commits recientes. Copia o reemplaza la base de datos solo después de detener el visor, que hace un checkpoint del WAL en cada cierre limpio (también con `performance.wal_checkpoint_minutes: 0`).
+
 ## Almacenamiento y rotación del secreto
 
 Un único secreto firma cada sesión de inicio de sesión (JWT) y cada enlace del marco de fotos. **No** es una clave de `scoring_config.json`: reside en `.facet_secret`, junto a la configuración, creado con modo `0600` en el primer arranque e ignorado por git.
@@ -654,7 +663,7 @@ La base de datos SQLite puede crecer hasta decenas de gigabytes (`photo_scores_p
 
 Facet no incluye Litestream. Instálalo una vez en el host que ejecuta la galería web/puntuación; se ejecuta como un proceso sidecar, transparente para la aplicación.
 
-Facet ya usa el modo WAL (`db/connection.py:apply_pragmas`), y el hilo periódico de checkpoint (predeterminado cada 30 min, configurable mediante `performance.wal_checkpoint_minutes`) mantiene el WAL acotado. Las lecturas no se bloquean durante la replicación.
+Facet ya usa el modo WAL (`db/connection.py:apply_pragmas`), y el hilo periódico de checkpoint (predeterminado cada 30 min, configurable mediante `performance.wal_checkpoint_minutes`) mantiene el WAL acotado (`0` desactiva ese hilo; el checkpoint en un cierre limpio del visor se ejecuta siempre). Las lecturas no se bloquean durante la replicación.
 
 ### Configuración mínima de Litestream
 

@@ -382,7 +382,7 @@ Prüft: Score-Bereiche, Gesichtsmetriken, BLOB-Beschädigung, Embedding-Größen
 
 | Befehl | Beschreibung |
 |---------|-------------|
-| `python database.py` | Schema initialisieren/aktualisieren |
+| `python database.py` | Schema initialisieren/aktualisieren (baut auch die abdeckenden Galerie-Indizes; der Viewer baut fehlende beim Start, siehe [VIEWER.md](VIEWER.md#galerie-indizes-und-zähler-cache)) |
 | `python database.py --info` | Schemainformationen anzeigen |
 | `python database.py --migrate-tags` | photo_tags-Lookup befüllen (10-50x schnellere Abfragen) |
 | `python database.py --rebuild-fts` | FTS5-Volltextsuchindex aus Bildunterschriften/Tags neu aufbauen |

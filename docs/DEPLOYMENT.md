@@ -669,6 +669,15 @@ A scan, `--recompute-average`, `--upgrade-db` and a ranker training run each rew
 
 That lock is a kernel file lock, so it excludes jobs **on one machine only**. When the database is reached over SMB/CIFS — a Windows workstation scoring photos on a NAS share, for example — each machine takes its own copy of the lock and neither sees the other. Facet detects the mount and logs a warning when it takes the lock, but it cannot enforce anything across hosts: run library jobs from one machine at a time. NFS between Linux clients is not affected — there `flock` becomes a POSIX record lock that the server arbitrates.
 
+### Viewer start and the gallery indexes
+
+The viewer takes that same lock for the schema step of its start, because the first start after an upgrade builds eight gallery covering indexes (see [VIEWER.md](VIEWER.md#gallery-indexes-and-the-count-cache)): about 142 s and about 106 to 111 MB of extra database size on a 130k-photo library (measured). Each index is built in its own transaction and logged at INFO before it starts (`Creating index ...`), so a start killed halfway keeps the indexes it finished and the next start resumes.
+
+- **A library job is running.** If a scan, `--recompute-average` or another job holds the lock, the viewer logs a warning naming it, still migrates tables and columns, and skips the index build. The viewer serves, slowly, until the next start (or `python database.py`) builds the indexes. A scan started while the viewer is building is refused with the usual "already running" message instead of timing out on `database is locked`.
+- **`--workers N`.** Exactly one worker takes the lock and builds; the others defer and serve.
+- **Docker.** The container can report unhealthy until the build finishes (`start_period` in `docker-compose.yml` is 30 s). Run `python database.py` against the database first, or lengthen `start_period` for the upgrade.
+- **Files while the viewer runs.** The viewer keeps one read-only connection to the database, so the `-wal` and `-shm` files persist while it runs, and the `.db` alone does not hold the recent commits. Copy or replace the database only after stopping the viewer, which checkpoints the WAL on every clean shutdown (also with `performance.wal_checkpoint_minutes: 0`).
+
 ## Secret Storage and Rotation
 
 One secret signs every login session (JWT) and every photo-frame link. It is **not** a `scoring_config.json` key: it lives in `.facet_secret` next to the config, created mode `0600` on first run and gitignored.
@@ -757,7 +766,7 @@ The SQLite database can grow to tens of gigabytes (`photo_scores_pro.db` reaches
 
 Facet does not bundle Litestream. Install it once on the host running the viewer/scoring; it runs as a sidecar process, transparent to the application.
 
-Facet already uses WAL mode (`db/connection.py:apply_pragmas`), and the periodic checkpoint thread (default every 30 min, configurable via `performance.wal_checkpoint_minutes`) keeps the WAL bounded. Reads stay unblocked during replication.
+Facet already uses WAL mode (`db/connection.py:apply_pragmas`), and the periodic checkpoint thread (default every 30 min, configurable via `performance.wal_checkpoint_minutes`) keeps the WAL bounded (`0` disables that thread; the checkpoint on a clean viewer shutdown always runs). Reads stay unblocked during replication.
 
 ### Minimal Litestream config
 

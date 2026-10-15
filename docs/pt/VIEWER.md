@@ -1039,6 +1039,14 @@ python database.py --refresh-stats   # Precompute aggregations
 python database.py --optimize        # Defragment database
 ```
 
+### Índices da galeria e cache de contagens
+
+A contagem da galeria, o seu resumo das fotos ocultas e cada página leem as mesmas colunas de visibilidade nas suas cláusulas de ocultação (piscadas, rajadas, duplicatas, bracketing, panoramas, rejeitadas, lixo). Oito índices de cobertura (`idx_gallery_aggregate`, `idx_gallery_date_desc`, `idx_gallery_date_asc`, `idx_gallery_category`, `idx_gallery_camera`, `idx_star_rating_path`, `idx_gallery_iaa_asc` e `idx_stats_categories`, definidos em `db/schema.py`) guardam essas colunas ao lado da coluna de ordenação, de modo que essas consultas são respondidas pelo índice em vez de percorrer toda a tabela `photos`. Numa biblioteca de 130k fotos, isso reduziu a página padrão da galeria de cerca de 1,2 s para cerca de 30 ms.
+
+- **Criados uma única vez, ao iniciar o visualizador.** A primeira inicialização após uma atualização cria cada índice que falta: cerca de 142 s e cerca de 106 a 111 MB de tamanho adicional do banco de dados numa biblioteca de 130k fotos (medido). Execute `python database.py` antes para criá-los sem iniciar o visualizador. Para o bloqueio da biblioteca, `--workers N` e Docker, veja [DEPLOYMENT.md](DEPLOYMENT.md#início-do-visualizador-e-índices-da-galeria).
+- **Gravações um pouco mais lentas.** A gravação de uma linha completa durante uma varredura custa cerca de 0,9 ms a mais por foto, e a atualização de uma única coluna de ocultação cerca de 0,5 a 0,6 ms a mais por linha (medido na mesma biblioteca).
+- **Cache de contagens.** As contagens e os resumos das fotos ocultas ficam em cache por 5 minutos. A chave do cache inclui um token de mudança do banco de dados, de modo que um commit de qualquer conexão de qualquer processo no mesmo host (incluindo os comandos `--detect-junk` e `--recompute-*`) a invalida. Um commit feito a partir de outra máquina por um compartilhamento de rede só é percebido quando a entrada expira.
+
 ### SQLite Assíncrono (opcional, para caminhos de leitura de alta concorrência)
 
 `api.database.get_async_db()` é um gerenciador de contexto assíncrono apoiado por aiosqlite,

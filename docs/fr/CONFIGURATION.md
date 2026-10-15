@@ -2028,7 +2028,7 @@ Réglages de performance de la base de données.
 |---------|--------|-------------|
 | `mmap_size_mb` | `2048` | Taille des E/S mappées en mémoire SQLite |
 | `cache_size_mb` | `128` | Taille du cache SQLite |
-| `wal_checkpoint_minutes` | `30` | Surcharge optionnelle (absente du fichier livré). Intervalle en minutes du `PRAGMA wal_checkpoint(TRUNCATE)` en arrière-plan de la visionneuse. Empêche le gonflement du WAL sur les déploiements de longue durée. Mettre `0` pour désactiver. |
+| `wal_checkpoint_minutes` | `30` | Surcharge optionnelle (absente du fichier livré). Intervalle en minutes du `PRAGMA wal_checkpoint(TRUNCATE)` en arrière-plan de la visionneuse. Empêche le gonflement du WAL sur les déploiements de longue durée. Mettre `0` pour désactiver le thread périodique ; le checkpoint lors d'un arrêt propre s'exécute toujours. |
 | `slow_request_ms` | `1000` | Les requêtes de l'API de la visionneuse plus lentes que ce nombre de millisecondes sont journalisées en WARNING avec un marqueur `SLOW`. Mettre `0` pour désactiver. |
 
 ---

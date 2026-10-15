@@ -378,7 +378,7 @@ Checks: Score ranges, face metrics, BLOB corruption, embedding sizes, orphaned f
 
 | Command | Description |
 |---------|-------------|
-| `python database.py` | Initialize/upgrade schema |
+| `python database.py` | Initialize/upgrade schema (also builds the gallery covering indexes; the viewer builds missing ones at start, see [VIEWER.md](VIEWER.md#gallery-indexes-and-the-count-cache)) |
 | `python database.py --info` | Show schema information |
 | `python database.py --migrate-tags` | Populate photo_tags lookup (10-50x faster queries) |
 | `python database.py --rebuild-fts` | Rebuild FTS5 full-text search index from captions/tags |

@@ -381,7 +381,7 @@ Verifica: faixas de pontuação, métricas faciais, corrupção de BLOB, tamanho
 
 | Comando | Descrição |
 |---------|-------------|
-| `python database.py` | Inicializa/atualiza o schema |
+| `python database.py` | Inicializa/atualiza o schema (também cria os índices de cobertura da galeria; o visualizador cria os que faltam ao iniciar, veja [VIEWER.md](VIEWER.md#índices-da-galeria-e-cache-de-contagens)) |
 | `python database.py --info` | Mostra informações do schema |
 | `python database.py --migrate-tags` | Popula a tabela de consulta photo_tags (consultas 10-50x mais rápidas) |
 | `python database.py --rebuild-fts` | Reconstrói o índice de busca textual completa FTS5 a partir de legendas/tags |

@@ -554,6 +554,15 @@ Una scansione, `--recompute-average`, `--upgrade-db` e un addestramento del rank
 
 Questo lock è un lock di file del kernel, quindi esclude i lavori **su una sola macchina**. Quando il database è raggiunto via SMB/CIFS — per esempio una workstation Windows che assegna punteggi a foto su una condivisione NAS —, ogni macchina prende la propria copia del lock e nessuna vede l'altra. Facet rileva il mount e registra un avviso quando prende il lock, ma non può imporre nulla tra macchine: esegui i lavori sulla libreria da una sola macchina alla volta. NFS tra client Linux non è interessato: lì `flock` diventa un lock di record POSIX arbitrato dal server.
 
+### Avvio del viewer e indici della galleria
+
+Il viewer prende questo stesso lock per il passo di schema del suo avvio, perché il primo avvio dopo un aggiornamento costruisce otto indici di copertura della galleria (vedi [VIEWER.md](VIEWER.md#indici-della-galleria-e-cache-dei-conteggi)): circa 142 s e circa 106-111 MB di dimensione aggiuntiva del database su una libreria da 130k foto (misurato). Ogni indice viene costruito in una propria transazione e registrato a livello INFO prima di iniziare (`Creating index ...`), quindi un avvio interrotto a metà conserva gli indici completati e il successivo riprende.
+
+- **Un lavoro sulla libreria è in corso.** Se una scansione, `--recompute-average` o un altro lavoro detiene il lock, il viewer registra un avviso che lo nomina, migra comunque tabelle e colonne e salta la costruzione degli indici. Il viewer serve, più lentamente, finché il prossimo avvio (o `python database.py`) non costruisce gli indici. Una scansione avviata durante la costruzione viene rifiutata con il solito messaggio «già in esecuzione» invece di andare in timeout con `database is locked`.
+- **`--workers N`.** Esattamente un worker prende il lock e costruisce; gli altri rimandano e servono.
+- **Docker.** Il container può risultare «unhealthy» finché la costruzione non termina (`start_period` in `docker-compose.yml` è 30 s). Esegui prima `python database.py` sul database oppure allunga `start_period` per l'aggiornamento.
+- **File mentre il viewer è in esecuzione.** Il viewer mantiene una connessione di sola lettura al database, quindi i file `-wal` e `-shm` restano finché è in esecuzione e il solo `.db` non contiene i commit più recenti. Copia o sostituisci il database solo dopo aver fermato il viewer, che esegue un checkpoint del WAL a ogni arresto pulito (anche con `performance.wal_checkpoint_minutes: 0`).
+
 ## Archiviazione e rotazione del secret
 
 Un unico secret firma ogni sessione di login (JWT) e ogni link della cornice digitale. **Non** è una chiave di `scoring_config.json`: risiede in `.facet_secret` accanto alla configurazione, creato con modo `0600` al primo avvio e ignorato da git.
@@ -642,7 +651,7 @@ Il database SQLite può crescere fino a decine di gigabyte (`photo_scores_pro.db
 
 Facet non include Litestream. Installalo una sola volta sull'host che esegue il viewer/scoring; viene eseguito come processo sidecar, trasparente all'applicazione.
 
-Facet usa già la modalità WAL (`db/connection.py:apply_pragmas`) e il thread di checkpoint periodico (predefinito ogni 30 min, configurabile tramite `performance.wal_checkpoint_minutes`) mantiene il WAL limitato. Le letture restano sbloccate durante la replica.
+Facet usa già la modalità WAL (`db/connection.py:apply_pragmas`) e il thread di checkpoint periodico (predefinito ogni 30 min, configurabile tramite `performance.wal_checkpoint_minutes`) mantiene il WAL limitato (`0` disabilita quel thread; il checkpoint a un arresto pulito del viewer viene eseguito sempre). Le letture restano sbloccate durante la replica.
 
 ### Configurazione minima di Litestream
 

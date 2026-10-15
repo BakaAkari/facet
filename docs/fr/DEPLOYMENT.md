@@ -552,6 +552,15 @@ Un scan, `--recompute-average`, `--upgrade-db` et un entraînement du classeur p
 
 Ce verrou est un verrou de fichier du noyau : il n'exclut donc les travaux que **sur une seule machine**. Lorsque la base de données est accédée via SMB/CIFS — un poste Windows qui score des photos sur un partage NAS, par exemple —, chaque machine prend sa propre copie du verrou et aucune ne voit l'autre. Facet détecte le montage et journalise un avertissement au moment de prendre le verrou, mais il ne peut rien imposer entre machines : lancez les travaux de bibliothèque depuis une seule machine à la fois. NFS entre clients Linux n'est pas concerné — `flock` y devient un verrou d'enregistrement POSIX arbitré par le serveur.
 
+### Démarrage de la visionneuse et index de la galerie
+
+La visionneuse prend ce même verrou pour l'étape de schéma de son démarrage, car le premier démarrage après une mise à niveau construit huit index couvrants de la galerie (voir [VIEWER.md](VIEWER.md#index-de-la-galerie-et-cache-des-comptages)) : environ 142 s et environ 106 à 111 Mo de taille supplémentaire de la base sur une bibliothèque de 130k photos (mesuré). Chaque index est construit dans sa propre transaction et journalisé au niveau INFO avant de commencer (`Creating index ...`) ; un démarrage interrompu en cours de route conserve les index terminés et le suivant reprend.
+
+- **Un travail de bibliothèque est en cours.** Si un scan, `--recompute-average` ou un autre travail détient le verrou, la visionneuse journalise un avertissement qui le nomme, migre quand même les tables et les colonnes, et saute la construction des index. Elle sert alors, plus lentement, jusqu'à ce que le prochain démarrage (ou `python database.py`) construise les index. Un scan lancé pendant la construction est refusé avec le message habituel « déjà en cours » au lieu d'expirer sur `database is locked`.
+- **`--workers N`.** Exactement un worker prend le verrou et construit ; les autres reportent et servent.
+- **Docker.** Le conteneur peut être signalé « unhealthy » jusqu'à la fin de la construction (`start_period` dans `docker-compose.yml` vaut 30 s). Lancez d'abord `python database.py` sur la base, ou allongez `start_period` pour la mise à niveau.
+- **Fichiers pendant que la visionneuse tourne.** La visionneuse garde une connexion en lecture seule à la base, donc les fichiers `-wal` et `-shm` subsistent tant qu'elle tourne, et le `.db` seul ne contient pas les derniers commits. Ne copiez ou ne remplacez la base qu'après avoir arrêté la visionneuse, qui fait un checkpoint du WAL à chaque arrêt propre (y compris avec `performance.wal_checkpoint_minutes: 0`).
+
 ## Stockage et rotation du secret
 
 Un seul secret signe chaque session de connexion (JWT) et chaque lien de cadre photo. Ce n'est **pas** une clé de `scoring_config.json` : il réside dans `.facet_secret`, à côté de la configuration, créé en mode `0600` au premier lancement et ignoré par git.
@@ -640,7 +649,7 @@ La base de données SQLite peut atteindre plusieurs dizaines de gigaoctets (`pho
 
 Facet ne fournit pas Litestream. Installez-le une fois sur l'hôte exécutant la galerie web/le scoring ; il tourne comme un processus annexe (sidecar), transparent pour l'application.
 
-Facet utilise déjà le mode WAL (`db/connection.py:apply_pragmas`), et le thread de checkpoint périodique (toutes les 30 min par défaut, configurable via `performance.wal_checkpoint_minutes`) maintient le WAL borné. Les lectures restent non bloquées pendant la réplication.
+Facet utilise déjà le mode WAL (`db/connection.py:apply_pragmas`), et le thread de checkpoint périodique (toutes les 30 min par défaut, configurable via `performance.wal_checkpoint_minutes`) maintient le WAL borné (`0` désactive ce thread ; le checkpoint lors d'un arrêt propre de la visionneuse s'exécute toujours). Les lectures restent non bloquées pendant la réplication.
 
 ### Configuration Litestream minimale
 
