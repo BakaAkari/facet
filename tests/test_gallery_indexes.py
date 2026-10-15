@@ -48,11 +48,12 @@ _C = f"{_V}, junk_kind"
 # a test that built it from the same tuples as the code could not catch a drift.
 EXPECTED_REGISTRY = {
     'idx_gallery_aggregate':
-        f"aggregate DESC, path, {_C}, category, camera_model, lens_model",
+        f"aggregate DESC, path, {_C}, category, camera_model, lens_model, "
+        "face_ratio, aesthetic, comp_score, face_quality",
     'idx_gallery_date_desc': f"date_taken DESC, path, {_C}",
     'idx_gallery_date_asc': f"date_taken ASC, path, {_C}",
     'idx_gallery_category': f"category, aggregate DESC, path, {_C}",
-    'idx_gallery_camera': f"camera_model, lens_model, aggregate DESC, path, {_C}",
+    'idx_gallery_camera': f"camera_model, aggregate DESC, path, {_C}, lens_model",
     'idx_star_rating_path': "star_rating DESC, path",
     'idx_gallery_iaa_asc': f"(aesthetic_iaa IS NULL), aesthetic_iaa, path, {_C}",
     'idx_stats_categories':
@@ -412,6 +413,77 @@ def test_camera_and_lens_filters(gallery, traced, sparse_db):
     assert not any("idx_gallery_camera" in line for line in _plans(sparse_db, found)["count"])
 
 
+def test_top_picks_count_and_summary_are_covered_by_the_aggregate_index(gallery, traced,
+                                                                        sparse_db):
+    """``type=top_picks`` filters on the weighted score, whose columns ride in the superset.
+
+    Without them in ``idx_gallery_aggregate`` the count and the hidden summary each
+    walk the whole table (two 16 GB scans on a 130k library) on every cache miss.
+    """
+    client = gallery(sparse_db)
+    found = _capture(client, traced, f"{HIDES}&type=top_picks")
+    plans = _plans(sparse_db, found)
+    for role in ("count", "summary"):
+        assert any("COVERING INDEX idx_gallery_aggregate" in line for line in plans[role]), \
+            plans[role]
+        assert not _bare_scan(plans[role]), plans[role]
+    assert _uses(plans["page"], "idx_gallery_aggregate"), plans["page"]
+    assert not _temp_sort(plans["page"]), plans["page"]
+
+    # Control: the superset without the score columns cannot cover the predicate.
+    _drop_registry(sparse_db, ['idx_gallery_aggregate'])
+    with sqlite3.connect(sparse_db) as conn:
+        _create_entry(conn, 'idx_gallery_aggregate',
+                      f"aggregate DESC, path, {_C}, category, camera_model, lens_model")
+        conn.execute("ANALYZE photos")
+    control = _plans(sparse_db, found)
+    assert not any("COVERING INDEX" in line for line in control["count"]), control["count"]
+
+
+def test_every_column_the_top_picks_score_reads_is_in_the_aggregate_index():
+    """Pin: a column added to the top-picks expression without the index fails here."""
+    from api.top_picks import get_top_picks_score_sql
+    photo_cols = {name for name, _ in schema.PHOTOS_COLUMNS}
+    read = {w for w in re.findall(r"[a-z_]+", get_top_picks_score_sql()) if w in photo_cols}
+    assert read >= {'aggregate', 'aesthetic', 'comp_score', 'face_quality', 'face_ratio'}, read
+    indexed = {c.strip() for c in _entries()['idx_gallery_aggregate'][1].replace(" DESC", "").split(",")}
+    assert read <= indexed, sorted(read - indexed)
+
+
+_CAMERA_PAGES = (
+    f"{HIDES}&camera=Canon EOS R6",
+    f"{HIDES}&camera=Canon EOS R6&lens=RF 24-70mm",
+    f"{HIDES}&camera=Canon EOS 600D&page=3",
+)
+
+
+def test_camera_page_walks_the_camera_index_in_sort_order(gallery, traced, sparse_db):
+    """The page seeks the camera and reads ``aggregate DESC, path`` straight off the index.
+
+    ``camera_model = ?`` is the only sargable camera/lens term (the lens filter is a
+    ``LIKE``), so the sort columns must follow ``camera_model`` directly: with
+    ``lens_model`` in between, the index yields rows in lens order, the page needs a
+    temp B-tree over every row of the camera, and the planner prefers the narrower
+    ``idx_camera_lens`` for that same sort.
+    """
+    client = gallery(sparse_db)
+    pages = [_capture(client, traced, query)["page"] for query in _CAMERA_PAGES]
+    for sql in pages:
+        plan = _plan(sparse_db, sql)
+        assert any("INDEX idx_gallery_camera (camera_model=?)" in line for line in plan), plan
+        assert not _temp_sort(plan), plan
+
+    # Fault control: the same index with lens_model ahead of the sort columns.
+    _drop_registry(sparse_db, ['idx_gallery_camera'])
+    with sqlite3.connect(sparse_db) as conn:
+        _create_entry(conn, 'idx_gallery_camera',
+                      f"camera_model, lens_model, aggregate DESC, path, {_C}")
+        conn.execute("ANALYZE photos")
+    for sql in pages:
+        plan = _plan(sparse_db, sql)
+        assert _temp_sort(plan), plan
+
+
 def test_star_rating_sort_uses_the_rating_path_index(gallery, traced, sparse_db):
     client = gallery(sparse_db)
     found = _capture(client, traced, f"{HIDES}&sort=star_rating&dir=DESC")
@@ -468,6 +540,8 @@ CASES = {
     "top_picks": f"{HIDES}&type=top_picks",
     "camera": f"{HIDES}&camera=Canon EOS R6",
     "camera_other": f"{HIDES}&camera=Canon EOS 600D&sort=date_taken&dir=DESC",
+    "camera_lens": f"{HIDES}&camera=Canon EOS R6&lens=RF 24-70mm",
+    "camera_page_3": f"{HIDES}&camera=Canon EOS 600D&page=3",
     "lens": f"{HIDES}&lens=RF 24-70mm",
     "min_score": f"{HIDES}&min_aggregate=7",
     "junk_any": f"{HIDES}&junk_kind=any",

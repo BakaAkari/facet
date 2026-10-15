@@ -458,16 +458,25 @@ INDEXES = [
     # `junk_kind=any` predicate is answered from the index entry, unrewritten.
     # idx_gallery_aggregate is the aggregate-leading superset: it also carries
     # category / camera_model / lens_model, which serves the lens filter, so
-    # there is no separate lens index.
+    # there is no separate lens index, and the columns the top-picks score reads
+    # (api.top_picks.get_top_picks_score_sql: face_ratio, aesthetic, comp_score,
+    # face_quality besides aggregate), so the type=top_picks count and hidden
+    # summary are answered from the index instead of two full table scans.
     ('idx_gallery_aggregate', 'photos',
-     f'aggregate DESC, path, {_GALLERY_COVER_SQL}, category, camera_model, lens_model'),
+     f'aggregate DESC, path, {_GALLERY_COVER_SQL}, category, camera_model, lens_model, '
+     'face_ratio, aesthetic, comp_score, face_quality'),
     ('idx_gallery_date_desc', 'photos', f'date_taken DESC, path, {_GALLERY_COVER_SQL}'),
     ('idx_gallery_date_asc', 'photos', f'date_taken ASC, path, {_GALLERY_COVER_SQL}'),
     # Category / type dropdown (the most common filter).
     ('idx_gallery_category', 'photos', f'category, aggregate DESC, path, {_GALLERY_COVER_SQL}'),
-    # Camera filter (and the camera+lens pair).
+    # Camera filter (and the camera+lens pair). `camera_model = ?` is the only
+    # sargable term (the lens filter is a LIKE, never a seek), so the sort columns
+    # follow it directly and the page reads `aggregate DESC, path` off the index;
+    # lens_model rides at the end for the pair's filter. With lens_model second the
+    # page temp-sorted every row of the camera and the planner preferred the
+    # narrower idx_camera_lens for that sort.
     ('idx_gallery_camera', 'photos',
-     f'camera_model, lens_model, aggregate DESC, path, {_GALLERY_COVER_SQL}'),
+     f'camera_model, aggregate DESC, path, {_GALLERY_COVER_SQL}, lens_model'),
     # Sort by star rating (the rating was a bare idx_star_rating: the ORDER BY
     # ends in path, so that index needed a temp B-tree).
     ('idx_star_rating_path', 'photos', 'star_rating DESC, path'),

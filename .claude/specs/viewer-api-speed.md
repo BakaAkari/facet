@@ -124,19 +124,24 @@ an estimated 1.3 MB for `junk_kind` where `C` is used.
 
 | Name | Table | Column list (exact) | Est. size | Step | Written by |
 |---|---|---|---|---|---|
-| `idx_gallery_aggregate` | `photos` | `aggregate DESC, path, C, category, camera_model, lens_model` | 17.0 MB | 2 | scan, `--recompute-average`, hide-column passes, `--detect-junk`, category/camera/lens edits |
+| `idx_gallery_aggregate` | `photos` | `aggregate DESC, path, C, category, camera_model, lens_model, face_ratio, aesthetic, comp_score, face_quality` | 20.8 MB (measured on the copy) | 2 | scan, `--recompute-average`, hide-column passes, `--detect-junk`, category/camera/lens edits, recomputes of `aesthetic` / `comp_score` / `face_quality` / `face_ratio` |
 | `idx_gallery_date_desc` | `photos` | `date_taken DESC, path, C` | 12.8 MB | 2 | scan, hide-column passes, `--detect-junk`, date edits |
 | `idx_gallery_date_asc` | `photos` | `date_taken ASC, path, C` | 12.8 MB | 2 | same as above |
 | `idx_gallery_category` | `photos` | `category, aggregate DESC, path, C` | 12.5 MB | 3 | scan, `--recompute-average`/`-category`, hide-column passes, `--detect-junk` |
-| `idx_gallery_camera` | `photos` | `camera_model, lens_model, aggregate DESC, path, C` | 15.8 MB | 6 | scan, `--recompute-average`, hide-column passes, `--detect-junk` |
+| `idx_gallery_camera` | `photos` | `camera_model, aggregate DESC, path, C, lens_model` | 15.8 MB | 6 | scan, `--recompute-average`, hide-column passes, `--detect-junk` |
 | `idx_star_rating_path` | `photos` | `star_rating DESC, path` | 7.5 MB | 6 | scan, rating edits |
 | `idx_gallery_iaa_asc` | `photos` | `(aesthetic_iaa IS NULL), aesthetic_iaa, path, C` | 11.4 MB | 6 | scan, IAA recompute, hide-column passes, `--detect-junk` |
 | `idx_stats_categories` | `photos` | `category, aggregate, aesthetic, comp_score, tech_sharpness, color_score, exposure_score, iso, f_stop, focal_length_35mm, focal_length, face_quality, contrast_score, camera_model, lens_model` | 17.1 MB | 7 | scan, `--recompute-average`, score recomputes |
 
-Total about 106.9 MB. Merge decision: `idx_gallery_aggregate` IS the aggregate-leading superset the VS report called
+Total about 110.7 MB (Wave 3 fix: `idx_gallery_aggregate` +3.8 MB for the top-picks columns). Merge decision: `idx_gallery_aggregate` IS the aggregate-leading superset the VS report called
 `gal_wide`/`idx_gallery_lens` (it serves the lens filter and the default scan), so there is no separate lens index and
 no second aggregate-leading index; measured on the default statements it costs +3 to +4 ms on the cached count/summary
-and nothing on the page (row 21). `idx_gallery_category` stays separate because its leading column is `category`.
+and nothing on the page (row 21). Wave 3 fix: the superset also carries the four other columns
+`api.top_picks.get_top_picks_score_sql()` reads (`face_ratio, aesthetic, comp_score, face_quality`; only its weights come
+from the config, the column set is fixed and pinned by a test), so the `type=top_picks` count and hidden summary are a
+covering scan instead of two full table scans (row 9 MISS, see `WAVE3_FIX.md`). `idx_gallery_camera` puts the sort
+columns straight after `camera_model`: the lens filter is a `LIKE` (never a seek), so with `lens_model` second the page
+temp-sorted every row of the camera and the planner preferred the narrower `idx_camera_lens` for it (row 10). `idx_gallery_category` stays separate because its leading column is `category`.
 Existing indexes kept untouched (Q3): `idx_aggregate`, `idx_date_taken`, `idx_date_taken_desc`, `idx_category_aggregate`,
 `idx_star_rating`, `idx_camera_lens`, `idx_junk_kind`. No new index name collides with an existing one (`git grep` for
 `idx_gallery|idx_stats|idx_star_rating_path` was empty at `21a25ef6` and the HEAD diff does not add any).
@@ -360,7 +365,8 @@ Defaults are what a builder does absent further input.
   (10,246 ms vs 24 ms for the page-500 statement). All three gallery statements (count, hidden summary, page) read the
   same nine columns, which today costs 516 MB and 654 MB of table pages per request; the index reads 10 MB. The
   aggregate-leading index is the superset that also carries `category, camera_model, lens_model` (serves the lens
-  filter, review NOTE 5, row 21): one index instead of two.
+  filter, review NOTE 5, row 21): one index instead of two; and `face_ratio, aesthetic, comp_score, face_quality` (the
+  top-picks score's other columns, Wave 3 fix, row 9).
 - default: as in the registry; `idx_aggregate`/`idx_date_taken*` stay (Q3).
 - verify (`tests/test_gallery_indexes.py`; schema built with `init_database`; 2,000+ pseudo-random rows with random
   aggregate, dates, categories, flags and cameras, then `ANALYZE photos`, on its OWN tmp DB; read
@@ -468,8 +474,10 @@ Defaults are what a builder does absent further input.
   rarely used, left slow and listed in "Not changing".
 - default: ship all three (Q4).
 - verify (`tests/test_gallery_indexes.py`): per case the captured statements: `camera=` count/summary covered by
-  `idx_gallery_camera` (the page may keep `idx_camera_lens` plus a temp b-tree; the planner chose that in the seeded run,
-  and the copy still measured 411 -> 70 ms); `lens=` count/summary covered by `idx_gallery_aggregate`; `sort=star_rating`
+  `idx_gallery_camera`, and the page `SEARCH ... USING INDEX idx_gallery_camera (camera_model=?)` with no temp b-tree
+  (Wave 3 fix: the first shape, `camera_model, lens_model, aggregate DESC, ...`, could not deliver the order for a
+  camera-only or camera+lens-LIKE filter, so the planner kept `idx_camera_lens` plus a temp b-tree; fault control in the
+  test rebuilds that shape); `lens=` count/summary covered by `idx_gallery_aggregate`; `sort=star_rating`
   page `USING INDEX idx_star_rating_path`; `sort=aesthetic_iaa&dir=ASC` page `USING INDEX idx_gallery_iaa_asc` with no
   temp b-tree. Equivalence includes rows with NULL `aesthetic_iaa` and equal values, so NULLs-last and the `path` tiebreak
   are proven identical with and without the index (cache cleared per side). Controls and faults as Step 2; extra fault:
