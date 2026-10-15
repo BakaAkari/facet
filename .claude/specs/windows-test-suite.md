@@ -409,7 +409,7 @@ succeeds.
   asserted the old refusals changed: symlink and swapped-file and raced-in cases now assert replacement, not `None`.
 - **I2 `stored_path_form`.** `lru_cache` pinned a translation made while a drive was offline. Targets that exist are
   cached for good; others for 60 s (`_STORED_FORM_RETRY_SECONDS`, `_monotonic`), bounded to 256 entries, under a lock.
-  `stored_path_form.cache_clear` is kept as an attribute.
+  `clear_stored_path_form_cache()` clears both (a plain function, not an attribute on `stored_path_form`, so the mypy ratchet stays at its baseline).
 - **M6.** A blank or whitespace-only `directories` entry granted the whole library (prefix `/`); it now grants nothing
   and warns naming the user. Left alone, listed: a Linux entry ending in a literal backslash loses it
   (`rstrip('/\')`), and a drive-relative `D:photos` resolves against the viewer's CWD. `build_path_scope('')` still

@@ -1161,8 +1161,8 @@ _STORED_FORM_RETRY_SECONDS = 60.0
 _STORED_FORM_CACHE_MAX = 256
 _monotonic = time.monotonic              # a name of its own so tests can move the clock
 _stored_form_lock = threading.Lock()
-_stored_form_settled = {}                # directory -> form whose target exists
-_stored_form_provisional = {}            # directory -> (form, monotonic expiry)
+_stored_form_settled: dict[str, str] = {}    # directory -> form whose target exists
+_stored_form_provisional: dict[str, tuple[str, float]] = {}  # directory -> (form, monotonic expiry)
 
 
 def _remember(cache, key, value):
@@ -1172,7 +1172,7 @@ def _remember(cache, key, value):
     cache[key] = value
 
 
-def _clear_stored_path_form_cache():
+def clear_stored_path_form_cache():
     with _stored_form_lock:
         _stored_form_settled.clear()
         _stored_form_provisional.clear()
@@ -1213,9 +1213,6 @@ def stored_path_form(directory):
             _remember(_stored_form_provisional, directory,
                       (form, _monotonic() + _STORED_FORM_RETRY_SECONDS))
     return form
-
-
-stored_path_form.cache_clear = _clear_stored_path_form_cache
 
 
 def _resolve_stored_path_form(directory):

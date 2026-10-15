@@ -215,9 +215,9 @@ class TestPosixCase:
 class TestStoredPathForm:
     @pytest.fixture(autouse=True)
     def _fresh_cache(self):
-        db_helpers.stored_path_form.cache_clear()
+        db_helpers.clear_stored_path_form_cache()
         yield
-        db_helpers.stored_path_form.cache_clear()
+        db_helpers.clear_stored_path_form_cache()
 
     @pytest.mark.parametrize("entry, expected", [
         ("C:/photos/2024/", "C:\\photos\\2024"),
@@ -256,9 +256,9 @@ class TestStoredPathFormRetriesAnAbsentTarget:
 
     @pytest.fixture(autouse=True)
     def _fresh_cache(self):
-        db_helpers.stored_path_form.cache_clear()
+        db_helpers.clear_stored_path_form_cache()
         yield
-        db_helpers.stored_path_form.cache_clear()
+        db_helpers.clear_stored_path_form_cache()
 
     @pytest.fixture
     def world(self, tmp_path, monkeypatch):
@@ -306,7 +306,7 @@ class TestStoredPathFormRetriesAnAbsentTarget:
         db_helpers.stored_path_form(self.ENTRY)
         world.up = True
         db_helpers.stored_path_form("Q:\\bob")
-        db_helpers.stored_path_form.cache_clear()
+        db_helpers.clear_stored_path_form_cache()
         assert not db_helpers._stored_form_provisional and not db_helpers._stored_form_settled
 
 
