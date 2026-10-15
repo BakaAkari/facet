@@ -13,10 +13,10 @@ import PIL.Image
 logger = logging.getLogger("facet.ram_tagger")
 
 # Lazy imports
-torch = None
-ram_plus = None
-inference_ram = None
-get_transform = None
+torch: Any = None
+ram_plus: Any = None
+inference_ram: Any = None
+get_transform: Any = None
 
 
 def _ensure_imports():
@@ -73,7 +73,7 @@ class RAMTagger:
         self.model_config = model_config
         self.scoring_config = scoring_config
         self.model = None
-        self.transform = None
+        self.transform: Any = None
         from utils.device import get_device
         self.device = get_device()
 
@@ -307,7 +307,7 @@ class RAMTagger:
             scores = scores.tolist() if hasattr(scores, 'tolist') else [1.0] * len(raw_tags)
 
         # Map to our vocabulary with scores
-        result = {}
+        result: dict[str, float] = {}
         for tag, score in zip(raw_tags, scores):
             tag_lower = tag.lower().strip()
 

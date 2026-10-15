@@ -3,6 +3,7 @@ Configuration loading for the FastAPI API server.
 
 """
 
+from typing import Any
 import asyncio
 import hashlib
 import logging
@@ -1447,7 +1448,7 @@ _photo_types_cache = {'data': {}, 'expires': 0}
 _photo_types_lock = threading.Lock()
 
 # Cache for COUNT query results (avoids repeated full-table scans)
-_count_cache = {}
+_count_cache: dict[Any, tuple[Any, float]] = {}
 _count_cache_lock = threading.Lock()
 COUNT_CACHE_TTL = 300  # seconds
 
@@ -1460,9 +1461,9 @@ _photo_tags_lock = threading.Lock()
 PHOTO_TAGS_CACHE_TTL = 300  # seconds — recheck every 5 min
 
 # Cache for stats API responses
-_stats_cache = {}  # key -> {'data': ..., 'expires': float}
+_stats_cache: dict[Any, dict[str, Any]] = {}  # key -> {'data': ..., 'expires': float}
 _stats_cache_lock = threading.Lock()
-_stats_inflight = {}  # key -> _StatsFlight, shared by the sync and async surfaces
+_stats_inflight: dict[Any, Any] = {}  # key -> _StatsFlight, shared by the sync and async surfaces
 _stats_cache_generation = 0
 _STATS_FLIGHT_POLL_SECONDS = 0.02
 

@@ -26,7 +26,7 @@ Usage::
 
     python scripts/check_mypy_ratchet.py                         # what CI runs
     venv/bin/python scripts/check_mypy_ratchet.py --baseline 161  # dev venv: see above
-    venv/bin/python scripts/check_mypy_ratchet.py --baseline 0    # force a failure, for testing
+    venv/bin/python scripts/check_mypy_ratchet.py --baseline -1   # force a failure, for testing (the baseline is 0, so 0 passes)
 
 Run from a dev venv with no ``--baseline``, this EXITS 1 by design: it compares
 that venv's higher count against CI's baseline. That is the environment

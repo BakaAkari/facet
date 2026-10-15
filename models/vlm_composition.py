@@ -7,7 +7,7 @@ Provides natural language explanations of composition strengths/weaknesses.
 
 import logging
 import re
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 
 from PIL import Image
 
@@ -206,7 +206,7 @@ class RuleBasedCompositionAnalyzer:
         """Initialize the rule-based analyzer."""
         pass
 
-    def analyze_composition(self, image: Image.Image, faces: list = None) -> Dict[str, Any]:
+    def analyze_composition(self, image: Image.Image, faces: list | None = None) -> Dict[str, Any]:
         """
         Analyze composition using rule-based methods.
 
@@ -278,7 +278,7 @@ class RuleBasedCompositionAnalyzer:
         }
 
 
-def create_composition_analyzer(model_manager) -> Optional[VLMCompositionAnalyzer]:
+def create_composition_analyzer(model_manager) -> VLMCompositionAnalyzer | RuleBasedCompositionAnalyzer | None:
     """
     Factory function to create the appropriate composition analyzer.
 

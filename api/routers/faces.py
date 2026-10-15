@@ -9,7 +9,7 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -391,7 +391,7 @@ try:
 except ValueError:
     _RATING_SYNC_DEBOUNCE_S = 3.0
 _rating_sync_lock = threading.Lock()
-_rating_sync_timers = {}  # scope (user_id or None) -> (Timer, db_path)
+_rating_sync_timers: dict[Any, tuple[threading.Timer, Any]] = {}  # scope (user_id or None) -> (Timer, db_path)
 
 
 def _run_rating_sync(db_path, scope):

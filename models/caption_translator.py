@@ -9,6 +9,7 @@ sentence-initial target token (>>pob<< = Brazilian Portuguese, matching the
 viewer's pt-BR locale).
 """
 
+from typing import Any
 import logging
 
 logger = logging.getLogger("facet.caption_translator")
@@ -33,8 +34,8 @@ class CaptionTranslator:
             )
         self.target_lang = target_lang
         self._model_name, self._target_prefix = LANG_MODELS[target_lang]
-        self._model = None
-        self._tokenizer = None
+        self._model: Any = None
+        self._tokenizer: Any = None
 
     def load(self) -> None:
         """Load the MarianMT model and tokenizer (lazy, CPU-only)."""

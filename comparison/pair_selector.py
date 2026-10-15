@@ -122,7 +122,7 @@ class PairSelector:
         n = len(candidates)
         target = min(500, n * (n - 1) // 2)
         seen_idx = set()
-        scored = []
+        scored: list[tuple[float, dict, dict]] = []
         guard = 0
         while len(scored) < target and guard < target * 5:
             guard += 1

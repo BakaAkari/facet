@@ -715,7 +715,7 @@ async def api_search(
 
             # Keep only the top results after merging
             if len(sim_by_path) > limit:
-                top_paths = sorted(sim_by_path, key=sim_by_path.get, reverse=True)[:limit]
+                top_paths = sorted(sim_by_path, key=lambda p: sim_by_path[p], reverse=True)[:limit]
                 sim_by_path = {p: sim_by_path[p] for p in top_paths}
 
             # Fetch full photo data for all matching paths

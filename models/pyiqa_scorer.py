@@ -9,7 +9,7 @@ import logging
 import torch
 import numpy as np
 from PIL import Image
-from typing import Optional
+from typing import Any, Optional, TypedDict
 
 import licensing
 from utils.image_bounds import MAX_INFERENCE_SIZE
@@ -47,7 +47,20 @@ def _ensure_pyiqa():
 
 # Model info: name, pyiqa_id, vram_gb, lower_is_better, score_range, and the
 # optional 'task' (forwarded per call as task_= for multi-head metrics).
-PYIQA_MODELS = {
+class _PyIQARequired(TypedDict):
+    pyiqa_id: str
+    vram_gb: float
+    lower_better: bool
+    score_range: tuple[float, float]
+    description: str
+
+
+class PyIQAModelInfo(_PyIQARequired, total=False):
+    task: str
+    has_distortion: bool
+
+
+PYIQA_MODELS: dict[str, PyIQAModelInfo] = {
     'topiq': {
         'pyiqa_id': 'topiq_nr',
         'vram_gb': 2,
@@ -176,7 +189,7 @@ class PyIQAScorer:
             from utils.device import get_device
             device = get_device()
         self.device = device
-        self.model = None
+        self.model: Any = None
         self._loaded = False
         # Skips are counted for the whole pass and reported once by
         # report_skips() when the scorer leaves the process (unload, or a

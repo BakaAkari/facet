@@ -9,6 +9,7 @@ what is exercised is the real parsing of real files.
 from __future__ import annotations
 
 import os
+import types
 
 import pytest
 
@@ -610,6 +611,12 @@ class TestAgainstThisHost:
         assert system_memory.effective_memory().total == psutil.virtual_memory().total
 
 
+# `_sysconf_total_bytes` returns early on Windows; these tests drive the POSIX body with a
+# stubbed `os.sysconf`, so they must see a non-Windows platform. Only the module's own
+# `sys` reference is replaced, never the real `sys.platform`.
+_POSIX_SYS = types.SimpleNamespace(platform='linux')
+
+
 _NEEDS_SYSCONF = pytest.mark.skipif(
     not hasattr(os, 'sysconf'),
     reason='os.sysconf is POSIX-only; psutil is the reader on Windows',
@@ -650,6 +657,7 @@ class TestSysconfTotalBytesItself:
             raise failure
 
         monkeypatch.setattr(system_memory.os, 'sysconf', raising, raising=False)
+        monkeypatch.setattr(system_memory, 'sys', _POSIX_SYS)
 
         assert system_memory._sysconf_total_bytes() is None
 
@@ -657,6 +665,7 @@ class TestSysconfTotalBytesItself:
     def test_a_nonsense_reading_is_no_reading(self, monkeypatch, page_size, page_count):
         sizes = {'SC_PAGE_SIZE': page_size, 'SC_PHYS_PAGES': page_count}
         monkeypatch.setattr(system_memory.os, 'sysconf', lambda name: sizes[name], raising=False)
+        monkeypatch.setattr(system_memory, 'sys', _POSIX_SYS)
 
         assert system_memory._sysconf_total_bytes() is None
 

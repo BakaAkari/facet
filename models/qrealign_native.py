@@ -48,7 +48,7 @@ class QReAlignNativeScorer:
     # Same contract as ``PyIQAScorer.last_declined`` (positions the model refused on
     # purpose). This scorer has no expected skip and never returns None, so it is
     # always empty; declaring it keeps --recompute-iqa free of a getattr.
-    last_declined = frozenset()
+    last_declined: frozenset[int] = frozenset()
 
     def __init__(self, size='mini', device='cuda', dtype='auto'):
         if size not in MODELS:

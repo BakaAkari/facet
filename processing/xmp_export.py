@@ -136,7 +136,12 @@ class FaceRegion:
 def person_names_from_regions(regions: list[FaceRegion]) -> list[str]:
     """Deduped, order-preserving person names from a list of face regions."""
     seen: set[str] = set()
-    return [r.name for r in regions if not (r.name in seen or seen.add(r.name))]
+    names: list[str] = []
+    for r in regions:
+        if r.name not in seen:
+            seen.add(r.name)
+            names.append(r.name)
+    return names
 
 
 def score_to_stars(score: float | None, sr_cfg: dict | None) -> tuple[int, str]:
@@ -442,11 +447,18 @@ def _exiftool_version(exe: str) -> tuple[int, int] | None:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
-def exiftool_is_defective() -> bool:
-    """True when the resolved exiftool is 13.23 - 13.27 (corrupts darktable sidecars)."""
+def exiftool_defective_version() -> tuple[int, int] | None:
+    """The resolved exiftool's version when it is 13.23 - 13.27, else None."""
     exe = _resolve_exiftool()
     version = _exiftool_version(exe) if exe else None
-    return version is not None and _DEFECTIVE_EXIFTOOL_MIN <= version < _DEFECTIVE_EXIFTOOL_FIXED
+    if version is not None and _DEFECTIVE_EXIFTOOL_MIN <= version < _DEFECTIVE_EXIFTOOL_FIXED:
+        return version
+    return None
+
+
+def exiftool_is_defective() -> bool:
+    """True when the resolved exiftool is 13.23 - 13.27 (corrupts darktable sidecars)."""
+    return exiftool_defective_version() is not None
 
 
 def _assert_well_formed_xmp(path: str) -> None:
@@ -626,8 +638,9 @@ def write_metadata(image_path: str, rating: XmpRating, *, overwrite: bool = Fals
         result = write_sidecar(image_path, rating, overwrite=overwrite)
         result["embedded"] = None
         return result
-    if exiftool_is_defective():
-        version = ".".join(map(str, _exiftool_version(_resolve_exiftool())))
+    defective = exiftool_defective_version()
+    if defective is not None:
+        version = ".".join(map(str, defective))
         raise RuntimeError(
             f"exiftool {version} corrupts XMP sidecars that contain darktable edit "
             "history (bug in 13.23-13.27); upgrade to 13.28 or newer"

@@ -36,6 +36,7 @@ without admitting reportage. Missing a panorama costs nothing here; mislabelling
 reportage costs trust. The sticky per-set override covers both directions.
 """
 
+from typing import Any
 import hashlib
 import json
 import logging
@@ -556,7 +557,7 @@ def resolve_segments(segments, suppressed, forced):
     return resolved + forced_sets
 
 
-_WORKER = {}
+_WORKER: dict[str, Any] = {}
 
 
 def _init_worker(db_path, settings):

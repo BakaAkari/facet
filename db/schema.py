@@ -4,6 +4,7 @@ Database schema definitions and initialization for Facet.
 Single source of truth for all table and index definitions.
 """
 
+from typing import Any, Callable
 import logging
 import re
 import sqlite3
@@ -963,7 +964,7 @@ SCHEMA_VERSION = 1
 # Ordered ladder of non-additive migrations: (target_version, fn(conn)).
 # Each fn MUST be idempotent and SHOULD call db.maintenance.backup_database
 # before a destructive step. Empty today — the mechanism ships ahead of need.
-MIGRATIONS = []
+MIGRATIONS: list[tuple[int, Callable[[Any], None]]] = []
 
 
 def _table_exists(conn, name):
