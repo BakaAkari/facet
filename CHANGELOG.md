@@ -30,9 +30,15 @@ All notable changes to Facet are documented in this file.
 
 - **The configuration reference said `processing.mode: "auto"` selects multi-pass or single-pass by VRAM.** `auto` always runs multi-pass; only `single-pass` selects single-pass. [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and its translations now say so.
 
+- **Docker images now include `jsonschema`, so config schema validation runs.** It was declared in `requirements.txt` and `pyproject.toml` but absent from both lock files, which are all the image installs, and `ScoringConfig.validate_schema` returns no errors when the import fails. Both locks now pin `jsonschema` 4.26.0 with `jsonschema-specifications`, `referencing` and `rpds-py`.
+
 ### Removed
 
 - **`GET /api/stats/categories/metrics`.** It had no consumer (the Weights tab uses `/correlations`, the Priority tab `/overlap`). A client that called it must compute from `/api/photos`; the sibling `/api/stats/categories/*` routes are unchanged, and the generated client types lose the route.
+
+### Security
+
+- **Dependency bumps closing 10 of 11 Dependabot alerts, none reachable in a running install.** In both lock files: `fsspec` 2026.6.0 (GHSA-27vj-qcqg-25rc, template injection in `ReferenceFileSystem`, which Facet never constructs), `Werkzeug` 3.1.9 (GHSA-g6x2-hccm-hh4m, `safe_join()` and Windows device names; TensorBoard's dependency, not used by the viewer) and `multidict` 6.9.1 (GHSA-54p9-h82j-f925, a reference leak in the items-view set operations). In the client's build-time tree: `@angular/build` and `@angular/cli` 21.2.27, because `@angular/cli` pins `@modelcontextprotocol/sdk` exactly and only 21.2.27 carries the fixed 1.31.0 (GHSA-6qxp-vccf-f47h, an OAuth client flaw in the CLI's dev-time MCP server), which also brings `proxy-addr` 2.0.8 (GHSA-jqcg-44mw-7w3h) through `express` 5.3.0, plus `source-map-js` 1.2.2 (GHSA-68fv-2mgg-jv7q). The `setuptools` alerts on both restricted locks stay open on purpose: the fix is 83.0.0, which has no `pkg_resources`, and `openai-clip` (LIQE, CLIPIQA) still imports it, so the locks stay on `setuptools==80.10.2`. The flaw is a build-time `MANIFEST.in` matching issue that cannot arise at runtime.
 
 ## [1.20.0] "Épreuve" — 2026-10-15
 
