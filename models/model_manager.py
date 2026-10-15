@@ -745,7 +745,7 @@ class ModelManager:
         """
         if next_use is None:
             return list(names)
-        rank = {}
+        rank: Dict[str, int] = {}
         for position, name in enumerate(next_use):
             rank.setdefault(name, position)
         return sorted(names, key=lambda name: -rank.get(name, math.inf))

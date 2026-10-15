@@ -74,8 +74,10 @@ def bbox_from_mask(mask, min_subject_pixels: int = 50):
         return None
     if _is_u8_plane(mask):
         _ensure_cv2()
+        assert cv2 is not None
         fg = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)[1]
-        return _bbox_from_projections(*_foreground_projections(fg), min_subject_pixels)
+        colsum, rowsum = _foreground_projections(fg)
+        return _bbox_from_projections(colsum, rowsum, min_subject_pixels)
     ys, xs = np.nonzero(mask > 128)
     if xs.size < min_subject_pixels:
         return None
