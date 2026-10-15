@@ -945,6 +945,11 @@ def refresh_thumbnails(db_path, config, workers):
                         conn.execute(
                             "UPDATE photos SET thumbnail = ?, render_version = ? WHERE path = ?",
                             (blob, render_version_for(kind), path))
+                        # The rebuilt thumbnail is a different image but scanned_at is
+                        # untouched, so a decline of the old one would still match its
+                        # fingerprint whenever the byte length happens to agree.
+                        conn.execute(
+                            "DELETE FROM iqa_declined WHERE photo_path = ?", (path,))
                         updated += 1
                     _write_thumbnail_watermark(conn, chunk[-1][0])
                     conn.commit()

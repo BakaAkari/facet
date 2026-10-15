@@ -45,6 +45,11 @@ def levels_to_score(level_logits) -> float:
 class QReAlignNativeScorer:
     """Q-ReAlign Mini/Lite scorer on plain transformers."""
 
+    # Same contract as ``PyIQAScorer.last_declined`` (positions the model refused on
+    # purpose). This scorer has no expected skip and never returns None, so it is
+    # always empty; declaring it keeps --recompute-iqa free of a getattr.
+    last_declined = frozenset()
+
     def __init__(self, size='mini', device='cuda', dtype='auto'):
         if size not in MODELS:
             raise ValueError(f'unknown size {size!r}; expected one of {tuple(MODELS)}')

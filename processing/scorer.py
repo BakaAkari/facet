@@ -29,11 +29,12 @@ from db.render_version import DISPLAY_RENDER_VERSION
 from db.embedding_space import SFACE_MODEL, active_embedding_model
 from db.person_carry_over import replace_photo_faces
 from db.person_centroids import recompute_person_centroid
-from db.schema import FACES_UPSERT_SQL, face_upsert_row
+from db.schema import FACES_UPSERT_SQL, IQA_SCAN_FINGERPRINT_SQL, face_upsert_row
 from db.scoring_overrides import get_photo_scoring_overrides
 from db.vec import sync_vec_batch
 from processing.progress import emit_progress
 from utils.histogram import unpack_histogram
+from utils.image_bounds import LIQE_MIN_SHORT_SIDE, liqe_input_too_small
 
 
 @functools.lru_cache(maxsize=8)
@@ -380,6 +381,12 @@ def fix_thumbnail_rotation(db_path):
                         conn.execute(
                             "UPDATE photos SET thumbnail = ? WHERE path = ?",
                             (buf.getvalue(), photo_path)
+                        )
+                        # A rotated thumbnail is a different image, but this writer
+                        # leaves scanned_at alone: a decline of the old one would
+                        # still match its fingerprint, so drop it explicitly.
+                        conn.execute(
+                            "DELETE FROM iqa_declined WHERE photo_path = ?", (photo_path,)
                         )
                         updated += 1
                     else:
@@ -741,6 +748,16 @@ def build_scoring_metrics(
 
 IQA_PASS_VRAM_MARGIN_GB = 2
 CPU_DEVICE_LABEL = "CPU"
+
+# Supplementary IQA columns whose model can decline a photo on purpose, mapped to
+# the model name stored in ``iqa_declined.model``. --recompute-iqa remembers such
+# a decline (against the photo's scan fingerprint) instead of re-attempting it on
+# every run. A map rather than a constant so the selector (_iqa_needs_score_sql)
+# and the writer (_run_iqa_pass._flush) stay symmetric if another model ever gains
+# a deterministic decline. aesthetic_iaa scores any image; liqe_score's refusal is
+# a function of the stored thumbnail's geometry and is checked before decoding;
+# qrealign has no expected skip. None of those belongs here.
+_IQA_DECLINING_MODELS = {'face_quality_iqa': 'topiq_nr_face'}
 
 
 def describe_scoring_device(accelerator, vram_gb, ram_gb):
@@ -2230,7 +2247,12 @@ class Facet:
         - CPU-only: one model at a time
 
         Incremental: skips columns already populated per photo.
-        Skips face_quality_iqa for photos without faces.
+        Skips face_quality_iqa for photos without faces, and for a photo TOPIQ
+        NR-Face already declined on its current scan (``iqa_declined``).
+        Skips liqe_score for a photo whose stored thumbnail is too small for
+        LIQE (decided from its header, before any decode; nothing is recorded).
+        An out-of-memory error or any other failure is not remembered: that
+        photo is selected again next run.
         """
         import time
         from models.model_manager import ModelManager
@@ -2280,7 +2302,8 @@ class Facet:
                     total, device, len(passes), ", ".join("+".join(p) for p in passes))
 
         # Mutable counters shared across passes
-        counters = {'updated': {col: 0 for col in columns}, 'errors': 0}
+        counters = {'updated': {col: 0 for col in columns}, 'errors': 0,
+                    'declined': 0, 'liqe_too_small': 0}
 
         for pass_models in passes:
             self._run_iqa_pass(pass_models, batch_size, counters)
@@ -2290,6 +2313,13 @@ class Facet:
         logger.info("\nIQA recompute complete in %.1f minutes:", minutes)
         for model_name, column in self._IQA_MODELS:
             logger.info("  %s: %s photos scored", column, counters['updated'][column])
+        if counters['liqe_too_small']:
+            logger.info("  liqe_score: %d photo(s) skipped, short side under %d px (stay NULL)",
+                        counters['liqe_too_small'], LIQE_MIN_SHORT_SIDE)
+        if counters['declined']:
+            logger.info("  face_quality_iqa: %d photo(s) the model declined (no face found in "
+                        "the thumbnail); not retried until the photo is rescanned",
+                        counters['declined'])
         if counters['errors']:
             logger.error("  %s thumbnail decode errors", counters['errors'])
         logger.info("Run --recompute-average to update aggregate scores with new IQA metrics.")
@@ -2300,11 +2330,24 @@ class Facet:
 
         ``face_quality_iqa`` is scored only for photos with a face (a faceless one
         is left NULL by design), so the same ``face_count`` condition applies to the
-        up-front work count and to the rows each pass selects.
+        up-front work count and to the rows each pass selects. A column in
+        ``_IQA_DECLINING_MODELS`` is also not work for a photo its model declined
+        on the photo's CURRENT scan (``iqa_declined`` row whose fingerprint still
+        matches). Columns are qualified with ``photos.`` so the predicate works in
+        the unaliased count queries and in the pass selector alike.
         """
         if column == 'face_quality_iqa':
-            return f"({column} IS NULL AND COALESCE(face_count, 0) > 0)"
-        return f"{column} IS NULL"
+            needs = f"photos.{column} IS NULL AND COALESCE(photos.face_count, 0) > 0"
+        else:
+            needs = f"photos.{column} IS NULL"
+        model = _IQA_DECLINING_MODELS.get(column)
+        if model is None:
+            return f"({needs})"
+        return (
+            f"({needs} AND NOT EXISTS (SELECT 1 FROM iqa_declined d "
+            f"WHERE d.photo_path = photos.path AND d.model = '{model}' "
+            f"AND d.scan_fingerprint = {IQA_SCAN_FINGERPRINT_SQL}))"
+        )
 
     def _iqa_model_vram_gb(self, model_name):
         """VRAM budget of one recompute-iqa model: pyiqa table, or the native Q-ReAlign size."""
@@ -2342,10 +2385,15 @@ class Facet:
             scorers[column] = self._make_iqa_scorer(model_name)
 
         where_null = " OR ".join(self._iqa_needs_score_sql(c) for c in pass_columns)
+        # One flag per column: whether THIS photo still needs it. The predicate is the
+        # selector's own (face_count, a prior decline), so the loop below never
+        # re-derives it in Python.
+        need_flags = ", ".join(
+            f"({self._iqa_needs_score_sql(c)}) AS need_{c}" for c in pass_columns)
 
         with get_connection(self.db_path) as conn:
             cursor = conn.execute(
-                f"""SELECT path, thumbnail, face_count, {', '.join(pass_columns)}
+                f"""SELECT path, thumbnail, {need_flags}
                     FROM photos
                     WHERE ({where_null}) AND thumbnail IS NOT NULL"""
             )
@@ -2373,7 +2421,8 @@ class Facet:
                     for i, score in enumerate(scores):
                         if score is None:
                             # The model could not score this photo: leave the column
-                            # NULL (not counted) so the next run selects it again.
+                            # NULL (not counted) so the next run selects it again,
+                            # unless it declined on purpose (below).
                             continue
                         conn.execute(
                             f"UPDATE photos SET {column} = ? WHERE path = ?",
@@ -2381,23 +2430,49 @@ class Facet:
                         )
                         written += 1
                     counters['updated'][column] += written
+                    decline_model = _IQA_DECLINING_MODELS.get(column)
+                    if decline_model is not None:
+                        # Only a column of THIS pass, and only the positions the model
+                        # itself declined: an OOM or any other failure stays unrecorded
+                        # so the next run retries it. SELECT ... WHERE (not VALUES) so
+                        # the fingerprint is computed from the stored row, and so the
+                        # parser does not read ON CONFLICT as part of a join.
+                        for i in scorer.last_declined:
+                            conn.execute(
+                                "INSERT INTO iqa_declined (photo_path, model, scan_fingerprint) "
+                                f"SELECT photos.path, ?, {IQA_SCAN_FINGERPRINT_SQL} "
+                                "FROM photos WHERE photos.path = ? "
+                                "ON CONFLICT(photo_path, model) DO UPDATE SET "
+                                "scan_fingerprint = excluded.scan_fingerprint",
+                                (decline_model, batch_pths[i])
+                            )
+                            counters['declined'] += 1
                 conn.commit()
 
             for row in tqdm(rows, desc=f"Scoring {label}"):
-                # Which columns still need scoring for this photo? Decided before the
-                # thumbnail is decoded, so a photo with nothing to score costs no decode.
-                null_cols = [col for col in pass_columns if row[col] is None]
-                # Skip face_quality_iqa for photos without faces
-                if 'face_quality_iqa' in null_cols and not (row['face_count'] or 0):
-                    null_cols.remove('face_quality_iqa')
+                # Which columns still need scoring for this photo? Decided by the
+                # selector's own predicate, before the thumbnail is decoded, so a
+                # photo with nothing to score costs no decode.
+                null_cols = [col for col in pass_columns if row[f'need_{col}']]
                 if not null_cols:
                     continue
 
+                # Decode lazily: Image.open reads the header only, which is enough to
+                # tell that LIQE would refuse this thumbnail. Everything lazy stays
+                # inside the try so a corrupt thumbnail still counts as an error.
                 try:
-                    pil_img = Image.open(BytesIO(row['thumbnail'])).convert('RGB')
+                    img = Image.open(BytesIO(row['thumbnail']))
+                    skip_liqe = 'liqe_score' in null_cols and liqe_input_too_small(*img.size)
+                    scorable = [c for c in null_cols if not (skip_liqe and c == 'liqe_score')]
+                    pil_img = img.convert('RGB') if scorable else None
                 except Exception:
                     counters['errors'] += 1
                     continue
+                if skip_liqe:
+                    counters['liqe_too_small'] += 1
+                if not scorable:
+                    continue
+                null_cols = scorable
 
                 batched_paths.append(row['path'])
                 batched_images.append(pil_img)
