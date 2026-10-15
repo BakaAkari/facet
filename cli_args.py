@@ -180,6 +180,11 @@ Configuration:
     db_group.add_argument('--repair-int-columns', action='store_true', dest='repair_int_columns',
                         help='Repair INTEGER columns whose stored value is a REAL (e.g. a '
                              'fractional EXIF ISO). Database-only, no image decode')
+    db_group.add_argument('--repair-neutral-iqa', action='store_true', dest='repair_neutral_iqa',
+                        help='Clear the neutral 5.0 that versions before 1.20 stored in '
+                             'aesthetic_iaa, face_quality_iqa and liqe_score for photos a model '
+                             'could not score, then run --recompute-iqa to refill them. Does not '
+                             'touch the primary aesthetic columns. Database-only, no dry-run')
     db_group.add_argument('--score-topiq', action='store_true',
                         help='Re-score TOPIQ quality (topiq_score) for every photo with a stored '
                              'thumbnail (requires GPU); a photo TOPIQ cannot score keeps its stored value')

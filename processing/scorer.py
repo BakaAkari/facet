@@ -1084,25 +1084,18 @@ class Facet:
             features_normalized = F.normalize(features, dim=-1)
         return features, features_normalized
 
-    def get_aesthetic_score(self, image_pil):
-        """Calculate aesthetic score using CLIP and the MLP aesthetic head.
-
-        Returns 5.0 (neutral) if aesthetic head is not available (SigLIP mode).
-        """
-        if self.aesthetic_head is None:
-            return 5.0  # No MLP head — aesthetic comes from TOPIQ in multi-pass
-
-        _, features_normalized = self._encode_images(image_pil)
-        return float(score_aesthetic(self.aesthetic_head, features_normalized)[0])
-
     def get_aesthetic_with_embedding(self, image_pil):
-        """Calculate aesthetic score and return CLIP/SigLIP embedding for storage."""
+        """Calculate aesthetic score and return CLIP/SigLIP embedding for storage.
+
+        The score is ``None`` when no MLP head is loaded (SigLIP mode): the
+        aesthetic then comes from TOPIQ or Q-ReAlign, never a neutral 5.0.
+        """
         _, features_normalized = self._encode_images(image_pil)
 
         if self.aesthetic_head is not None:
             aesthetic_score = float(score_aesthetic(self.aesthetic_head, features_normalized)[0])
         else:
-            aesthetic_score = 5.0  # Aesthetic comes from TOPIQ, not CLIP MLP
+            aesthetic_score = None
 
         embedding_bytes = features_normalized.cpu().numpy()[0].astype(np.float32).tobytes()
         return aesthetic_score, embedding_bytes

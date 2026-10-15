@@ -1056,8 +1056,10 @@ class TestPoisonedFullPaths:
         pytest.importorskip('cv2')
         from tests.test_batch_processor_e2e import (
             FakeScorer, _FakeFaceAnalyzer, _FakeTechAnalyzer, _tiny_jpegs)
-        from processing.scorer import Facet
+        from processing.scorer import Facet, _load_image_modules
         from utils import load_image_from_path
+
+        _load_image_modules()  # ImageCache and friends are lazy module globals
 
         class Scorer(FakeScorer):
             score_photo_from_pil = Facet.score_photo_from_pil

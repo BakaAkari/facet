@@ -347,7 +347,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--single-pass",
         action="store_true",
-        help="Force single-pass mode (all models in VRAM)",
+        help=(
+            "Force single-pass mode (all models in VRAM). On the 16gb/24gb "
+            "profiles (TOPIQ aesthetic) outside commercial mode the scan falls "
+            "back to multi-pass, so this bench measures multi-pass there"
+        ),
     )
     p.add_argument(
         "--db",

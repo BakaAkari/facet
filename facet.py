@@ -752,6 +752,7 @@ LIBRARY_JOB_ARGS = (
     'refill_face_thumbnails_incremental',
     'refresh_thumbnails',
     'repair_int_columns',
+    'repair_neutral_iqa',
     'rescan_gps',
     'score_topiq',
     'sync_label_comparisons',
@@ -2320,6 +2321,9 @@ def main():
 
     if args.dry_run_count != cli_args.DEFAULT_DRY_RUN_COUNT and not args.dry_run:
         parser.error("--dry-run-count requires --dry-run")
+    if args.repair_neutral_iqa and args.dry_run:
+        parser.error("--repair-neutral-iqa writes to the database and has no dry-run; "
+                     "drop --dry-run")
 
     if (args.refresh_thumbnails_workers != cli_args.DEFAULT_REFRESH_THUMBNAIL_WORKERS
             and not args.refresh_thumbnails):
@@ -2634,6 +2638,13 @@ def main():
         from db.maintenance import repair_integer_columns
         init_database(args.db)
         repair_integer_columns(args.db)
+        exit()
+
+    # Clear the neutral 5.0 pre-1.20 versions stored in the supplementary IQA columns
+    if args.repair_neutral_iqa:
+        from db.maintenance import repair_neutral_iqa
+        init_database(args.db)
+        repair_neutral_iqa(args.db)
         exit()
 
     # Backfill focal_length_35mm from EXIF (lightweight - no GPU needed)

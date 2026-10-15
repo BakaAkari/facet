@@ -373,10 +373,79 @@ class TestHeadlessFailureIsRecorded:
         conn = sqlite3.connect(scorer.db_path)
         try:
             rows = conn.execute(
-                "SELECT path, error FROM scan_failures WHERE scan_run_id = ?",
+                "SELECT path, error, stage FROM scan_failures WHERE scan_run_id = ?",
                 (scan_run.run_id,)).fetchall()
         finally:
             conn.close()
-        assert sorted(p for p, _ in rows) == sorted(paths)
-        assert all('no aesthetic head' in error for _, error in rows)
+        assert sorted(p for p, _, _ in rows) == sorted(paths)
+        assert all('no aesthetic head' in error for _, error, _ in rows)
+        # A batch-inference failure is a scoring failure, not an image-loading one.
+        assert [stage for _, _, stage in rows] == ['score'] * len(paths)
         assert scorer.saved == []
+
+    @staticmethod
+    def _stages(scorer, run_id):
+        conn = sqlite3.connect(scorer.db_path)
+        try:
+            return conn.execute(
+                "SELECT path, stage FROM scan_failures WHERE scan_run_id = ?",
+                (run_id,)).fetchall()
+        finally:
+            conn.close()
+
+    @pytest.mark.timeout(30)
+    def test_per_item_post_processing_failure_is_stage_score(self, tmp_path):
+        pytest.importorskip('torch')
+        pytest.importorskip('cv2')
+        from processing.scan_state import ScanRun
+        from tests.test_batch_processor_e2e import (
+            FakeScorer, _FakeFaceAnalyzer, _make_processor, _tiny_jpegs)
+
+        scorer = FakeScorer(tmp_path)
+        scorer.face_analyzer = _FakeFaceAnalyzer(raise_on_size=32)
+        paths = _tiny_jpegs(tmp_path, 3, sentinel_index=1)
+        scan_run = ScanRun.start(scorer.db_path, 'single-pass', {}, len(paths))
+        _make_processor(scorer, on_error=scan_run.record_failure).process_files(
+            paths, show_metrics=False)
+        scan_run.finish()
+
+        assert self._stages(scorer, scan_run.run_id) == [(paths[1], 'score')]
+
+    @pytest.mark.timeout(30)
+    def test_unreadable_file_is_stage_load(self, tmp_path):
+        pytest.importorskip('torch')
+        pytest.importorskip('cv2')
+        from processing.scan_state import ScanRun
+        from tests.test_batch_processor_e2e import FakeScorer, _make_processor, _tiny_jpegs
+
+        scorer = FakeScorer(tmp_path)
+        paths = _tiny_jpegs(tmp_path, 2)
+        broken = tmp_path / 'broken.jpg'
+        broken.write_bytes(b'this is not an image')
+        paths.append(str(broken))
+        scan_run = ScanRun.start(scorer.db_path, 'single-pass', {}, len(paths))
+        _make_processor(scorer, on_error=scan_run.record_failure).process_files(
+            paths, show_metrics=False)
+        scan_run.finish()
+
+        assert self._stages(scorer, scan_run.run_id) == [(str(broken), 'load')]
+        assert len(scorer.saved) == 2
+
+
+class TestHeadlessEmbeddingOnly:
+    """``get_aesthetic_with_embedding`` reports "no score" as ``None``, not a neutral 5.0."""
+
+    def test_no_head_returns_none_and_the_embedding_bytes(self):
+        pytest.importorskip('torch')
+        import numpy as np
+        import torch
+
+        from processing.scorer import Facet
+
+        facet = Facet.__new__(Facet)
+        facet.aesthetic_head = None
+        vec = np.array([0.25, -0.5, 1.0, 2.0], dtype=np.float32)
+        facet._encode_images = lambda pil, clip_inputs=None: (None, torch.from_numpy(vec).unsqueeze(0))
+        aesthetic, embedding = facet.get_aesthetic_with_embedding(object())
+        assert aesthetic is None
+        assert embedding == vec.tobytes()
