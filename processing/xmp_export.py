@@ -456,11 +456,6 @@ def exiftool_defective_version() -> tuple[int, int] | None:
     return None
 
 
-def exiftool_is_defective() -> bool:
-    """True when the resolved exiftool is 13.23 - 13.27 (corrupts darktable sidecars)."""
-    return exiftool_defective_version() is not None
-
-
 def _assert_well_formed_xmp(path: str) -> None:
     """Raise ``ET.ParseError`` unless ``path`` parses (same DOCTYPE rule as xmp_import)."""
     with open(path, "rb") as handle:

@@ -16,7 +16,7 @@ The count is environment-dependent. CI's lint job installs only ``ruff
 mypy`` (no project dependencies), so mypy resolves far fewer imports than it
 would in a venv with the project's own dependencies (fastapi, pydantic,
 numpy, torch, ...) installed -- the same tree reports a different, higher
-count under a dev venv (e.g. 161 there vs. 154 in CI, at the time this was
+count under a dev venv (e.g. 6 there vs. 0 in CI, at the time this was
 written). ``mypy-baseline.txt`` tracks CI's environment, not a dev venv. To
 check the baseline honestly before changing it, reproduce CI's number: run
 mypy from a venv containing only mypy itself, not this project's

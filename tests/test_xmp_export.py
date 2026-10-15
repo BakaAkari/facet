@@ -462,11 +462,11 @@ class TestExiftoolVersionGuard:
             xe.subprocess, "run",
             lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=raw + "\n", stderr=""),
         )
-        assert xe.exiftool_is_defective() is defective
+        assert (xe.exiftool_defective_version() is not None) is defective
 
     def test_lookup_failure_does_not_block(self, monkeypatch):
         monkeypatch.setattr(xe, "_resolve_exiftool", lambda: "/nonexistent/exiftool")
-        assert xe.exiftool_is_defective() is False
+        assert xe.exiftool_defective_version() is None
 
     def test_write_metadata_refuses_and_leaves_sidecar_untouched(self, monkeypatch, tmp_path):
         exe = _fake_exiftool(tmp_path, version="13.25")

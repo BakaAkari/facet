@@ -2620,7 +2620,7 @@ def main():
         exit()
 
     # Import scorer (deferred to avoid loading heavy modules for --help)
-    from processing.scorer import Facet, process_bursts, _load_image_modules
+    from processing.scorer import Facet, process_bursts
 
     # Compute recommendations mode (lightweight - no GPU needed)
     if args.compute_recommendations:
@@ -2878,7 +2878,6 @@ def main():
 
     # Recompute composition with SAMP-Net (requires GPU)
     if args.recompute_composition_gpu:
-        _load_image_modules()  # Load cv2, PIL, numpy
         scorer = Facet(db_path=args.db, config_path=args.config, lightweight=True)
         batch_size = scorer.config.get_processing_settings().get('gpu_batch_size', 16)
         scorer.rescan_samp_composition(batch_size=batch_size)

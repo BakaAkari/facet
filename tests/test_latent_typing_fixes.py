@@ -111,7 +111,7 @@ def test_write_metadata_error_reuses_the_first_version_probe(monkeypatch):
     monkeypatch.setattr(xe, "_resolve_exiftool", lambda: "exiftool")
     monkeypatch.setattr(xe, "_exiftool_version", _flaky_version)
 
-    # RuntimeError is what export_sidecars catches; a TypeError would escape it.
+    # export_sidecars catches (OSError, RuntimeError); a TypeError would escape it.
     with pytest.raises(RuntimeError, match=r"exiftool 13\.25 .*13\.28"):
         xe.write_metadata("a.jpg", xe.XmpRating(star_rating=3))
     assert len(probes) == 1
@@ -125,7 +125,6 @@ def test_exiftool_defective_version_bounds(monkeypatch):
                           ((13, 28), None), (None, None)]:
         monkeypatch.setattr(xe, "_exiftool_version", lambda exe, v=raw: v)
         assert xe.exiftool_defective_version() == expected
-        assert xe.exiftool_is_defective() is (expected is not None)
 
     monkeypatch.setattr(xe, "_resolve_exiftool", lambda: None)
     assert xe.exiftool_defective_version() is None
