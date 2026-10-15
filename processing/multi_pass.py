@@ -927,8 +927,8 @@ class ChunkedMultiPassProcessor:
         tagger = getattr(self, '_clip_tagger', None)
         if tagger is None:
             from models.tagger import CLIPTagger
-            clip_config = self.model_manager.get_clip_config()
             try:
+                clip_config = self.model_manager.get_clip_config()
                 tagger = CLIPTagger(
                     model_dict['model'], device, config=self.scorer.config,
                     model_name=clip_config.get('model_name', model_dict.get('model_name')),
@@ -1231,9 +1231,13 @@ class ChunkedMultiPassProcessor:
                 if 'leading_lines_score' not in data:
                     data['leading_lines_score'] = img_data['composition']['leading_lines_score']
 
-            # Detect silhouette
+            # Detect silhouette: the largest face is a dark patch against a brighter
+            # surround. face_details is None after a face-pass failure and absent when no
+            # face pass ran: no evidence, so 0. The gray plane is not retained across the
+            # passes, so it is rebuilt only for a photo that has a face to judge.
+            face_details = data.get('face_details')
             is_silhouette = detect_silhouette(
-                histogram, data.get('tags', ''), data.get('face_count') or 0
+                self._rebuild_gray(img_data['pil']) if face_details else None, face_details
             )
             data['is_silhouette'] = is_silhouette
 

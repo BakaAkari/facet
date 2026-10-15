@@ -1268,6 +1268,8 @@ class TestMultiPassSuccessPathGoldens:
         facet.config = ScoringConfig(defaults_path(), validate=False)
         proc = ChunkedMultiPassProcessor.__new__(ChunkedMultiPassProcessor)
         proc.scorer, proc.restricted, proc.pass_groups, proc.on_error = facet, False, [['clip']], None
+        # _compute_aggregates rebuilds the gray plane for a photo with faces (silhouette rule)
+        proc.metrics = {'rebuild_time': 0.0}
 
         arr = np.full((64, 64, 3), 120, dtype=np.uint8)
         path = str(tmp_path / 'a.jpg')

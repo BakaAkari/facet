@@ -820,8 +820,8 @@ class PercentileNormalizer:
         categories = conn.execute(f"""
             SELECT
                 CASE
-                    WHEN face_ratio > 0.05 AND is_monochrome = 1 THEN 'portrait_bw'
-                    WHEN face_ratio > 0.05 THEN 'portrait'
+                    WHEN face_ratio > 0.05 AND is_monochrome = 1 AND IFNULL(is_silhouette, 0) = 0 THEN 'portrait_bw'
+                    WHEN face_ratio > 0.05 AND IFNULL(is_silhouette, 0) = 0 THEN 'portrait'
                     WHEN face_count > 1 THEN 'group_portrait'
                     WHEN is_silhouette = 1 THEN 'silhouette'
                     WHEN face_count > 0 THEN 'default'
@@ -1373,8 +1373,8 @@ class PercentileNormalizer:
             categories = conn.execute("""
                 SELECT
                     CASE
-                        WHEN face_ratio > 0.05 AND is_monochrome = 1 THEN 'Portrait B&W'
-                        WHEN face_ratio > 0.05 THEN 'Portrait'
+                        WHEN face_ratio > 0.05 AND is_monochrome = 1 AND IFNULL(is_silhouette, 0) = 0 THEN 'Portrait B&W'
+                        WHEN face_ratio > 0.05 AND IFNULL(is_silhouette, 0) = 0 THEN 'Portrait'
                         WHEN face_count > 1 THEN 'Group Portrait'
                         WHEN is_silhouette = 1 THEN 'Silhouette'
                         WHEN face_count > 0 THEN 'Human in Others'

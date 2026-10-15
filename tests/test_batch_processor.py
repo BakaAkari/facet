@@ -140,14 +140,21 @@ def test_process_batch_result_covers_supplementary_db_columns():
         "clip_input": None,
     }
 
-    with mock.patch("processing.batch_processor.ImageCache"), \
+    gray = object()
+    face_details = [{"bbox": [1, 1, 5, 5]}]
+    bp.scorer.face_analyzer.analyze_faces.return_value["face_details"] = face_details
+    with mock.patch("processing.batch_processor.ImageCache") as cache_cls, \
          mock.patch("processing.batch_processor.CompositionAnalyzer") as comp, \
-         mock.patch("processing.batch_processor.detect_silhouette", return_value=0), \
+         mock.patch("processing.batch_processor.detect_silhouette", return_value=0) as silhouette, \
          mock.patch("processing.batch_processor.imagehash") as phash_mod:
+        cache_cls.return_value.gray = gray
         comp.get_placement_data.return_value = {"score": 5.0, "power_point_score": 1.0}
         comp.detect_leading_lines.return_value = {"leading_lines_score": 0}
         phash_mod.phash.return_value = "hash"
         bp._process_batch([item])
+
+    # The silhouette rule judges the largest face on the gray plane; no tags, no count.
+    silhouette.assert_called_once_with(gray, face_details)
 
     queued = bp.result_queue.get_nowait()
     assert "result" in queued, queued

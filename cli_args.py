@@ -179,6 +179,13 @@ Configuration:
                         help='Derive per-channel clipping percentages from stored histograms. '
                              'Database-only (no image decode) and resumable; photos whose '
                              'histogram predates the RGB format stay unknown')
+    db_group.add_argument('--recompute-silhouette', action='store_true',
+                        help='Re-derive is_silhouette with the face-aware rule (the largest face '
+                             'is a dark patch against a brighter surround) from the stored '
+                             'thumbnails and face boxes. Database-only (no source image decode) '
+                             'and resumable; photos with an unknown face count or no stored '
+                             'thumbnail keep their flag; honours --dry-run. Run '
+                             '--recompute-average afterwards')
     db_group.add_argument('--repair-int-columns', action='store_true', dest='repair_int_columns',
                         help='Repair INTEGER columns whose stored value is a REAL (e.g. a '
                              'fractional EXIF ISO). Database-only, no image decode')

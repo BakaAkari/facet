@@ -773,6 +773,7 @@ LIBRARY_JOB_ARGS = (
     'recompute_junk',
     'recompute_moments',
     'recompute_saliency',
+    'recompute_silhouette',
     'recompute_skin_tone',
     'recompute_tags',
     'recompute_tags_vlm',
@@ -2697,6 +2698,14 @@ def main():
         from db.maintenance import backfill_channel_clipping
         init_database(args.db)
         backfill_channel_clipping(args.db)
+        exit()
+
+    # Re-derive the face-aware silhouette flag from stored thumbnails + face boxes
+    # (no source image decode; honours --dry-run)
+    if args.recompute_silhouette:
+        from processing.silhouette_backfill import recompute_silhouette
+        init_database(args.db)
+        recompute_silhouette(args.db, dry_run=args.dry_run)
         exit()
 
     # Repair INTEGER columns an external writer stored as REAL (no image decode)

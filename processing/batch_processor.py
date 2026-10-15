@@ -378,8 +378,8 @@ class BatchProcessor:
                 exif_data = batch_exif.get(resolved_path) or self.scorer.get_exif_data(path)
                 photo_override = batch_overrides.get(resolved_path, {})
 
-                # Determine silhouette using shared function
-                is_silhouette = detect_silhouette(histogram_data, tags, face_res.get('face_count', 0))
+                # Determine silhouette using shared function (face-aware, pixel-only)
+                is_silhouette = detect_silhouette(cache.gray, face_res.get('face_details'))
 
                 # Calculate aggregate via the shared builder so the single-pass
                 # batch path feeds calculate_aggregate_logic the same feature space

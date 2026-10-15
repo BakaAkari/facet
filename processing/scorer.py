@@ -1490,8 +1490,8 @@ class Facet:
                 if tag_list:
                     tags = tags_to_string(tag_list)
 
-            # 8. Determine silhouette using shared function
-            is_silhouette = detect_silhouette(histogram_data, tags, face_res.get('face_count', 0))
+            # 8. Determine silhouette using shared function (face-aware, pixel-only)
+            is_silhouette = detect_silhouette(cache.gray, face_res.get('face_details'))
 
             # 9. Use base comp_score - leading lines are added in calculate_aggregate_logic
             # to avoid double-counting (integrate_leading_lines was adding bonus here,
