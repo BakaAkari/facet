@@ -22,7 +22,7 @@ from api.config import (
     child_process_env,
     VIEWER_CONFIG, _CONFIG_PATH, FACET_SCRIPT,
     get_comparison_mode_settings,
-    reload_config, invalidate_stats_cache, server_scoring_config,
+    reload_config, invalidate_stats_cache, server_config_path, server_scoring_config,
 )
 from api.database import get_db
 from api.path_validation import resolve_photo_disk_path
@@ -46,7 +46,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["comparison"])
 
-# Mapping from optimizer DB column names to config weight names (used by learned_weights and confidence)
+# DB column name -> config weight name for every weightable metric. The values
+# are what learned_weights, confidence and category_weights report (as
+# '<name>_percent'), and what the optimizer keys its weights by.
 METRIC_NAME_MAPPING = {
     # Primary quality
     'aesthetic': 'aesthetic',
@@ -757,13 +759,18 @@ def api_comparison_learned_weights(
 
     from optimization import WeightOptimizer
 
-    optimizer = WeightOptimizer(DEFAULT_DB_PATH)
+    optimizer = WeightOptimizer(DEFAULT_DB_PATH, server_config_path())
 
-    # Check if we have enough comparisons
+    # Cheap pre-check before any fit: the optimizer's own guard counts the same
+    # thing -- decisive votes (a tie carries no ranking evidence) of the
+    # requested category -- so a category with too few is answered here.
+    sql = "SELECT COUNT(*) FROM comparisons WHERE winner IN ('a', 'b')"
+    params: list = []
+    if category:
+        sql += " AND category = ?"
+        params.append(category)
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM comparisons WHERE winner IN ('a', 'b', 'tie')"
-        ).fetchone()
+        row = conn.execute(sql, params).fetchone()
         count = row[0] if row else 0
 
     settings = get_comparison_mode_settings()
@@ -772,7 +779,7 @@ def api_comparison_learned_weights(
     if count < min_comparisons:
         return {
             'available': False,
-            'message': f'Need at least {min_comparisons} comparisons (have {count})',
+            'message': f'Need at least {min_comparisons} decisive comparisons (have {count})',
             'comparisons': count,
             'min_required': min_comparisons,
         }
@@ -806,11 +813,13 @@ def api_comparison_learned_weights(
         current_weights = {}
         suggested_weights = {}
 
-        # Include ALL components, defaulting to 0 if not present
+        # Include ALL components, defaulting to 0 if not present. The
+        # optimizer keys its weights by config metric name (mapped_key), not
+        # by DB column.
         for db_key in all_components:
             mapped_key = METRIC_NAME_MAPPING.get(db_key, db_key)
-            current_val = result.get('old_weights', {}).get(db_key, 0.0)
-            suggested_val = result.get('new_weights', {}).get(db_key, 0.0)
+            current_val = result.get('old_weights', {}).get(mapped_key, 0.0)
+            suggested_val = result.get('new_weights', {}).get(mapped_key, 0.0)
             current_weights[f'{mapped_key}_percent'] = round(current_val * 100)
             suggested_weights[f'{mapped_key}_percent'] = round(suggested_val * 100)
 
@@ -1431,7 +1440,7 @@ def api_comparison_confidence(
     """Get bootstrap confidence intervals for weights."""
     from optimization import WeightOptimizer
 
-    optimizer = WeightOptimizer(DEFAULT_DB_PATH)
+    optimizer = WeightOptimizer(DEFAULT_DB_PATH, server_config_path())
 
     try:
         result = optimizer.compute_weight_confidence(
@@ -1451,12 +1460,12 @@ def api_comparison_confidence(
         upper_ui = {}
         ci_ui = {}
 
-        for db_key, mapped_key in METRIC_NAME_MAPPING.items():
+        for mapped_key in METRIC_NAME_MAPPING.values():
             ui_key = f'{mapped_key}_percent'
-            weights_ui[ui_key] = round(result['weights'].get(db_key, 0) * 100)
-            lower_ui[ui_key] = round(result['lower_bounds'].get(db_key, 0) * 100)
-            upper_ui[ui_key] = round(result['upper_bounds'].get(db_key, 0) * 100)
-            ci_ui[ui_key] = round(result['confidence_intervals'].get(db_key, 0) * 100)
+            weights_ui[ui_key] = round(result['weights'].get(mapped_key, 0) * 100)
+            lower_ui[ui_key] = round(result['lower_bounds'].get(mapped_key, 0) * 100)
+            upper_ui[ui_key] = round(result['upper_bounds'].get(mapped_key, 0) * 100)
+            ci_ui[ui_key] = round(result['confidence_intervals'].get(mapped_key, 0) * 100)
 
         return {
             'available': True,

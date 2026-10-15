@@ -162,10 +162,10 @@ export class ComparisonSuggestionsTabComponent {
   readonly saving = signal(false);
   readonly recomputing = signal(false);
 
-  /** A suggestion exists and has not been applied yet. */
+  /** The server's held-out gate passed for this suggestion and it has not been applied yet. */
   readonly canApply = computed(() => {
     const lw = this.learnedWeights();
-    return !!(lw?.available && lw.suggested_weights) && !this.applied();
+    return !!(lw?.available && lw.suggested_weights && lw.suggest_changes) && !this.applied();
   });
 
   /** Weights were applied but the category's scores have not been recomputed. */
