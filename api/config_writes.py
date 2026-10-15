@@ -148,6 +148,10 @@ def write_owner_only_backup(source_path, backup_path):
             fd, staging = _create_staging_file(str(backup_path))
             with os.fdopen(fd, 'wb') as destination:
                 shutil.copyfileobj(source, destination)
+                # Flushed before the rename, as atomic_write_json does: otherwise a
+                # crash can leave the name pointing at an empty file.
+                destination.flush()
+                os.fsync(destination.fileno())
         os.replace(staging, backup_path)
     except OSError as ex:
         if staging is not None:

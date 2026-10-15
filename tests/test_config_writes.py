@@ -558,13 +558,14 @@ class TestAtomicConfigWrite:
             return real_fsync(fd)
 
         def _record_replace(src, dst):
-            calls.append("replace")
+            calls.append("replace config" if Path(dst) == config_copy else "replace backup")
             return real_replace(src, dst)
 
         with mock.patch("os.fsync", _record_fsync), mock.patch("os.replace", _record_replace):
             update_scoring_context(config_copy, self.CONTEXT, ["wildlife"], [])
 
-        assert calls == ["fsync", "replace", "fsync"]
+        # The backup is staged and renamed first, flushed the same way.
+        assert calls == ["fsync", "replace backup", "fsync", "replace config", "fsync"]
 
     def test_two_writes_in_one_second_keep_distinct_backups(self, config_copy):
         """A second-granular stamp made the second save overwrite the first
