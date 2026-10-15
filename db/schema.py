@@ -8,6 +8,7 @@ from typing import Any, Callable
 import logging
 import re
 import sqlite3
+import time
 from contextlib import closing
 
 from db.connection import apply_pragmas, HAS_SQLITE_VEC
@@ -756,8 +757,8 @@ USER_PREFERENCES_INDEXES = [
 # of these and db.info.get_schema_info counts them, so the two can never
 # disagree on how many indexes the schema declares (they did before: info
 # under-reported by the scan-runs / recommendation / album / user-preference
-# groups). INDEXES stays first so init can special-case it (the post-create
-# ANALYZE gate keys off idx_moment_confidence).
+# groups). INDEXES stays first: the migration builds ALL_INDEX_GROUPS[1:], and
+# INDEXES is built after it commits (create_photo_indexes), one index at a time.
 ALL_INDEX_GROUPS = [
     INDEXES,
     PHOTO_TAGS_INDEXES,
@@ -1069,19 +1070,22 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
     Creates all tables and indexes using CREATE IF NOT EXISTS.
     Safe to call on existing databases - automatically adds new columns.
 
-    Each ``INDEXES`` entry is built as its own autocommit statement, after the
-    migration steps above it are committed, and logged at INFO before it starts
-    (a large library takes minutes per index). A start killed mid-build therefore
-    keeps every index it finished and the next call resumes, and a writer is never
-    locked out for the whole build.
+    Two phases. The migration (tables, columns, every index group but ``INDEXES``,
+    the photos_fts table and its rebuild, the version ladder) commits as one
+    transaction, so an interrupted run never leaves a half-applied step such as
+    an empty photos_fts that the next run would take for current. On a schema
+    that is already current it takes no write lock at all, so it never waits on
+    another connection's CREATE INDEX. Then ``create_photo_indexes`` builds each
+    missing ``INDEXES`` entry as its own autocommit statement (a large library
+    takes minutes per index): a run killed mid-build keeps every index it
+    finished and the next call resumes. ``analyze_photos_if_unanalyzed`` follows.
 
     Args:
         db_path: Path to the SQLite database file
-        build_photo_indexes: When False, skip the ``INDEXES`` loop and the ANALYZE
-            gate that follows it (tables, columns and every other index group are
-            still created). The viewer passes False when a library job holds the
-            library lock, so it never builds under a running scan; the next start,
-            or ``python database.py``, builds them.
+        build_photo_indexes: When False, stop after the migration: no ``INDEXES``
+            entry is built and nothing is analyzed. The viewer passes False and
+            builds them on a background thread under the library lock
+            (``api.schema_startup``).
     """
     # closing() closes the connection; the inner `conn` block keeps the commit on success.
     with closing(sqlite3.connect(db_path)) as conn, conn:
@@ -1237,10 +1241,17 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
         # A centroid that predates persons.centroid_model was averaged from ArcFace
         # embeddings (the only space that existed), so tag it. After this a NULL
         # centroid_model means only "no centroid yet".
-        conn.execute(
-            "UPDATE persons SET centroid_model = ? "
-            "WHERE centroid IS NOT NULL AND centroid_model IS NULL",
-            (ARCFACE_MODEL,))
+        # Probe first: an UPDATE opens a write transaction even when it matches no
+        # row, and the migration must not need the write lock on a current schema
+        # (a viewer worker starting while another one holds it for a CREATE INDEX
+        # would otherwise fail on busy_timeout).
+        if conn.execute(
+                "SELECT 1 FROM persons WHERE centroid IS NOT NULL AND centroid_model IS NULL "
+                "LIMIT 1").fetchone():
+            conn.execute(
+                "UPDATE persons SET centroid_model = ? "
+                "WHERE centroid IS NOT NULL AND centroid_model IS NULL",
+                (ARCFACE_MODEL,))
 
         # Create photos_vec virtual table for vector search (requires sqlite-vec).
         # After the sweep so detect_embedding_dim can see clip_embedding.
@@ -1265,55 +1276,11 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
         for stale_idx in ('idx_burst_moment', 'idx_burst_learned', 'idx_qalign_score', 'idx_render_version'):
             conn.execute(f'DROP INDEX IF EXISTS {stale_idx}')
 
-        # Create the photos-table indexes first so the ANALYZE gate below can
-        # observe idx_moment_confidence, then every other group. All groups come
-        # from the single ALL_INDEX_GROUPS registry that db.info also counts, so
-        # the two can never disagree.
-        if build_photo_indexes:
-            # Everything above ran in one implicit write transaction (the first DML
-            # opened it). Commit it so each CREATE INDEX below is its own autocommit
-            # statement: the write lock is released after every index, and an
-            # interrupted build keeps the indexes it finished instead of rolling
-            # all of them back with the migration steps (which are idempotent, so
-            # a re-run is safe).
-            conn.commit()
-            existing = {r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index'")}
-            for idx_name, table, column_expr in INDEXES:
-                if idx_name not in existing:
-                    logger.info(
-                        "Creating index %s (a large library can take minutes)", idx_name)
-                conn.execute(
-                    f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({column_expr})'
-                )
-
-            # A freshly created index has no row in sqlite_stat1, and with stale
-            # partial stats the query planner ignores it (the moment / learned_score
-            # sorts kept temp-sorting 126k rows until ANALYZE ran). Analyze the photos
-            # table once when a recent sort index is missing from the stats so
-            # upgraded DBs pick up the new indexes without a manual
-            # `database.py --analyze`. The gallery covering index is a second key
-            # (a DB upgraded from before it has the moment index analyzed already).
-            # An EMPTY photos table cannot be analyzed (ANALYZE writes no
-            # sqlite_stat1 row for it), so the gate would refire on every init of an
-            # empty DB; skip it there.
-            try:
-                analyzed = {r[0] for r in conn.execute(
-                    "SELECT idx FROM sqlite_stat1 WHERE idx IS NOT NULL"
-                )}
-            except sqlite3.OperationalError:
-                analyzed = set()  # sqlite_stat1 not created yet (never analyzed)
-            if (('idx_moment_confidence' not in analyzed
-                 or 'idx_gallery_aggregate' not in analyzed)
-                    and conn.execute("SELECT 1 FROM photos LIMIT 1").fetchone()):
-                conn.execute("ANALYZE photos")
-
         # Create every remaining index group (photo_tags, comparisons,
         # learned_scores, weight-optimization, snapshots, scan_runs,
-        # recommendation_history, albums, user_preferences).
-        for group in ALL_INDEX_GROUPS:
-            if group is INDEXES:
-                continue
+        # recommendation_history, albums, user_preferences). INDEXES is first in
+        # the registry and is built after the migration commits (create_photo_indexes).
+        for group in ALL_INDEX_GROUPS[1:]:
             for idx_name, table, column_expr in group:
                 conn.execute(
                     f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({column_expr})'
@@ -1324,8 +1291,16 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
         # CREATE below installs the covering schema. The FTS data is then
         # repopulated by db.fts.rebuild_fts (or whoever rebuilds next).
         fts_existed = _table_exists(conn, 'photos_fts')
+        fts_current = fts_schema_is_current(conn)
         fts_recreated = False
-        if not fts_schema_is_current(conn):
+        if not (fts_existed and fts_current) and not conn.in_transaction:
+            # The drop, the CREATE and the rebuild must commit together: DDL runs in
+            # autocommit when no transaction is open (Python's legacy mode only
+            # opens one before DML), and a run killed after the CREATE but before
+            # the rebuild would commit an EMPTY photos_fts that every later run
+            # takes for current, so text search silently found nothing.
+            conn.execute("BEGIN")
+        if not fts_current:
             logger.info("photos_fts schema outdated — dropping for recreate")
             for trigger in ('photos_fts_ai', 'photos_fts_ad', 'photos_fts_au'):
                 conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
@@ -1352,6 +1327,101 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
         _run_migration_ladder(conn, is_fresh)
 
         conn.commit()
+
+        if build_photo_indexes:
+            create_photo_indexes(conn)
+            analyze_photos_if_unanalyzed(conn)
+
+
+# Indexes whose absence from sqlite_stat1 means the photos table must be analyzed: a
+# freshly created index has no stats row, and with stale partial stats the planner
+# ignores it (the moment / learned_score sorts kept temp-sorting 126k rows until
+# ANALYZE ran; with no stats at all the gallery page fell back to an OR plan and a
+# temp sort). idx_gallery_aggregate is the second key because a DB upgraded from
+# before it already has the moment index analyzed.
+ANALYZE_KEY_INDEXES = ('idx_moment_confidence', 'idx_gallery_aggregate')
+
+
+def missing_photo_indexes(conn):
+    """The ``INDEXES`` entries (name, table, column_expr) the database does not have."""
+    existing = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index'")}
+    return [entry for entry in INDEXES if entry[0] not in existing]
+
+
+def create_photo_indexes(conn, should_stop=None):
+    """Build every missing ``INDEXES`` entry, each its own autocommit statement.
+
+    Logs one INFO line before each index and one after it. Each CREATE INDEX
+    holds the write lock only for itself, and a run killed or interrupted
+    (``sqlite3.Connection.interrupt``) mid-build keeps every index it finished.
+    ``should_stop`` is checked before each index; when it returns True the build
+    stops there. Returns the names built.
+    """
+    if conn.in_transaction:
+        conn.commit()
+    missing = missing_photo_indexes(conn)
+    built = []
+    for position, (idx_name, table, column_expr) in enumerate(missing, 1):
+        if should_stop is not None and should_stop():
+            break
+        logger.info("Creating index %s (%d of %d; a large library can take minutes)",
+                    idx_name, position, len(missing))
+        started = time.monotonic()
+        conn.execute(f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({column_expr})')
+        logger.info("Created index %s in %.1f s", idx_name, time.monotonic() - started)
+        built.append(idx_name)
+    return built
+
+
+def photos_need_analyze(conn):
+    """True when an existing ``ANALYZE_KEY_INDEXES`` index has no stats on a non-empty table.
+
+    An EMPTY photos table cannot be analyzed (ANALYZE writes no sqlite_stat1 row
+    for it), so it never counts: the gate would refire on every init.
+    """
+    try:
+        analyzed = {r[0] for r in conn.execute(
+            "SELECT idx FROM sqlite_stat1 WHERE idx IS NOT NULL")}
+    except sqlite3.OperationalError:
+        analyzed = set()  # sqlite_stat1 not created yet (never analyzed)
+    existing = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'photos'")}
+    unanalyzed = [name for name in ANALYZE_KEY_INDEXES
+                  if name in existing and name not in analyzed]
+    return bool(unanalyzed) and conn.execute("SELECT 1 FROM photos LIMIT 1").fetchone() is not None
+
+
+def analyze_photos_if_unanalyzed(conn, should_stop=None):
+    """Full statistics for every photos index when ``photos_need_analyze``; returns whether it ran.
+
+    One ``ANALYZE <index>`` statement per index rather than one ``ANALYZE photos``:
+    the statistics are the same, but each statement holds the write lock only for
+    its own index (at most about 0.2 s on a 130k-photo library, against 1.4 to
+    3.3 s for the whole table in one statement), so a running scan's or the
+    viewer's own writes never wait long. Statistics are never sampled
+    (``PRAGMA analysis_limit``): on that library a sampled pass left the default
+    gallery count on a MULTI-INDEX OR plan, 0.5 s warm instead of 25 ms.
+
+    The ``ANALYZE_KEY_INDEXES`` go last, because they are what the gate reads: a
+    pass stopped part-way (``should_stop``, checked before each index, or an
+    interrupt) is redone in full by the next call.
+    """
+    if conn.in_transaction:
+        conn.commit()
+    if not photos_need_analyze(conn):
+        return False
+    names = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'photos' "
+        "AND sql IS NOT NULL ORDER BY name")]
+    names.sort(key=lambda name: name in ANALYZE_KEY_INDEXES)
+    for name in names:
+        if should_stop is not None and should_stop():
+            return False
+        conn.execute(f"ANALYZE {name}")
+        if conn.in_transaction:
+            conn.commit()
+    return True
 
 
 def detect_embedding_dim(conn):

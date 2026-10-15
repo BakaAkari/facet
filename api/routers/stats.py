@@ -168,10 +168,13 @@ async def api_stats_overview(
                 from api.db_helpers import is_manual_tags_available, is_photo_tags_available
                 # Distinct union of AI and manual tags: a manual tag equal to an AI
                 # tag is one tag, and a manual-only library still counts its tags.
+                # Cached probes whose miss queries a sync connection: off the event loop.
+                photo_tags_ready, manual_ready = await asyncio.to_thread(
+                    lambda: (is_photo_tags_available(), is_manual_tags_available()))
                 tag_sources = []
-                if is_photo_tags_available(conn):
+                if photo_tags_ready:
                     tag_sources.append('SELECT tag FROM photo_tags')
-                if is_manual_tags_available(conn):
+                if manual_ready:
                     tag_sources.append('SELECT tag FROM photo_manual_tags')
                 if tag_sources:
                     cur = await conn.execute(

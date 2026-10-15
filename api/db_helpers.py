@@ -539,8 +539,9 @@ def is_photo_tags_available(conn=None):
         close_conn = True
 
     try:
-        row = conn.execute("SELECT COUNT(*) FROM photo_tags").fetchone()
-        result = row[0] > 0 if row else False
+        # Existence of one row, not a count: the answer is the same and a COUNT
+        # walks the whole table (millions of rows on a large library).
+        result = conn.execute("SELECT 1 FROM photo_tags LIMIT 1").fetchone() is not None
     except sqlite3.OperationalError:
         logger.debug("photo_tags table not available", exc_info=True)
         result = False

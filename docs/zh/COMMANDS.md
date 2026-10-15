@@ -375,7 +375,7 @@ python /opt/facet/viewer.py      # 仍然读取 /opt/facet/scoring_config.json�
 
 | 命令 | 说明 |
 |---------|-------------|
-| `python database.py` | 初始化／升级表结构（同时构建图库覆盖索引；查看器启动时会构建缺失的索引，参见 [VIEWER.md](VIEWER.md#图库索引与计数缓存)） |
+| `python database.py` | 初始化／升级表结构（同时构建图库覆盖索引，扫描在启动时也会这样做；查看器启动时会在后台构建缺失的索引，参见 [VIEWER.md](VIEWER.md#图库索引与计数缓存)） |
 | `python database.py --info` | 显示表结构信息 |
 | `python database.py --migrate-tags` | 填充 photo_tags 查找表（查询快 10-50 倍） |
 | `python database.py --rebuild-fts` | 从照片描述／标签重建 FTS5 全文检索索引 |

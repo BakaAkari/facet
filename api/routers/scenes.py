@@ -319,7 +319,7 @@ def compute_scenes(conn, user_id=None, album_id=None, date_from=None, date_to=No
     response_model=ScenesResponse,
     response_model_exclude_unset=True,
 )
-async def api_scenes(
+def api_scenes(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     album_id: Optional[int] = None,
@@ -353,7 +353,7 @@ async def api_scenes(
     }
 
 
-async def apply_scene_cull(
+def apply_scene_cull(
     body: SceneConfirmBody,
     user: CurrentUser = Depends(require_edition),
 ):

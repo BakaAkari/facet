@@ -6,7 +6,6 @@ Uses precomputed burst_group_id from the database (populated by --recompute-burs
 Groups marked as burst_reviewed=1 are skipped so confirmed decisions persist.
 """
 
-import asyncio
 import json
 import logging
 import random
@@ -639,7 +638,7 @@ def _sequence_members(rows):
 
 
 @router.post("/api/burst-groups/select")
-async def select_burst_photos(
+def select_burst_photos(
     body: BurstSelectionBody,
     user: CurrentUser = Depends(require_edition),
 ):
@@ -760,7 +759,7 @@ def get_similar_groups(
 
 
 @router.post("/api/similar-groups/select")
-async def select_similar_photos(
+def select_similar_photos(
     body: SimilarSelectionBody,
     user: CurrentUser = Depends(require_edition),
 ):
@@ -1224,7 +1223,7 @@ def _order_group_photos_by_capture(groups):
 
 
 @router.post("/api/culling-group/faces")
-async def api_culling_group_faces(
+def api_culling_group_faces(
     body: CullingFacesBody,
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
@@ -1300,7 +1299,7 @@ async def api_culling_group_faces(
             })
         return faces_by_path
 
-    faces_by_path = await asyncio.to_thread(_build_faces)
+    faces_by_path = _build_faces()
     return {'faces_by_path': faces_by_path, 'thresholds': thresholds}
 
 
@@ -1352,7 +1351,7 @@ def _subject_crop_and_sharpness(thumbnail_bytes, bbox):
 
 
 @router.post("/api/culling-group/subjects")
-async def api_culling_group_subjects(
+def api_culling_group_subjects(
     body: CullingSubjectsBody,
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
@@ -1423,12 +1422,12 @@ async def api_culling_group_subjects(
                     e['crop_sharpness_score'] = round(10.0 * e['crop_sharpness'] / max_sharp, 2)
         return subjects_by_path
 
-    subjects_by_path = await asyncio.to_thread(_build_subjects)
+    subjects_by_path = _build_subjects()
     return {'subjects_by_path': subjects_by_path}
 
 
 @router.get("/api/culling-groups", response_model=CullingGroupsResponse, response_model_exclude_unset=True)
-async def api_culling_groups(
+def api_culling_groups(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     similarity_threshold: float = Query(0.85, ge=0.5, le=1.0),
@@ -1732,7 +1731,7 @@ def _confirm_sequence_group(body, user, kind):
 
 
 @router.post("/api/culling-groups/confirm")
-async def confirm_culling_group(
+def confirm_culling_group(
     body: CullingConfirmBody,
     user: CurrentUser = Depends(require_edition),
 ):
@@ -1758,19 +1757,19 @@ async def confirm_culling_group(
             burst_id=body.group_id,
             keep_paths=body.keep_paths,
         )
-        return await select_burst_photos(burst_body, user)
+        return select_burst_photos(burst_body, user)
     elif body.type == 'similar':
         similar_body = SimilarSelectionBody(
             paths=body.paths,
             keep_paths=body.keep_paths,
         )
-        return await select_similar_photos(similar_body, user)
+        return select_similar_photos(similar_body, user)
     elif body.type == 'scene':
         scene_body = SceneConfirmBody(
             paths=body.paths,
             keep_paths=body.keep_paths,
         )
-        return await apply_scene_cull(scene_body, user)
+        return apply_scene_cull(scene_body, user)
     else:
         raise HTTPException(status_code=400, detail=f'Unknown group type: {body.type}')
 

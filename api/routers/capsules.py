@@ -1,5 +1,6 @@
 """Capsules router — curated photo diaporamas grouped by theme."""
 
+import asyncio
 import logging
 import re
 import sqlite3
@@ -165,7 +166,10 @@ async def get_capsule_photos(
     user_id = user.user_id if user else None
     date_from = _validate_date(date_from)
     date_to = _validate_date(date_to)
-    capsule = _resolve_capsule(capsule_id, user_id, date_from=date_from, date_to=date_to)
+    # A cache miss generates every capsule on a sync connection (seconds on a large
+    # library): never on the event loop.
+    capsule = await asyncio.to_thread(
+        _resolve_capsule, capsule_id, user_id, date_from=date_from, date_to=date_to)
 
     paths = capsule["params"].get("paths", [])
     if not paths:

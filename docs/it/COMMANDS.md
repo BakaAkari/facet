@@ -383,7 +383,7 @@ Controlli: intervalli dei punteggi, metriche dei volti, corruzione dei BLOB, dim
 
 | Comando | Descrizione |
 |---------|-------------|
-| `python database.py` | Inizializza/aggiorna lo schema (costruisce anche gli indici di copertura della galleria; il viewer costruisce quelli mancanti all'avvio, vedi [VIEWER.md](VIEWER.md#indici-della-galleria-e-cache-dei-conteggi)) |
+| `python database.py` | Inizializza/aggiorna lo schema (costruisce anche gli indici di copertura della galleria, come fa una scansione al proprio avvio; il viewer costruisce quelli mancanti in background all'avvio, vedi [VIEWER.md](VIEWER.md#indici-della-galleria-e-cache-dei-conteggi)) |
 | `python database.py --info` | Mostra le informazioni sullo schema |
 | `python database.py --migrate-tags` | Popola la tabella di lookup photo_tags (query 10-50x più veloci) |
 | `python database.py --rebuild-fts` | Ricostruisce l'indice di ricerca full-text FTS5 da didascalie/tag |

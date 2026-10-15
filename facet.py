@@ -725,6 +725,9 @@ LIBRARY_LOCK_MOUNTS_PATH = '/proc/mounts'
 LIBRARY_LOCK_MOUNT_ESCAPES = (('\\040', ' '), ('\\011', '\t'), ('\\012', '\n'), ('\\134', '\\'))
 LIBRARY_LOCK_HOST_LOCAL_FILESYSTEMS = frozenset({'cifs', 'smbfs', 'smb2', 'smb3'})
 JOB_ORIGIN_ENV_VAR = 'FACET_JOB_ORIGIN'
+# The origin a lock taken inside the viewer process records (its start-up index build,
+# its auto-retrain), and the one it hands to the facet.py jobs it spawns.
+JOB_ORIGIN_VIEWER = 'viewer'
 LIBRARY_JOB_SCAN = 'scan'
 LIBRARY_JOB_RECOMPUTE = 'recompute'
 LIBRARY_JOB_RETRAIN = 'retrain'
@@ -1072,7 +1075,23 @@ def check_raw_rendering(db_path, config, sample_size):
 
 
 class LibraryLockError(RuntimeError):
-    """Raised when the library lock is held elsewhere, or cannot be used."""
+    """Raised when the library lock is held elsewhere, or cannot be used.
+
+    ``holder`` is the payload of the process holding it (``pid``, ``kind``,
+    ``origin``, ``started_at``) when the lock is held, else None.
+    """
+
+    def __init__(self, message, holder=None):
+        super().__init__(message)
+        self.holder = holder
+
+
+class LibraryLockUnusableError(LibraryLockError):
+    """The lock file itself cannot be created, opened or locked (``__cause__`` says why).
+
+    Unlike a held lock this does not go away when another job ends, so a caller
+    must not tell the user to simply wait or retry.
+    """
 
 
 class _FlockBackend:
@@ -1371,11 +1390,13 @@ class LibraryLock:
     library (``docs/DEPLOYMENT.md``).
     """
 
-    def __init__(self, db_path, kind, force=False):
+    def __init__(self, db_path, kind, force=False, origin=None):
         self.lock_path = _library_lock_path(db_path)
         self.kind = kind
         self.force = force
-        self.origin = os.environ.get(JOB_ORIGIN_ENV_VAR, 'cli')
+        # An explicit origin wins: the viewer's own locks pass JOB_ORIGIN_VIEWER, since
+        # the variable is only set in the environment of the jobs it spawns.
+        self.origin = origin or os.environ.get(JOB_ORIGIN_ENV_VAR, 'cli')
         self._fd = None
         self._prev_sigterm_handler = None
 
@@ -1398,7 +1419,7 @@ class LibraryLock:
         try:
             self._open_and_hold()
         except OSError as ex:
-            raise LibraryLockError(
+            raise LibraryLockUnusableError(
                 f"Cannot use the library lock file {self.lock_path}: {ex}. Fix that path, "
                 f"or re-run with {LIBRARY_LOCK_OVERRIDE_FLAG} to run unguarded."
             ) from ex
@@ -1417,7 +1438,8 @@ class LibraryLock:
         if not _take_os_lock(fd, attempts=LIBRARY_LOCK_RETRY_ATTEMPTS):
             holder = _decode_holder(os.read(fd, LIBRARY_LOCK_READ_BYTES))
             os.close(fd)
-            raise LibraryLockError(library_job_conflict_message(holder, self.lock_path))
+            raise LibraryLockError(library_job_conflict_message(holder, self.lock_path),
+                                   holder=holder)
         self._fd = fd
         self._install_sigterm_cleanup()
         atexit.register(self.release)

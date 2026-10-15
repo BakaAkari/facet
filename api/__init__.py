@@ -179,19 +179,33 @@ def _flush_pending_rating_syncs():
         )
 
 
+# How long shutdown waits for the background gallery index build to stop after
+# interrupting it; the index in progress is rolled back and the next start resumes.
+INDEX_BUILD_STOP_TIMEOUT_SECONDS = 30.0
+
+
+def _wal_checkpoint():
+    """``PRAGMA wal_checkpoint(TRUNCATE)`` on a fresh read-write connection. Raises on failure.
+
+    Shared by the periodic thread and the shutdown checkpoint, which each log a
+    failure their own way.
+    """
+    from api.database import get_db_connection
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _final_wal_checkpoint():
     """Truncate the WAL on a read-write connection, which is then the last closer.
 
     Best-effort: a failure is logged and never raised, so it cannot block shutdown.
     """
     try:
-        from api.database import get_db_connection
-        conn = get_db_connection()
-        try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            conn.commit()
-        finally:
-            conn.close()
+        _wal_checkpoint()
     except Exception:
         logger.warning("Final WAL checkpoint on shutdown failed", exc_info=True)
 
@@ -205,13 +219,16 @@ async def lifespan(app: FastAPI):
     # photo_scores_pro.db missing newer columns (similarity_reviewed,
     # burst_group_id, gps_*, caption, ...) causes runtime 500s on the
     # culling, capsules, and similar-photos endpoints.
-    # It runs under facet.LibraryLock: the gallery covering indexes are minutes of
-    # write-locked work on a large library, so a library job holding the lock makes
-    # this start migrate tables and columns only and leave the indexes to the next
-    # start (or `python database.py`). Failures are logged inside the helper.
+    # Only the migration runs here. The gallery covering indexes are minutes of
+    # write-locked work per index on a large library, so they are built on a
+    # background thread under facet.LibraryLock while the viewer already serves
+    # (api/schema_startup.py); shutdown interrupts and joins it. Failures are logged
+    # inside the helpers.
     from api.database import DEFAULT_DB_PATH
-    from api.schema_startup import init_schema_at_startup
-    init_schema_at_startup(DEFAULT_DB_PATH)
+    from api.schema_startup import PhotoIndexBuild, migrate_schema_at_startup
+    migrate_schema_at_startup(DEFAULT_DB_PATH)
+    index_build = PhotoIndexBuild(DEFAULT_DB_PATH).start()
+    app.state.index_build = index_build
 
     # init_database may have ALTERed columns onto the photos table — clear the
     # cache before warming it so the new column set is reflected. Without this,
@@ -273,16 +290,10 @@ async def lifespan(app: FastAPI):
         wal_stop = threading.Event()
 
         def _wal_checkpoint_loop():
-            from api.database import get_db_connection
             interval = max(60, wal_minutes * 60)
             while not wal_stop.wait(interval):
                 try:
-                    conn = get_db_connection()
-                    try:
-                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                        conn.commit()
-                    finally:
-                        conn.close()
+                    _wal_checkpoint()
                 except Exception:
                     # Broad except: the loop must survive any transient error
                     # (sqlite lock contention, extension load issues, OSError
@@ -301,6 +312,9 @@ async def lifespan(app: FastAPI):
 
     logger.info("Facet API ready")
     yield
+    # First: the index build holds the write lock for minutes per index, which every
+    # shutdown step below that writes (rating flush, checkpoint) would wait on.
+    index_build.stop(INDEX_BUILD_STOP_TIMEOUT_SECONDS)
     if wal_stop is not None:
         wal_stop.set()
     if wal_thread is not None:

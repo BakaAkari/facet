@@ -3,6 +3,7 @@ Filter options router — lazy-loaded dropdown options.
 
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -118,6 +119,12 @@ async def lenses(user: Optional[CurrentUser] = Depends(get_optional_user)):
     return await _cached_filter_query('lenses', 'lenses', query, vis)
 
 
+def _tag_tables_ready():
+    """(photo_tags has rows, photo_manual_tags exists), on one sync connection."""
+    with get_db() as sync_conn:
+        return is_photo_tags_available(sync_conn), is_manual_tags_available(sync_conn)
+
+
 @router.get("/tags", response_model=MediaFilterOptionTagsResponse, response_model_exclude_unset=True)
 async def tags(user: Optional[CurrentUser] = Depends(get_optional_user)):
     """Lazy-load tag options with counts.
@@ -138,13 +145,10 @@ async def tags(user: Optional[CurrentUser] = Depends(get_optional_user)):
             return {'tags': data[:max_tags], 'cached': True}
 
     async with get_async_db() as conn:
-        # `is_photo_tags_available` runs a `SELECT name FROM sqlite_master`
-        # under a sync connection; the result is stable per server lifetime
-        # so the synchronous probe is fine here.
-        photo_tags_ready = False
-        with get_db() as sync_conn:
-            photo_tags_ready = is_photo_tags_available(sync_conn)
-            manual_ready = is_manual_tags_available(sync_conn)
+        # Both probes are cached, but a cache miss opens a sync connection and
+        # queries it: run them on a worker thread so a miss never stalls the event
+        # loop (and with it every other request in flight).
+        photo_tags_ready, manual_ready = await asyncio.to_thread(_tag_tables_ready)
 
         if photo_tags_ready:
             try:

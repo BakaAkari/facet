@@ -383,7 +383,7 @@ Comprueba: rangos de puntuación, métricas faciales, corrupción de BLOB, tama�
 
 | Comando | Descripción |
 |---------|-------------|
-| `python database.py` | Inicializa/actualiza el esquema (también construye los índices de cobertura de la galería; el visor construye los que falten al iniciar, consulta [VIEWER.md](VIEWER.md#índices-de-la-galería-y-caché-de-recuentos)) |
+| `python database.py` | Inicializa/actualiza el esquema (también construye los índices de cobertura de la galería, como hace un escaneo al iniciar; el visor construye los que falten en segundo plano al iniciar, consulta [VIEWER.md](VIEWER.md#índices-de-la-galería-y-caché-de-recuentos)) |
 | `python database.py --info` | Muestra información del esquema |
 | `python database.py --migrate-tags` | Puebla la tabla de búsqueda photo_tags (consultas 10-50 veces más rápidas) |
 | `python database.py --rebuild-fts` | Reconstruye el índice de búsqueda de texto completo FTS5 a partir de leyendas/etiquetas |

@@ -501,7 +501,7 @@ class TestCullingGroupsEndpoint:
 
     def test_confirm_group_scene_delegates_to_scene_cull(self, client):
         with mock.patch(
-            "api.routers.burst_culling.apply_scene_cull", new_callable=mock.AsyncMock,
+            "api.routers.burst_culling.apply_scene_cull",
         ) as scene_cull:
             scene_cull.return_value = {"status": "ok", "kept": 1, "rejected": 1}
             resp = client.post("/api/culling-groups/confirm", json={
@@ -510,7 +510,7 @@ class TestCullingGroupsEndpoint:
             })
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok", "kept": 1, "rejected": 1}
-        scene_cull.assert_awaited_once()
+        scene_cull.assert_called_once()
 
     def test_group_by_bracket_serves_bracket_groups(self, client):
         mock_conn = mock.MagicMock()

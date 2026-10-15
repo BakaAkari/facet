@@ -263,7 +263,7 @@ async def api_download_single(
     """
     from api.raw_processing import convert_raw_darktable_async, find_companion_raw
 
-    db_path, real_disk, sequence_kind = _validate_and_resolve(path, user)
+    db_path, real_disk, sequence_kind = await asyncio.to_thread(_validate_and_resolve, path, user)
 
     quality = VIEWER_CONFIG['display'].get('image_jpeg_quality', 96)
     stem = os.path.splitext(os.path.basename(db_path))[0]
@@ -447,7 +447,10 @@ async def api_update_weights(
 
         # A loose full-config backup is only needed when non-weight config
         # (modifiers/filters) changes -- the snapshot table is weights-only.
-        backup_path = update_category_weights(
+        # Off the event loop: it waits on CONFIG_WRITE_LOCK and writes the config
+        # file and a snapshot row.
+        backup_path = await asyncio.to_thread(
+            update_category_weights,
             config_path, body.category, 'auto:edit', get_db,
             not_found_detail=f'Category "{body.category}" not found in config',
             weights=body.weights,

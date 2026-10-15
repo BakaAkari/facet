@@ -2,6 +2,8 @@
 
 import sqlite3
 
+import pytest
+
 from db.schema import PHOTOS_COLUMNS, SCHEMA_VERSION, init_database
 
 
@@ -85,3 +87,74 @@ class TestSchemaMigrationLadder:
         finally:
             conn.close()
         assert matched == [('/a.jpg',)]
+
+
+class _KilledDuringRebuild(BaseException):
+    """A process kill: BaseException, so no `except Exception` on the way can swallow it."""
+
+
+def _fts_library(path, fts_state):
+    """300 captioned photos whose photos_fts is missing ('missing') or narrower ('outdated')."""
+    init_database(path)
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO photos (path, filename, aggregate, caption) VALUES (?, ?, ?, ?)",
+        [(f"/l/{i}.jpg", f"{i}.jpg", 5, f"zebra crossing number {i}") for i in range(300)])
+    for trigger in ('photos_fts_ai', 'photos_fts_ad', 'photos_fts_au'):
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    conn.execute("DROP TABLE IF EXISTS photos_fts")
+    if fts_state == 'outdated':
+        # The pre-covering schema: path, caption, tags only.
+        conn.execute("CREATE VIRTUAL TABLE photos_fts USING fts5(path UNINDEXED, caption, tags, "
+                     "content='photos', content_rowid='rowid')")
+    conn.commit()
+    conn.close()
+
+
+def _fts_matches(path, term):
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM photos_fts WHERE photos_fts MATCH ?", (term,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("fts_state", ["missing", "outdated"])
+def test_a_start_killed_during_the_fts_rebuild_never_commits_an_empty_index(
+        tmp_path, monkeypatch, fts_state):
+    """The FTS drop, CREATE and rebuild commit together. A start killed during the rebuild
+    must not leave an empty photos_fts that the next start takes for current (text search
+    would then find nothing until a manual --rebuild-fts)."""
+    import db.schema as schema
+
+    db = str(tmp_path / f"fts_{fts_state}.db")
+    _fts_library(db, fts_state)
+
+    class KillOnRebuild(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if "VALUES('rebuild')" in sql:
+                raise _KilledDuringRebuild()
+            return super().execute(sql, *args, **kwargs)
+
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(schema.sqlite3, "connect",
+                        lambda *a, **kw: real_connect(*a, factory=KillOnRebuild, **kw))
+    with pytest.raises(_KilledDuringRebuild):
+        init_database(db)
+    monkeypatch.undo()
+
+    # Nothing of the interrupted FTS step is committed: the table is as it was before.
+    conn = sqlite3.connect(db)
+    try:
+        exists = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'photos_fts'").fetchone()[0]
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(photos_fts)")}
+    finally:
+        conn.close()
+    assert bool(exists) is (fts_state == 'outdated')
+    if fts_state == 'outdated':
+        assert columns == {'path', 'caption', 'tags'}
+
+    init_database(db)  # the next start
+    assert _fts_matches(db, 'zebra') == 300

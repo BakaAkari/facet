@@ -817,3 +817,40 @@ def test_init_database_closes_its_connection(tmp_path):
     for conn in opened:
         with pytest.raises(sqlite3.ProgrammingError):
             conn.execute("SELECT 1")
+
+
+def test_a_deferred_start_on_an_unanalyzed_library_leaves_plans_on_the_gallery_indexes(
+        gallery, traced, sparse_db):
+    """A start that cannot take the library lock (a scan holds it) still leaves planner
+    statistics: a library whose indexes exist but were never analyzed (created on an empty
+    DB, filled by the scan that holds the lock) gets a full ANALYZE, and the default
+    gallery statements then plan on the covering gallery indexes. A sampled ANALYZE
+    (``PRAGMA analysis_limit``) fails this: the count stays on a MULTI-INDEX OR."""
+    from api.schema_startup import PhotoIndexBuild, migrate_schema_at_startup
+    from facet import LIBRARY_JOB_SCAN, LibraryLock
+
+    client = gallery(sparse_db)
+    found = _capture(client, traced, f"{HIDES}&sort=aggregate&dir=DESC")
+    with sqlite3.connect(sparse_db) as conn:
+        conn.execute("DELETE FROM sqlite_stat1")
+        conn.commit()
+    # Control: with no statistics the same statements miss the covering indexes.
+    control = _plans(sparse_db, found)
+    assert not any("COVERING INDEX idx_gallery_" in line for line in control["count"])
+    assert _temp_sort(control["page"]), control["page"]
+
+    scan = LibraryLock(sparse_db, kind=LIBRARY_JOB_SCAN).acquire()
+    try:
+        assert migrate_schema_at_startup(sparse_db) is True
+        assert PhotoIndexBuild(sparse_db).run() == 'deferred'
+    finally:
+        scan.release()
+
+    with sqlite3.connect(sparse_db) as conn:
+        analyzed = {r[0] for r in conn.execute("SELECT idx FROM sqlite_stat1 WHERE tbl = 'photos'")}
+    assert {'idx_gallery_aggregate', 'idx_moment_confidence'} <= analyzed
+    plans = _plans(sparse_db, found)
+    assert any("COVERING INDEX idx_gallery_" in line for line in plans["count"]), plans["count"]
+    assert any("COVERING INDEX idx_gallery_" in line for line in plans["summary"]), plans["summary"]
+    assert _uses(plans["page"], "idx_gallery_aggregate"), plans["page"]
+    assert not _temp_sort(plans["page"]), plans["page"]

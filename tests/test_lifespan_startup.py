@@ -1,7 +1,7 @@
 """Viewer start-up and shutdown: the library-locked schema step and the final checkpoint.
 
-Viewer-API speed spec, Step 11 (``api.schema_startup.init_schema_at_startup`` and the
-lifespan call to it) and Step 12 (the shutdown checkpoint no longer depends on
+Viewer-API speed spec, Step 11 (``api.schema_startup``: the synchronous migration, the
+background index build under the library lock, and the lifespan that starts and stops it) and Step 12 (the shutdown checkpoint no longer depends on
 ``performance.wal_checkpoint_minutes``, and the change-token sentinels close first).
 
 Every test builds its own DB with ``init_database`` (``.claude/patterns/test-fixtures.md``)
@@ -29,7 +29,7 @@ from fastapi.testclient import TestClient
 import api.config as api_config
 from api import create_app
 from api.change_token import db_change_token
-from api.schema_startup import init_schema_at_startup
+from api.schema_startup import PhotoIndexBuild, migrate_schema_at_startup
 from db.schema import init_database
 from facet import LIBRARY_JOB_MAINTENANCE, LibraryLock
 
@@ -80,6 +80,12 @@ def _patched_server(db_path, wal_minutes=0):
     with mock.patch("api.database.DEFAULT_DB_PATH", db_path), \
             mock.patch.object(api_config, "_FULL_CONFIG", _config(wal_minutes)):
         yield
+
+
+def init_schema_at_startup(db):
+    """What the lifespan does at start, run synchronously: migrate, then the build body."""
+    migrate_schema_at_startup(db)
+    return PhotoIndexBuild(db).run()
 
 
 def _wait_for_wal_gone(db_path, seconds=5.0):
@@ -180,18 +186,30 @@ def test_deferred_still_migrates_tables_and_columns(tmp_path):
         conn.close()
 
 
-def test_unexpected_failure_returns_failed_and_releases_lock(tmp_path, caplog):
+def test_migration_failure_is_logged_and_returns_false(tmp_path, caplog):
     db = _make_db(tmp_path)
     with mock.patch("db.schema.init_database", side_effect=RuntimeError("boom")), \
             caplog.at_level(logging.WARNING):
-        assert init_schema_at_startup(db) == 'failed'
+        assert migrate_schema_at_startup(db) is False
     assert "Schema migration on startup failed" in caplog.text
+
+
+def test_build_failure_returns_failed_and_releases_lock(tmp_path, caplog):
+    db = _make_db(tmp_path, drop_gallery_indexes=True)
+    with mock.patch("db.schema.create_photo_indexes", side_effect=RuntimeError("boom")), \
+            caplog.at_level(logging.WARNING):
+        assert PhotoIndexBuild(db).run() == 'failed'
+    assert "Gallery index build failed" in caplog.text
     # The lock was released in the finally: it can be taken again straight away.
     LibraryLock(db, kind=LIBRARY_JOB_MAINTENANCE).acquire().release()
 
 
-def test_concurrent_starts(tmp_path):
-    """Verify 5: two simultaneous starts on an upgraded DB; nobody raises, someone builds."""
+def test_concurrent_starts(tmp_path, caplog):
+    """Verify 5: two simultaneous starts on an upgraded DB; nobody raises, someone builds.
+
+    Review M1: the start that loses the lock must not fail its migration on the SQLite
+    write lock the builder holds, and must not log a warning about the other worker.
+    """
     db = _make_db(tmp_path, rows=3000, drop_gallery_indexes=True)
     barrier = threading.Barrier(2)
     results, errors = [], []
@@ -203,35 +221,199 @@ def test_concurrent_starts(tmp_path):
         except BaseException as ex:  # noqa: BLE001 - the test reports whatever escapes
             errors.append(ex)
 
-    threads = [threading.Thread(target=start) for _ in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=120)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="api.schema_startup"):
+        threads = [threading.Thread(target=start) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=120)
     assert not any(t.is_alive() for t in threads)
     assert errors == []
     assert len(results) == 2
-    assert set(results) <= {'built', 'deferred'}
+    assert set(results) <= {'built', 'deferred', 'current'}
     assert 'built' in results
-    # A start that deferred leaves the build to the next start: run it.
-    assert init_schema_at_startup(db) == 'built'
+    assert not [r for r in caplog.records
+                if r.name == "api.schema_startup" and r.levelno >= logging.WARNING]
     assert set(GALLERY_INDEXES) <= _present_indexes(db)
+    # Nothing is left for a later start.
+    assert init_schema_at_startup(db) == 'current'
+
+
+def test_migration_on_a_current_schema_needs_no_write_lock(tmp_path):
+    """Review M1 root cause: the migration's unconditional `UPDATE persons` took the write
+    lock, so a worker starting while another held it for a CREATE INDEX waited out
+    busy_timeout (5 s) and failed. On a current schema the migration now writes nothing.
+    """
+    db = _make_db(tmp_path)
+    holder = sqlite3.connect(db, isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")  # what a CREATE INDEX holds for its duration
+    try:
+        started = time.monotonic()
+        assert migrate_schema_at_startup(db) is True
+        elapsed = time.monotonic() - started
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert elapsed < 4.0, f"the migration waited {elapsed:.1f}s on the write lock"
+
+
+def test_held_lock_with_nothing_missing_is_silent_and_never_takes_the_lock(tmp_path, caplog):
+    """The deferred warning is logged only when indexes are actually missing."""
+    db = _make_db(tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.execute("ANALYZE photos")
+    holder = LibraryLock(db, kind=LIBRARY_JOB_MAINTENANCE).acquire()
+    caplog.clear()
+    try:
+        with caplog.at_level(logging.INFO, logger="api.schema_startup"):
+            assert init_schema_at_startup(db) == 'current'
+    finally:
+        holder.release()
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_the_viewer_lock_records_its_origin(tmp_path):
+    """Review M2: a scan refused during the build names the viewer, not 'cli'."""
+    from facet import library_job_holder
+    db = _make_db(tmp_path, drop_gallery_indexes=True)
+    seen = {}
+    real_build = PhotoIndexBuild._build
+
+    def spy(self):
+        seen.update(library_job_holder(db) or {})
+        return real_build(self)
+
+    with mock.patch.object(PhotoIndexBuild, "_build", spy):
+        assert PhotoIndexBuild(db).run() == 'built'
+    assert seen.get('origin') == 'viewer'
+    assert seen.get('kind') == LIBRARY_JOB_MAINTENANCE
+
+
+def test_unusable_lock_path_gets_viewer_advice(tmp_path, caplog):
+    """Review M2: no `--force-library-lock` (a facet.py flag) and no "next start" promise."""
+    db = _make_db(tmp_path, drop_gallery_indexes=True)
+    with mock.patch("facet.LibraryLock._open_and_hold",
+                    side_effect=PermissionError(13, "Permission denied")), \
+            caplog.at_level(logging.INFO, logger="api.schema_startup"):
+        assert init_schema_at_startup(db) == 'deferred'
+    text = caplog.text
+    assert "Cannot use the library lock file" in text
+    assert "--force-library-lock" not in text
+    assert "next start" not in text
+    assert not set(GALLERY_INDEXES) & _present_indexes(db)
 
 
 # ---------------------------------------------------------------------------
-# Step 11: the lifespan calls it
+# Step 11: the lifespan starts the build in the background
 # ---------------------------------------------------------------------------
 
-def test_lifespan_calls_schema_startup_once(tmp_path):
-    """Verify 6: the app still starts, and the lifespan runs the helper exactly once."""
+def _wait_for_build(app, seconds=60.0):
+    build = app.state.index_build
+    deadline = time.monotonic() + seconds
+    while build.is_running() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return build
+
+
+def test_lifespan_migrates_once_and_builds_in_the_background(tmp_path):
+    """Verify 6: the app still starts, the migration runs once, the build completes."""
     db = _make_db(tmp_path, drop_gallery_indexes=True)
     with _patched_server(db), \
-            mock.patch("api.schema_startup.init_schema_at_startup",
-                       wraps=init_schema_at_startup) as spy:
-        with TestClient(create_app()):
-            pass
+            mock.patch("api.schema_startup.migrate_schema_at_startup",
+                       wraps=migrate_schema_at_startup) as spy:
+        app = create_app()
+        with TestClient(app):
+            build = _wait_for_build(app)
+            assert build.result == 'built'
     spy.assert_called_once_with(db)
     assert set(GALLERY_INDEXES) <= _present_indexes(db)
+
+
+def _slow_build_patches(monkeypatch, delay=0.01):
+    """Make the last index of the build slow: a deterministic SQL function that sleeps per row.
+
+    The function is registered on the build's own connection only, and its index is
+    appended to the registry: the gallery indexes before it finish, and an interrupted
+    build must keep them and leave the slow one absent.
+    """
+    import db.schema as schema
+    real_open = PhotoIndexBuild._open
+
+    def slow_key(value):
+        time.sleep(delay)
+        return value
+
+    def open_with_slow_key(self):
+        conn = real_open(self)
+        conn.create_function("zz_slow_key", 1, slow_key, deterministic=True)
+        return conn
+
+    monkeypatch.setattr(PhotoIndexBuild, "_open", open_with_slow_key)
+    monkeypatch.setattr(schema, "INDEXES",
+                        list(schema.INDEXES) + [('idx_zz_slow', 'photos', 'zz_slow_key(path)')])
+
+
+def test_requests_are_answered_while_the_build_runs_and_shutdown_interrupts_it(
+        tmp_path, monkeypatch, caplog):
+    """B1: the port answers during the build; shutdown interrupts and joins, keeping every
+    index already finished; the next start finishes the build."""
+    db = _make_db(tmp_path, rows=3000, drop_gallery_indexes=True)
+    # 3000 rows x 10 ms: about 30 s if never interrupted.
+    _slow_build_patches(monkeypatch)
+    caplog.clear()
+    _serve_during_slow_build(db, caplog)
+    present = _present_indexes(db)
+    assert 'idx_zz_slow' not in present, "the interrupted index must roll back"
+    assert set(GALLERY_INDEXES) <= present, "the finished indexes must be kept"
+    n = len(GALLERY_INDEXES)
+    assert f"stopped by shutdown after {n} of {n + 1} index(es)" in caplog.text
+
+    # The next start resumes: it analyzes what the interrupted one could not.
+    monkeypatch.undo()
+    assert PhotoIndexBuild(db).run() == 'built'
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_stat1 WHERE idx = 'idx_gallery_aggregate'").fetchone()
+
+
+def _serve_during_slow_build(db, caplog):
+    from api.auth import CurrentUser, get_optional_user
+
+    with _patched_server(db), caplog.at_level(logging.INFO, logger="api.schema_startup"):
+        app = create_app()
+        app.dependency_overrides[get_optional_user] = lambda: CurrentUser(
+            user_id="t", role="admin", edition_authenticated=True)
+        with TestClient(app) as client:
+            build = app.state.index_build
+            deadline = time.monotonic() + 30
+            while (not set(GALLERY_INDEXES) <= _present_indexes(db)
+                   and time.monotonic() < deadline):
+                time.sleep(0.05)
+            time.sleep(0.2)  # inside the slow CREATE INDEX, the last one
+            assert build.is_running()
+            started = time.monotonic()
+            assert client.get("/health").status_code == 200
+            photos = client.get("/api/photos?per_page=5")
+            assert photos.status_code == 200, photos.text
+            assert photos.json()["total"] == 3000
+            assert time.monotonic() - started < 5.0
+            assert build.is_running(), "the build ended before the requests were checked"
+            shutdown_started = time.monotonic()
+        shutdown_seconds = time.monotonic() - shutdown_started
+        app.dependency_overrides.clear()
+    assert not build.is_running()
+    assert build.result == 'interrupted'
+    assert shutdown_seconds < 15.0, shutdown_seconds
+    assert "stopped by shutdown" in caplog.text
+
+
+def test_stop_before_the_thread_reaches_the_build_stops_it(tmp_path):
+    db = _make_db(tmp_path, drop_gallery_indexes=True)
+    build = PhotoIndexBuild(db)
+    build._stop.set()
+    assert build.run() == 'interrupted'
+    assert not set(GALLERY_INDEXES) & _present_indexes(db)
 
 
 # ---------------------------------------------------------------------------
