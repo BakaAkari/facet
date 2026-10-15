@@ -17,6 +17,7 @@ import sqlite3
 import pytest
 
 from api.routers.albums import _compute_smart_album_cover
+from api.types import VALID_SORT_COLS
 from tests.conftest import _TEST_DB_FILE
 
 PREFIX = "/album-null-sort/"
@@ -146,3 +147,118 @@ def test_smart_album_cover_top_picks_expression_still_sorts(seed_photos_prefix, 
     album_id = make_album(
         smart_filter={"path_prefix": PREFIX, "sort": "top_picks_score", "sort_direction": "DESC"})
     assert _cover(album_id) == PREFIX + "b_high.jpg"
+
+
+def test_smart_album_cover_top_picks_asc_picks_lowest(seed_photos_prefix, make_album):
+    # The ASC twin of the pin above: the same expression, the other direction.
+    seed_photos_prefix(PREFIX, [
+        {"path": PREFIX + "a_low.jpg", "filename": "a_low.jpg", "aggregate": 2.0},
+        {"path": PREFIX + "b_high.jpg", "filename": "b_high.jpg", "aggregate": 9.0},
+    ])
+    album_id = make_album(
+        smart_filter={"path_prefix": PREFIX, "sort": "top_picks_score", "sort_direction": "ASC"})
+    assert _cover(album_id) == PREFIX + "a_low.jpg"
+
+
+# --- sort=top_picks_score: a computed SELECT alias, not a column --------------------
+#
+# ``top_picks_score`` is in VALID_SORT_COLS but is an on-the-fly weighted expression,
+# so an ORDER BY on it needs the same ``(expr) AS top_picks_score`` alias the gallery
+# selects. Every input is set on every row and strictly ordered together (the filenames
+# are shuffled against the score order so neither direction can pass by accident), so
+# the score is strictly high > mid > low under any positive weights, whichever of the
+# face / no-face branches of the expression a row takes.
+
+def _top_picks_rows():
+    return [
+        {"path": PREFIX + "a_mid.jpg", "filename": "a_mid.jpg", "aggregate": 6.0,
+         "aesthetic": 6.0, "comp_score": 6.0, "face_ratio": 0.05, "face_quality": 6.0},
+        {"path": PREFIX + "b_high.jpg", "filename": "b_high.jpg", "aggregate": 9.0,
+         "aesthetic": 9.0, "comp_score": 9.0, "face_ratio": 0.5, "face_quality": 9.0},
+        {"path": PREFIX + "c_low.jpg", "filename": "c_low.jpg", "aggregate": 3.0,
+         "aesthetic": 3.0, "comp_score": 3.0, "face_ratio": 0.0, "face_quality": 3.0},
+    ]
+
+
+TOP_PICKS_MEMBERS = ("a_mid.jpg", "b_high.jpg", "c_low.jpg")
+TOP_PICKS_DESC = ["b_high.jpg", "a_mid.jpg", "c_low.jpg"]
+
+
+def _assert_top_picks_order(resp, expected_names, direction):
+    names = _names(resp)
+    assert names == expected_names
+    scores = [p["top_picks_score"] for p in resp.json()["photos"]]
+    assert all(s is not None for s in scores), scores
+    assert scores == sorted(scores, reverse=(direction == "DESC")), scores
+    assert len(set(scores)) == len(scores), scores  # strict, so the order is not a tie-break
+
+
+@pytest.mark.parametrize("direction,expected", [
+    ("DESC", TOP_PICKS_DESC),
+    ("ASC", TOP_PICKS_DESC[::-1]),
+])
+def test_smart_album_sorts_by_top_picks_score(direction, expected, seed_photos_prefix,
+                                              make_album, edition_client):
+    seed_photos_prefix(PREFIX, _top_picks_rows())
+    album_id = make_album(smart_filter={"path_prefix": PREFIX})
+    resp = edition_client.get(
+        f"/api/albums/{album_id}/photos?sort=top_picks_score&sort_direction={direction}")
+    _assert_top_picks_order(resp, expected, direction)
+
+
+@pytest.mark.parametrize("direction,expected", [
+    ("DESC", TOP_PICKS_DESC),
+    ("ASC", TOP_PICKS_DESC[::-1]),
+])
+def test_regular_album_sorts_by_top_picks_score(direction, expected, seed_photos_prefix,
+                                                make_album, edition_client):
+    seed_photos_prefix(PREFIX, _top_picks_rows())
+    album_id = make_album(member_names=TOP_PICKS_MEMBERS)
+    resp = edition_client.get(
+        f"/api/albums/{album_id}/photos?sort=top_picks_score&sort_direction={direction}")
+    _assert_top_picks_order(resp, expected, direction)
+
+
+@pytest.mark.parametrize("direction,expected", [
+    ("DESC", TOP_PICKS_DESC),
+    ("ASC", TOP_PICKS_DESC[::-1]),
+])
+def test_shared_smart_album_sorts_by_top_picks_score(direction, expected, seed_photos_prefix,
+                                                     make_album, edition_client):
+    seed_photos_prefix(PREFIX, _top_picks_rows())
+    album_id = make_album(smart_filter={
+        "path_prefix": PREFIX, "sort": "top_picks_score", "sort_direction": direction})
+    resp = edition_client.get(f"/api/shared/album/{album_id}?token={TOKEN}")
+    _assert_top_picks_order(resp, expected, direction)
+
+
+@pytest.mark.parametrize("direction,expected", [
+    ("DESC", TOP_PICKS_DESC),
+    ("ASC", TOP_PICKS_DESC[::-1]),
+])
+def test_shared_regular_album_sorts_by_top_picks_score(direction, expected, seed_photos_prefix,
+                                                       make_album, edition_client):
+    seed_photos_prefix(PREFIX, _top_picks_rows())
+    album_id = make_album(member_names=TOP_PICKS_MEMBERS)
+    resp = edition_client.get(
+        f"/api/shared/album/{album_id}?token={TOKEN}"
+        f"&sort=top_picks_score&sort_direction={direction}")
+    _assert_top_picks_order(resp, expected, direction)
+
+
+@pytest.mark.parametrize("kind", ["smart", "regular"])
+@pytest.mark.parametrize("sort_col", VALID_SORT_COLS)
+def test_every_valid_sort_column_works_on_albums(sort_col, kind, seed_photos_prefix,
+                                                 make_album, edition_client):
+    # Structural guard: a future computed sort alias (like top_picks_score) that the
+    # album SELECT does not carry would 500 here instead of in a user's browser.
+    seed_photos_prefix(PREFIX, _top_picks_rows())
+    if kind == "smart":
+        album_id = make_album(smart_filter={"path_prefix": PREFIX})
+    else:
+        album_id = make_album(member_names=TOP_PICKS_MEMBERS)
+    for direction in ("ASC", "DESC"):
+        resp = edition_client.get(
+            f"/api/albums/{album_id}/photos?sort={sort_col}&sort_direction={direction}")
+        assert resp.status_code == 200, (sort_col, kind, direction, resp.text)
+        assert len(resp.json()["photos"]) == len(TOP_PICKS_MEMBERS)

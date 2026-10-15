@@ -3849,26 +3849,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/stats/categories/metrics": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Api Stats Categories Metrics
-         * @description Return raw metric values for photos in a category (for client-side preview).
-         */
-        get: operations["api_stats_categories_metrics_api_stats_categories_metrics_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/stats/categories/overlap": {
         parameters: {
             query?: never;
@@ -12870,37 +12850,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StatsCategoryCorrelationsResponse"];
-                };
-            };
-        };
-    };
-    api_stats_categories_metrics_api_stats_categories_metrics_get: {
-        parameters: {
-            query: {
-                category: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

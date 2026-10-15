@@ -60,7 +60,7 @@ class TestScanRunLifecycle:
         assert finished is not None
         assert failures == [('/p/bad.jpg', 'load', 'corrupt file')]
 
-    def test_duplicate_failure_replaced_not_duplicated(self, scan_db):
+    def test_duplicate_failure_merges_into_one_row(self, scan_db):
         run = ScanRun.start(scan_db, 'multi-pass', {}, 5)
         run.record_failure('/p/x.jpg', 'load', 'first')
         run.record_failure('/p/x.jpg', 'load', 'second')
@@ -69,8 +69,97 @@ class TestScanRunLifecycle:
         count = conn.execute(
             "SELECT COUNT(*) FROM scan_failures WHERE scan_run_id = ?", (run.run_id,),
         ).fetchone()[0]
+        stage, error = conn.execute(
+            "SELECT stage, error FROM scan_failures WHERE scan_run_id = ? AND path = ?",
+            (run.run_id, '/p/x.jpg'),
+        ).fetchone()
         conn.close()
         assert count == 1
+        assert stage == 'load'
+        assert 'first' in error
+        assert 'second' in error
+
+
+class TestFailureCounting:
+    """scan_runs.failed_files is the number of DISTINCT (run, path) rows in
+    scan_failures, however often a path fails and however the failures
+    straddle the throttled flushes."""
+
+    def _failed_files(self, scan_db, run_id):
+        conn = sqlite3.connect(scan_db)
+        try:
+            return conn.execute(
+                "SELECT failed_files FROM scan_runs WHERE id = ?", (run_id,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    def _rows(self, scan_db, run_id):
+        conn = sqlite3.connect(scan_db)
+        try:
+            return conn.execute(
+                "SELECT path, stage, error FROM scan_failures "
+                "WHERE scan_run_id = ? ORDER BY path", (run_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def test_cross_flush_duplicate_counts_once(self, scan_db):
+        run = ScanRun.start(scan_db, 'multi-pass', {}, 5)
+        # The first record_failure flushes immediately; the second is held back
+        # by the one-write-per-second throttle and lands in a LATER flush.
+        run.record_failure('/p/x.jpg', 'load', 'first')
+        run.record_failure('/p/x.jpg', 'load', 'second')
+        run.finish('failed')
+        assert len(self._rows(scan_db, run.run_id)) == 1
+        assert self._failed_files(scan_db, run.run_id) == 1
+
+    def test_same_flush_duplicates_count_once(self, scan_db):
+        run = ScanRun.start(scan_db, 'multi-pass', {}, 5)
+        run.record_failure('/p/a.jpg', 'load', 'a1')   # flushes immediately
+        run.record_failure('/p/b.jpg', 'load', 'e1')   # both b failures pending
+        run.record_failure('/p/b.jpg', 'score', 'e2')  # for the same flush
+        run.finish('failed')
+        assert self._failed_files(scan_db, run.run_id) == 2
+        rows = self._rows(scan_db, run.run_id)
+        assert [r[0] for r in rows] == ['/p/a.jpg', '/p/b.jpg']
+        # The first stage wins; the new error text is appended.
+        assert rows[1] == ('/p/b.jpg', 'load', 'e1 | e2')
+
+    def test_failed_files_tracks_distinct_paths(self, scan_db):
+        run = ScanRun.start(scan_db, 'multi-pass', {}, 5)
+        for path in ('/p/a.jpg', '/p/b.jpg', '/p/a.jpg', '/p/c.jpg', '/p/b.jpg'):
+            run.record_failure(path, 'load', 'boom')
+        run.finish('failed')
+        assert self._failed_files(scan_db, run.run_id) == 3
+        assert len(self._rows(scan_db, run.run_id)) == 3
+
+    def test_failed_files_is_scoped_to_its_own_run(self, scan_db):
+        run1 = ScanRun.start(scan_db, 'multi-pass', {}, 2)
+        run1.record_failure('/p/a.jpg', 'load', 'x')
+        run1.record_failure('/p/b.jpg', 'load', 'x')
+        run1.finish('failed')
+        run2 = ScanRun.start(scan_db, 'multi-pass', {}, 2)
+        run2.record_failure('/p/a.jpg', 'load', 'y')
+        run2.finish('failed')
+        assert self._failed_files(scan_db, run1.run_id) == 2
+        assert self._failed_files(scan_db, run2.run_id) == 1
+
+    def test_merged_error_is_bounded(self, scan_db):
+        run = ScanRun.start(scan_db, 'multi-pass', {}, 5)
+        messages = [chr(ord('a') + i) * 500 for i in range(10)]
+        for message in messages:
+            run.record_failure('/p/x.jpg', 'load', message)
+        run.finish('failed')
+        conn = sqlite3.connect(scan_db)
+        (error,) = conn.execute(
+            "SELECT error FROM scan_failures WHERE scan_run_id = ? AND path = ?",
+            (run.run_id, '/p/x.jpg'),
+        ).fetchone()
+        conn.close()
+        assert len(error) <= 2000
+        assert error.startswith(messages[0])
+        assert self._failed_files(scan_db, run.run_id) == 1
 
     def test_get_last_resumable_run(self, scan_db):
         ScanRun.start(scan_db, 'multi-pass', {}, 1).finish('completed')

@@ -769,6 +769,15 @@ def describe_scoring_device(accelerator, vram_gb, ram_gb):
     return "GPU (%.0fGB)" % vram_gb
 
 
+# Raised by the batch aesthetic scorer when no CLIP+MLP head is loaded outside
+# commercial mode. Path-neutral on purpose: BatchProcessor records it once per
+# photo of the failed batch.
+_NO_AESTHETIC_HEAD_ERROR = (
+    "no aesthetic head loaded: this profile scores aesthetics with TOPIQ, "
+    "which only the multi-pass scan runs"
+)
+
+
 # MAIN SCORER CLASS
 # ============================================
 
@@ -1103,13 +1112,19 @@ class Facet:
         """
         Single-image aesthetic/quality scoring via CLIP+MLP.
 
+        Reached only by ``--dry-run``. With no aesthetic head outside commercial
+        mode the aesthetic is ``None`` (the report prints ``n/a``), never a
+        neutral 5.0 labelled ``clip-mlp``.
+
         Returns: (aesthetic, clip_embedding_bytes, quality_score, scoring_model)
         """
         clip_aesthetic, clip_embedding = self.get_aesthetic_with_embedding(pil_img)
-        if self.aesthetic_head is None and licensing.is_commercial():
-            # No head to fall back on: the commercial scorer decides, exactly as
-            # in the batch path, never a neutral 5.0 labelled clip-mlp.
-            return self._commercial_aesthetic_result(pil_img, clip_embedding)
+        if self.aesthetic_head is None:
+            if licensing.is_commercial():
+                # No head to fall back on: the commercial scorer decides, exactly as
+                # in the batch path.
+                return self._commercial_aesthetic_result(pil_img, clip_embedding)
+            return None, clip_embedding, None, 'topiq'
         return clip_aesthetic, clip_embedding, None, 'clip-mlp'
 
     def get_aesthetic_and_quality_batch(self, pil_images, clip_inputs=None):
@@ -1121,7 +1136,16 @@ class Facet:
             clip_inputs: Optional pre-processed CLIP tensors (from batch_processor, open_clip only)
 
         Returns: List of (aesthetic, clip_embedding_bytes, quality_score, scoring_model) tuples
+
+        Raises:
+            RuntimeError: No aesthetic head is loaded and the mode is not
+                commercial. Single-pass cannot score aesthetics then, and a
+                neutral 5.0 would be stored as if it were a score.
         """
+        # Guard first: no GPU encode is spent on a batch that cannot succeed.
+        if self.aesthetic_head is None and not licensing.is_commercial():
+            raise RuntimeError(_NO_AESTHETIC_HEAD_ERROR)
+
         n = len(pil_images)
 
         _, features_normalized = self._encode_images(pil_images, clip_inputs)
@@ -1134,16 +1158,11 @@ class Facet:
                 clip_aesthetic = float(clip_scores[i])
                 clip_embedding = embeddings[i].astype(np.float32).tobytes()
                 results.append((clip_aesthetic, clip_embedding, None, 'clip-mlp'))
-        elif licensing.is_commercial():
+        else:
             results = [
                 self._commercial_aesthetic_result(pil, embeddings[i].astype(np.float32).tobytes())
                 for i, pil in enumerate(pil_images)
             ]
-        else:
-            results = []
-            for i in range(n):
-                clip_embedding = embeddings[i].astype(np.float32).tobytes()
-                results.append((5.0, clip_embedding, None, 'topiq'))
 
         return results
 
@@ -1513,7 +1532,7 @@ class Facet:
                 'category': category,
                 'image_width': img_w,
                 'image_height': img_h,
-                'aesthetic': round(aesthetic, 2),
+                'aesthetic': None if aesthetic is None else round(aesthetic, 2),
                 'face_count': face_res['face_count'],
                 'face_quality': face_res['face_quality'],
                 'eye_sharpness': face_res['eye_sharpness'],

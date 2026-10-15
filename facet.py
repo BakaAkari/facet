@@ -294,6 +294,24 @@ def _flush_topiq_batch(conn, scorer_model, batch_paths, batch_images):
     return written
 
 
+def _resolve_single_pass(requested, aesthetic_model, policy_=None):
+    """Whether a requested single-pass scan can run; else warn and fall back to multi-pass.
+
+    A profile scored with TOPIQ has no CLIP+MLP aesthetic head and single-pass
+    never runs TOPIQ, so it would store a neutral 5.0 for every photo. Falling
+    back (rather than refusing) keeps a shared config with
+    ``processing.mode: single-pass`` from bricking a scan on a 16 GB card.
+    """
+    if not requested:
+        return False
+    from processing.routing import single_pass_unsupported_reason
+    reason = single_pass_unsupported_reason(aesthetic_model, policy_)
+    if reason is None:
+        return True
+    logger.warning("Single-pass was requested but %s; running multi-pass instead.", reason)
+    return False
+
+
 def _report_dry_run(results, sample_count):
     """Print the dry-run results table and return the process exit code.
 
@@ -306,16 +324,19 @@ def _report_dry_run(results, sample_count):
         logger.info("%-40s %-15s %6s %6s %6s %6s", "Filename", "Category", "Aes", "Comp", "Face", "Aggr")
         logger.info("%s %s %s %s %s %s", "-" * 40, "-" * 15, "-" * 6, "-" * 6, "-" * 6, "-" * 6)
         for r in results:
-            logger.info("%-40s %-15s %6.2f %6.2f %6.2f %6.2f",
+            # None: this profile has no single-image aesthetic (TOPIQ runs only in a real scan)
+            aes = "n/a" if r['aesthetic'] is None else f"{r['aesthetic']:.2f}"
+            logger.info("%-40s %-15s %6s %6.2f %6.2f %6.2f",
                         r['filename'][:39], r['category'][:14],
-                        r['aesthetic'], r['comp_score'],
+                        aes, r['comp_score'],
                         r['face_quality'], r['aggregate'])
         logger.info("=" * 80)
         avg_agg = sum(r['aggregate'] for r in results) / len(results)
-        avg_aes = sum(r['aesthetic'] for r in results) / len(results)
+        aesthetics = [r['aesthetic'] for r in results if r['aesthetic'] is not None]
+        avg_aes = f"{sum(aesthetics) / len(aesthetics):.2f}" if aesthetics else "n/a"
         logger.info("Summary: %d photos scored", len(results))
         logger.info("  Average aggregate: %.2f", avg_agg)
-        logger.info("  Average aesthetic: %.2f", avg_aes)
+        logger.info("  Average aesthetic: %s", avg_aes)
         return 0
     logger.error("=" * 80)
     logger.error("DRY RUN FAILED: all %d sample photos failed to score (0 succeeded).", sample_count)
@@ -1560,16 +1581,20 @@ def _run_scan(args, resumed_run):
     # models — so the scorer must NOT be built multi_pass=True (which leaves
     # model/preprocess None and TypeErrors per image). A specific --pass run
     # (single_pass_name) still uses the per-pass multi-pass loader.
-    config_mode = (
-        ScoringConfig(args.config, validate=False)
-        .get_processing_settings().get('mode', 'auto')
-    )
+    pre_config = ScoringConfig(args.config, validate=False)
+    config_mode = pre_config.get_processing_settings().get('mode', 'auto')
     config_single_pass = config_mode == 'single-pass' and not args.single_pass_name
+    single_pass = args.single_pass or config_single_pass
+    # A TOPIQ profile has no aesthetic head for single-pass to score with, so a
+    # requested single-pass scan falls back to multi-pass. --pass NAME and
+    # --dry-run are left alone: they never reach the scan loop's mode choice.
+    if single_pass and not (args.single_pass_name or args.dry_run):
+        single_pass = _resolve_single_pass(single_pass, pre_config.get_model_for_task('aesthetic'))
 
     # Full mode - initialize with GPU models for photo processing
     # Multi-pass mode skips eager loading of heavy GPU models (CLIP, SAMP-Net)
     # since multi-pass loads its own models per pass via ModelManager
-    use_multi_pass = not (args.dry_run or args.single_pass or config_single_pass)
+    use_multi_pass = not (args.dry_run or single_pass)
     scorer = Facet(db_path=args.db, config_path=args.config, multi_pass=use_multi_pass)
     _log_scan_db_destination(scorer.db_path)
     _warn_face_model_mismatch(scorer.db_path, scorer.config)
@@ -1792,7 +1817,7 @@ def _run_scan(args, resumed_run):
         logger.warning("A scan appears to be running concurrently; starting a separate run.")
 
     scan_mode = (f"pass:{args.single_pass_name}" if args.single_pass_name
-                 else 'single-pass' if args.single_pass else 'multi-pass')
+                 else 'single-pass' if single_pass else 'multi-pass')
     scan_run = ScanRun.start(
         args.db, scan_mode,
         {'directories': [os.path.realpath(str(p)) for p in args.photo_paths], 'force': args.force},
@@ -1828,7 +1853,7 @@ def _run_scan(args, resumed_run):
                     exit(1)
             logger.info("Processed %d photos with %s pass", processed, args.single_pass_name)
 
-        elif args.single_pass:
+        elif args.single_pass and single_pass:
             # Force single-pass mode (old --batch behavior - all models loaded at once)
             from processing.batch_processor import BatchProcessor
             from config import recalculate_batch_settings
@@ -1912,11 +1937,10 @@ def _run_scan(args, resumed_run):
             model_manager = ModelManager(scorer.config)
             todo_paths = [str(f) for f in todo_list]
 
-            # Check processing mode from config
+            # `processing.mode: single-pass` from config, after the TOPIQ-profile fallback
             proc_settings = scorer.config.get_processing_settings()
-            mode = proc_settings.get('mode', 'auto')
 
-            if mode != 'single-pass':
+            if not single_pass:
                 processor = ChunkedMultiPassProcessor(
                     scorer, model_manager, scorer.config.config,
                     on_error=scan_run.record_failure,

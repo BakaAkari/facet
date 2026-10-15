@@ -1104,8 +1104,8 @@ class TestCommercialSingleImageAesthetic:
     def test_commercial_never_returns_the_neutral_clip_mlp_fallback(self, commercial):
         assert self._facet().get_aesthetic_and_quality(object()) == (7.5, b'emb', 6.5, 'qrealign')
 
-    def test_default_mode_is_unchanged(self):
-        assert self._facet().get_aesthetic_and_quality(object()) == (5.0, b'emb', None, 'clip-mlp')
+    def test_default_mode_without_a_head_has_no_aesthetic(self):
+        assert self._facet().get_aesthetic_and_quality(object()) == (None, b'emb', None, 'topiq')
 
     def test_batch_and_single_share_one_helper(self, commercial):
         f = self._facet()

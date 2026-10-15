@@ -922,48 +922,6 @@ async def api_stats_categories_correlations(user: Optional[CurrentUser] = Depend
     return await _get_stats_cached_async(cache_key, compute)
 
 
-@router.get('/api/stats/categories/metrics')
-async def api_stats_categories_metrics(
-    category: str = Query(...),
-    user: Optional[CurrentUser] = Depends(get_optional_user),
-):
-    """Return raw metric values for photos in a category (for client-side preview)."""
-    if not category:
-        raise HTTPException(status_code=400, detail='Missing category')
-
-    vis, vp = _vis_where(user)
-
-    async def compute():
-        cols = list(_WEIGHT_COLUMNS.values())
-        col_sql = ', '.join(cols)
-
-        async with get_async_db() as conn:
-            cur = await conn.execute(
-                f'SELECT {col_sql}, aggregate FROM photos WHERE category = ?{vis} LIMIT 5000',
-                [category] + vp,
-            )
-            rows = await cur.fetchall()
-            await cur.close()
-
-            metrics = {k: [] for k in _WEIGHT_COLUMNS}
-            current_aggregate = []
-            for row in rows:
-                for i, key in enumerate(_WEIGHT_COLUMNS):
-                    metrics[key].append(row[i] if row[i] is not None else 0)
-                current_aggregate.append(row[len(cols)] if row[len(cols)] is not None else 0)
-
-        return {
-            'category': category,
-            'count': len(current_aggregate),
-            'metrics': metrics,
-            'current_aggregate': current_aggregate,
-        }
-
-    user_id = user.user_id if user else None
-    cache_key = f'cat_metrics:{category}:{user_id or ""}'
-    return await _get_stats_cached_async(cache_key, compute)
-
-
 @router.get('/api/stats/categories/overlap', response_model=StatsCategoryOverlapResponse,
             response_model_exclude_unset=True)
 async def api_stats_categories_overlap(user: Optional[CurrentUser] = Depends(get_optional_user)):
