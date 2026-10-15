@@ -583,6 +583,7 @@ Sélectionne les modèles utilisés selon le profil VRAM.
 |---------|--------|-------------|
 | `vram_profile` | `"auto"` | Profil actif (`auto`, `legacy`, `8gb`, `16gb`, `24gb`) |
 | `keep_in_ram` | `"auto"` | Conserver les modèles en RAM entre les blocs multi-pass (`"auto"`, `"always"`, `"never"`). `auto` vérifie la RAM disponible avant la mise en cache. |
+| `ram_cache_reserve_gb` | `4.0` (optionnel, absent du fichier fourni) | RAM disponible (Go) que le cache de modèles doit laisser libre à côté d'un modèle qu'il admet. Avec `"auto"`, un modèle n'est conservé en RAM que tant que la RAM disponible dépasse sa taille déclarée plus cette réserve (l'égalité est refusée) ; `"always"` saute la vérification et `"never"` ne met rien en cache. Une valeur plus petite met en cache plus agressivement, une plus grande laisse plus de place au reste de l'hôte. Doit être un nombre >= 0 ; toute autre valeur (une chaîne, un négatif, `true`) arrête le scan au démarrage avec une erreur qui nomme la clé. L'éviction sous pression mémoire n'est pas modifiée : le moniteur de ressources vide toujours tout le cache |
 | `profiles.*.supplementary_pyiqa` | `["topiq_iaa", "topiq_nr_face", "liqe"]` | Modèles PyIQA à exécuter pour ce profil (vide pour `legacy`) |
 | `profiles.*.saliency_enabled` | `true` (16gb/24gb) | Exécuter la saillance du sujet BiRefNet pour ce profil |
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | Modèle d'embedding SigLIP 2 NaFlex (16gb/24gb) |
@@ -729,7 +730,7 @@ Réglages de traitement unifiés pour le traitement par lots GPU et le mode mult
 
 **`gpu_batch_size`** - Nombre d'images traitées ensemble sur le GPU en une seule passe avant. Limité par la VRAM. Auto-réglé : réduit lorsque la mémoire GPU dépasse la limite.
 
-**`ram_chunk_size`** - Nombre d'images mises en cache en RAM entre les passes de modèle (mode multi-pass uniquement). Réduit les E/S disque en chargeant les images une fois par bloc. Limité par la limite de mémoire effective (voir `memory_limit_percent` ci-dessous). Auto-réglé dans les deux sens : réduit immédiatement lorsque l'utilisation dépasse la limite, et augmenté seulement en fin de bloc, et uniquement si l'utilisation *maximale* de tout ce bloc est restée sous la limite. Le maximum est ce qui compte, car un bloc n'est pas une seule mesure : chaque déchargement de modèle entre les passes fait chuter l'utilisation presque jusqu'au plancher, et c'est cette croissance sur ce creux qui a fait passer `ram_chunk_size` de 10 à 500 dans un conteneur de 8 Go et a provoqué un OOM kill sur le bloc suivant.
+**`ram_chunk_size`** - Nombre d'images mises en cache en RAM entre les passes de modèle (mode multi-pass uniquement). Réduit les E/S disque en chargeant les images une fois par bloc. Limité par la limite de mémoire effective (voir `memory_limit_percent` ci-dessous). Auto-réglé dans les deux sens : réduit immédiatement lorsque l'utilisation dépasse la limite, et augmenté seulement en fin de bloc, et uniquement si l'utilisation *maximale* de tout ce bloc est restée sous la limite. Le maximum est ce qui compte, car un bloc n'est pas une seule mesure : chaque déchargement de modèle entre les passes fait chuter l'utilisation presque jusqu'au plancher, et c'est cette croissance sur ce creux qui a fait passer `ram_chunk_size` de 10 à 500 dans un conteneur de 8 Go et a provoqué un OOM kill sur le bloc suivant. Un bloc ne conserve que l'image décodée (environ 4,4 octets par pixel source pendant l'exécution de ses passes, contre environ 8,1 auparavant) : les passes qui ont besoin d'un tableau BGR ou d'un plan de gris le reconstruisent à partir de cette image au lieu que le bloc conserve les deux pendant toute sa durée de vie. Cela ne change pas la façon dont `ram_chunk_size` est réglé ; cela réduit ce qu'utilise un bloc d'une taille donnée.
 
 ### Référence des réglages
 
@@ -777,7 +778,9 @@ Au lieu de charger tous les modèles en même temps, le multi-pass :
 2. Pour chaque bloc, exécute les modèles séquentiellement : charger le modèle → traiter le bloc → décharger le modèle
 3. Combine les résultats dans une passe d'agrégation finale
 
-Chaque image est chargée une fois par bloc, et les passes sont regroupées pour tenir dans la VRAM disponible, de sorte que les VLM de tagger/composition plus volumineux s'exécutent même avec une VRAM limitée.
+Chaque image est décodée une fois par bloc et partagée par toutes les passes, et les passes sont regroupées pour tenir dans la VRAM disponible, de sorte que les VLM de tagger/composition plus volumineux s'exécutent même avec une VRAM limitée.
+
+Les threads de chargement effectuent, pendant le décodage, tout le travail côté CPU qui exige l'image complète : EXIF, métriques techniques, analyse de composition à base de règles, hash perceptuel et image de 1024 px que se partagent les modèles pyiqa et Q-ReAlign (réduite une fois par photo, et non une fois par modèle). Un bloc conserve ensuite l'image décodée et abandonne le tableau BGR et le plan de gris ; les passes InsightFace et de saillance reconstruisent les leurs à partir d'elle quand elles s'exécutent (environ 0,09 s par photo de 20 MP, cumulées sous `Plane rebuilds` dans le résumé du scan). Une erreur de composition fait échouer cette seule photo, consignée dans `scan_failures` à l'étape `composition` (à relancer avec `--retry-failed`), et le bloc continue.
 
 ### Comportement de l'auto-réglage
 
@@ -1525,6 +1528,8 @@ Réglages généraux d'étiquetage. Le modèle d'étiquetage est configuré par 
 | `max_tags` | `5` | Nombre maximal d'étiquettes par photo |
 
 **Note :** les réglages spécifiques à CLIP comme `similarity_threshold_percent` se trouvent dans la section `models.clip`.
+
+En fin de scan, l'étape d'étiquetage ne charge le modèle d'embeddings du profil que lorsqu'elle a quelque chose à étiqueter. Elle est ignorée, avec une ligne de journal, lorsque `enabled` vaut `false` ou lorsqu'aucune photo n'a à la fois un embedding stocké et une liste de tags vide. Un scan dont les photos en attente ne peuvent jamais être étiquetées (toute similarité sous le seuil) charge toujours le modèle à chaque exécution. `python tag_existing.py`, `--force` et `python facet.py --tag-untagged` ne sont pas concernés.
 
 ### Modèles d'étiquetage disponibles
 

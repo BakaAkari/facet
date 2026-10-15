@@ -358,6 +358,8 @@ python /opt/facet/viewer.py      # 仍然读取 /opt/facet/scoring_config.json�
 
 在 CUDA 机器上，SigLIP 配置档（`16gb`、`24gb`）现在以 fp16 编码标签词表，与单遍评分器此前的做法一致；`tag_existing.py` 以前以 fp32 加载。`python tag_existing.py`、`python tag_existing.py --force`、`python facet.py --tag-untagged` 以及扫描结束时的标注步骤共用同一个加载器。在 49 张照片上实测，其中 2 张（4%）的标签集合发生了变化：重新运行 `python tag_existing.py --force` 即可为之前已标注的照片重新标注。CPU 和 CLIP ViT-L-14 配置档（`legacy`、`8gb`）不受影响。
 
+扫描结束时的标注步骤只在确有工作要做时才加载该模型。当 `tagging.enabled` 为 `false`，或没有任何照片同时具有已存储的嵌入向量和空的标签列表时，该步骤会跳过并输出一行日志；无需标注的扫描不再为此重新加载 SigLIP 2 或 CLIP。`python tag_existing.py`、`--force` 和 `--tag-untagged` 不受影响。
+
 ## 数据库校验
 
 | 命令 | 说明 |

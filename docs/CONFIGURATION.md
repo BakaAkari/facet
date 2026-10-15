@@ -574,6 +574,7 @@ Selects which models are used per VRAM profile.
 |---------|---------|-------------|
 | `vram_profile` | `"auto"` | Active profile (`auto`, `legacy`, `8gb`, `16gb`, `24gb`). Overridable at runtime by the `FACET_VRAM_PROFILE` env var (see below). |
 | `keep_in_ram` | `"auto"` | Keep models in RAM between multi-pass chunks (`"auto"`, `"always"`, `"never"`). `auto` checks available RAM before caching. |
+| `ram_cache_reserve_gb` | `4.0` (optional, not in the shipped file) | Available RAM (GB) the model cache must leave free beside a model it admits. Under `"auto"`, a model is kept in RAM only while available RAM exceeds its declared size plus this reserve (equal is refused); `"always"` skips the check and `"never"` caches nothing. A smaller value caches more aggressively, a larger one leaves more room to the rest of the host. Must be a number >= 0; any other value (a string, a negative, `true`) stops the scan at startup with an error naming the key. Eviction under memory pressure is not affected: the resource monitor still drops the whole cache |
 | `profiles.*.supplementary_pyiqa` | `["topiq_iaa", "topiq_nr_face", "liqe"]` | PyIQA models to run for this profile (all four profiles run the full set) |
 | `profiles.*.saliency_enabled` | `true` (all profiles) | Run BiRefNet subject saliency for this profile |
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | SigLIP 2 NaFlex embedding model (16gb/24gb) |
@@ -717,7 +718,7 @@ Unified processing settings for GPU batch processing and multi-pass mode.
 
 **`gpu_batch_size`** - How many images are processed together on the GPU in a single forward pass. Limited by VRAM. Auto-tuned: reduced when GPU memory exceeds limit.
 
-**`ram_chunk_size`** - How many images are cached in RAM between model passes (multi-pass mode only). Reduces disk I/O by loading images once per chunk. Limited by the effective memory limit (see `memory_limit_percent` below). Auto-tuned in both directions: reduced immediately when usage exceeds the limit, and increased only at a chunk boundary, and only if that whole chunk's *peak* usage stayed below the limit. The peak is what matters because a chunk is not one reading — every model unload between passes drops usage almost to the floor, and growing on that trough is what drove `ram_chunk_size` from 10 to 500 inside an 8GB container and OOM-killed the next chunk.
+**`ram_chunk_size`** - How many images are cached in RAM between model passes (multi-pass mode only). Reduces disk I/O by loading images once per chunk. Limited by the effective memory limit (see `memory_limit_percent` below). Auto-tuned in both directions: reduced immediately when usage exceeds the limit, and increased only at a chunk boundary, and only if that whole chunk's *peak* usage stayed below the limit. The peak is what matters because a chunk is not one reading — every model unload between passes drops usage almost to the floor, and growing on that trough is what drove `ram_chunk_size` from 10 to 500 inside an 8GB container and OOM-killed the next chunk. A chunk keeps only the decoded image (about 4.4 bytes per source pixel while its passes run, down from about 8.1): the passes that need a BGR array or a gray plane rebuild it from that image instead of the chunk holding both for its whole life. This does not change how `ram_chunk_size` is tuned; it lowers what a chunk of a given size uses.
 
 ### Settings Reference
 
@@ -765,7 +766,9 @@ Instead of loading all models at once, multi-pass:
 2. For each chunk, runs models sequentially: load model → process chunk → unload model
 3. Combines results in a final aggregation pass
 
-Each image is loaded once per chunk, and passes are grouped to fit available VRAM, so the larger tagger/composition VLMs run even on limited VRAM.
+Each image is decoded once per chunk and shared by all passes, and passes are grouped to fit available VRAM, so the larger tagger/composition VLMs run even on limited VRAM.
+
+The loader threads do all the CPU-side work that needs the full frame while they decode: EXIF, the technical metrics, the rule-based composition analysis, the perceptual hash, and the 1024 px image the pyiqa models and Q-ReAlign share (shrunk once per photo, not once per model). A chunk then keeps the decoded image and drops the BGR array and the gray plane; the InsightFace and saliency passes rebuild theirs from it when they run (about 0.09 s per 20 MP photo, totalled as `Plane rebuilds` in the scan summary). A composition error fails that one photo, recorded in `scan_failures` under stage `composition` (retry with `--retry-failed`), and the chunk carries on.
 
 ### Auto-Tuning Behavior
 
@@ -1507,6 +1510,8 @@ General tagging settings. The tagging model is configured per-profile in `models
 | `max_tags` | `5` | Maximum tags per photo |
 
 **Note:** CLIP-specific settings like `similarity_threshold_percent` are in the `models.clip` section.
+
+At the end of a scan, the tagging step loads the profile's embedding model only when it has something to tag. It is skipped, with a log line, when `enabled` is `false` or when no photo has both a stored embedding and an empty tag list. A scan whose pending photos the tagger can never tag (every similarity under the threshold) still loads the model on each run. `python tag_existing.py`, `--force` and `python facet.py --tag-untagged` are not affected.
 
 ### Available Tagging Models
 

@@ -581,6 +581,7 @@ Seleziona quali modelli vengono usati per ciascun profilo VRAM.
 |---------|---------|-------------|
 | `vram_profile` | `"auto"` | Profilo attivo (`auto`, `legacy`, `8gb`, `16gb`, `24gb`) |
 | `keep_in_ram` | `"auto"` | Mantiene i modelli in RAM tra i blocchi multi-passaggio (`"auto"`, `"always"`, `"never"`). `auto` verifica la RAM disponibile prima di mettere in cache. |
+| `ram_cache_reserve_gb` | `4.0` (opzionale, assente dal file fornito) | RAM disponibile (GB) che la cache dei modelli deve lasciare libera accanto a un modello che ammette. Con `"auto"`, un modello resta in RAM solo finché la RAM disponibile supera la sua dimensione dichiarata più questa riserva (l'uguaglianza viene rifiutata); `"always"` salta il controllo e `"never"` non mette nulla in cache. Un valore più piccolo mette in cache in modo più aggressivo, uno più grande lascia più spazio al resto dell'host. Deve essere un numero >= 0; qualsiasi altro valore (una stringa, un negativo, `true`) ferma la scansione all'avvio con un errore che nomina la chiave. L'espulsione sotto pressione di memoria non cambia: il monitor delle risorse scarta ancora l'intera cache |
 | `profiles.*.supplementary_pyiqa` | `["topiq_iaa", "topiq_nr_face", "liqe"]` | Modelli PyIQA da eseguire per questo profilo (vuoto su `legacy`) |
 | `profiles.*.saliency_enabled` | `true` (16gb/24gb) | Esegue la saliency del soggetto BiRefNet per questo profilo |
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | Modello di embedding SigLIP 2 NaFlex (16gb/24gb) |
@@ -728,7 +729,7 @@ Impostazioni unificate per l'elaborazione batch su GPU e la modalità multi-pass
 
 **`gpu_batch_size`** - Quante immagini vengono elaborate insieme sulla GPU in un singolo forward pass. Limitato dalla VRAM. Regolato automaticamente: ridotto quando la memoria GPU supera il limite.
 
-**`ram_chunk_size`** - Quante immagini vengono memorizzate in RAM tra i passaggi del modello (solo in modalità multi-passaggio). Riduce l'I/O su disco caricando le immagini una sola volta per blocco. Limitato dal limite di memoria effettivo (vedi `memory_limit_percent` sotto). Regolato automaticamente in entrambe le direzioni: ridotto immediatamente quando l'utilizzo supera il limite, e aumentato solo al termine di un blocco, e solo se l'utilizzo *massimo* dell'intero blocco è rimasto sotto il limite. Il picco è ciò che conta, perché un blocco non è una singola lettura: ogni scaricamento di modello tra i passaggi fa crollare l'utilizzo quasi al minimo, e crescere su quel minimo è ciò che ha portato `ram_chunk_size` da 10 a 500 all'interno di un container da 8GB, causando un OOM kill sul blocco successivo.
+**`ram_chunk_size`** - Quante immagini vengono memorizzate in RAM tra i passaggi del modello (solo in modalità multi-passaggio). Riduce l'I/O su disco caricando le immagini una sola volta per blocco. Limitato dal limite di memoria effettivo (vedi `memory_limit_percent` sotto). Regolato automaticamente in entrambe le direzioni: ridotto immediatamente quando l'utilizzo supera il limite, e aumentato solo al termine di un blocco, e solo se l'utilizzo *massimo* dell'intero blocco è rimasto sotto il limite. Il picco è ciò che conta, perché un blocco non è una singola lettura: ogni scaricamento di modello tra i passaggi fa crollare l'utilizzo quasi al minimo, e crescere su quel minimo è ciò che ha portato `ram_chunk_size` da 10 a 500 all'interno di un container da 8GB, causando un OOM kill sul blocco successivo. Un blocco conserva solo l'immagine decodificata (circa 4,4 byte per pixel sorgente mentre i suoi passaggi sono in esecuzione, contro circa 8,1 prima): i passaggi che richiedono un array BGR o un piano di grigi lo ricostruiscono da quell'immagine invece di far tenere al blocco entrambi per tutta la sua vita. Questo non cambia il modo in cui `ram_chunk_size` viene regolato; riduce ciò che usa un blocco di una data dimensione.
 
 ### Riferimento delle impostazioni
 
@@ -776,7 +777,9 @@ Invece di caricare tutti i modelli contemporaneamente, il multi-passaggio:
 2. Per ogni blocco, esegue i modelli in sequenza: carica modello → elabora blocco → scarica modello
 3. Combina i risultati in un passaggio di aggregazione finale
 
-Ogni immagine viene caricata una sola volta per blocco e i passaggi sono raggruppati per adattarsi alla VRAM disponibile, così i VLM di tagging/composizione più grandi possono essere eseguiti anche con VRAM limitata.
+Ogni immagine viene decodificata una sola volta per blocco e condivisa da tutti i passaggi, e i passaggi sono raggruppati per adattarsi alla VRAM disponibile, così i VLM di tagging/composizione più grandi possono essere eseguiti anche con VRAM limitata.
+
+I thread di caricamento eseguono, mentre decodificano, tutto il lavoro lato CPU che richiede il fotogramma completo: EXIF, metriche tecniche, analisi della composizione basata su regole, hash percettivo e l'immagine da 1024 px condivisa dai modelli pyiqa e da Q-ReAlign (ridotta una volta per foto, non una volta per modello). Un blocco conserva poi l'immagine decodificata e scarta l'array BGR e il piano di grigi; i passaggi InsightFace e di salienza ricostruiscono i propri a partire da essa quando vengono eseguiti (circa 0,09 s per foto da 20 MP, sommati come `Plane rebuilds` nel riepilogo della scansione). Un errore di composizione fa fallire solo quella foto, registrata in `scan_failures` con la fase `composition` (da ritentare con `--retry-failed`), e il blocco prosegue.
 
 ### Comportamento della regolazione automatica
 
@@ -1529,6 +1532,8 @@ Impostazioni generali di tagging. Il modello di tagging è configurato per profi
 | `max_tags` | `5` | Numero massimo di tag per foto |
 
 **Nota:** le impostazioni specifiche di CLIP come `similarity_threshold_percent` si trovano nella sezione `models.clip`.
+
+Al termine di una scansione, il passaggio di tagging carica il modello di embedding del profilo solo quando ha qualcosa da taggare. Viene saltato, con una riga di log, quando `enabled` è `false` o quando nessuna foto ha insieme un embedding memorizzato e un elenco di tag vuoto. Una scansione le cui foto in sospeso il tagger non può mai taggare (ogni similarità sotto la soglia) carica comunque il modello a ogni esecuzione. `python tag_existing.py`, `--force` e `python facet.py --tag-untagged` non sono interessati.
 
 ### Modelli di tagging disponibili
 

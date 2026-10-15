@@ -1082,6 +1082,10 @@ Affected files: `processing/multi_pass.py`, `utils/image_loading.py`, tests list
 
 ## Build waves
 
+> **Shipping split.** W0, W1a and W1b (steps S0, S1, S2, S3, S6a, S7, S8a, S8b, S9) ship as their own PR from
+> branch `perf/scan-passes-w1`. W2 and W3 (S4, S5, S6b, S8c) follow on `perf/scan-passes`. The docs and
+> CHANGELOG of the first PR describe only the shipped steps.
+
 Order is fixed by file ownership. Every builder gets a brief with: goal, exact files it may change, what it
 must verify, what it must not do (no git state changes, no other files, no new flags/shims, no `mock.patch` on
 auth dependencies), required output format (commands run, test counts per file, exit codes, handoff path),

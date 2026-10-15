@@ -366,6 +366,8 @@ Solo i casi 4 e 5 possono non trovare nulla. I casi 1 e 2 nominano un percorso, 
 
 Su una macchina CUDA, un profilo SigLIP (`16gb`, `24gb`) ora codifica il vocabolario dei tag in fp16, come faceva già lo scorer a passaggio singolo; `tag_existing.py` lo caricava prima in fp32. `python tag_existing.py`, `python tag_existing.py --force`, `python facet.py --tag-untagged` e il passaggio di tagging al termine di una scansione condividono quel loader. Misurato su 49 foto, l'insieme di tag è cambiato per 2 di esse (4 %): riesegui `python tag_existing.py --force` per riassegnare i tag alle foto etichettate in precedenza. CPU e profili CLIP ViT-L-14 (`legacy`, `8gb`) restano invariati.
 
+Il passaggio di tagging al termine di una scansione carica quel modello solo quando ha del lavoro da fare. Viene saltato, con una riga di log, quando `tagging.enabled` è `false` o quando nessuna foto ha un embedding memorizzato e un elenco di tag vuoto; una scansione senza nulla da taggare non ricarica più SigLIP 2 o CLIP per questo. `python tag_existing.py`, `--force` e `--tag-untagged` non sono interessati.
+
 ## Validazione del database
 
 | Comando | Descrizione |

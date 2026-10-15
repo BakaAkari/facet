@@ -365,6 +365,8 @@ Nur Fall 4 und 5 dürfen nichts finden. Fall 1 und 2 nennen einen Pfad, daher br
 
 Auf einem CUDA-Rechner kodiert ein SigLIP-Profil (`16gb`, `24gb`) das Tag-Vokabular jetzt in fp16, wie es der Single-Pass-Scorer schon tat; `tag_existing.py` hat es früher in fp32 geladen. `python tag_existing.py`, `python tag_existing.py --force`, `python facet.py --tag-untagged` und der Verschlagwortungsschritt am Ende eines Scans nutzen denselben Loader. Gemessen an 49 Fotos änderte sich das Tag-Set bei 2 davon (4 %): Führen Sie `python tag_existing.py --force` erneut aus, um früher verschlagwortete Fotos neu zu verschlagworten. CPU und die CLIP-ViT-L-14-Profile (`legacy`, `8gb`) bleiben unverändert.
 
+Der Verschlagwortungsschritt am Ende eines Scans lädt dieses Modell nur, wenn er etwas zu tun hat. Er wird mit einer Logzeile übersprungen, wenn `tagging.enabled` auf `false` steht oder wenn kein Foto ein gespeichertes Embedding und eine leere Tag-Liste hat; ein Scan, der nichts zu verschlagworten hat, lädt dafür kein SigLIP 2 oder CLIP mehr neu. `python tag_existing.py`, `--force` und `--tag-untagged` sind nicht betroffen.
+
 ## Datenbankvalidierung
 
 | Befehl | Beschreibung |
