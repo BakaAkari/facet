@@ -321,6 +321,19 @@ def person_not_hidden_clause(alias=''):
     return f"({col} = 0 OR {col} IS NULL)"
 
 
+# The photos columns the gallery's hide / visibility clauses read (HIDE_* and
+# HIDDEN_* in api/db_helpers.py plus the single-user `is_rejected` test). A new
+# hide column MUST be added here, or the gallery silently reverts to table passes.
+GALLERY_VISIBILITY_COLUMNS = (
+    'is_blink', 'is_burst_lead', 'burst_group_id', 'is_sequence_lead',
+    'is_duplicate_lead', 'duplicate_group_id', 'sequence_kind', 'sequence_ev_offset',
+    'is_rejected',
+)
+# Plus `junk_kind`, so the `junk_kind=any` predicate is evaluated from the index
+# entry rather than the table row. On purpose: do not drop it.
+GALLERY_COVER_COLUMNS = GALLERY_VISIBILITY_COLUMNS + ('junk_kind',)
+_GALLERY_COVER_SQL = ', '.join(GALLERY_COVER_COLUMNS)
+
 # Index definitions as (name, table, column_expression)
 INDEXES = [
     ('idx_date_taken', 'photos', 'date_taken'),
@@ -433,6 +446,45 @@ INDEXES = [
     # inline thumbnail BLOB, is ever read. Without it the query walked the full
     # photos B-tree (22.9s cold on a 126k-photo library).
     ('idx_shoot_type_evidence', 'photos', 'category, narrative_moment, face_count, date_taken'),
+    # Gallery covering indexes. Every gallery statement (the count, the hidden
+    # summary and the page) reads the same nine visibility columns in its hide
+    # clauses, and without an index that holds them each statement walks the
+    # whole 16 GB table (half a gigabyte of pages per request on a 130k library).
+    # `path` follows the sort column because the gallery's ORDER BY always ends
+    # in `path ASC` (a bare `aggregate DESC` index forced a temp B-tree). Built
+    # from the two tuples above so this list cannot drift from the hide clauses
+    # (tests/test_gallery_indexes.py reads both). `junk_kind` rides along so the
+    # `junk_kind=any` predicate is answered from the index entry, unrewritten.
+    # idx_gallery_aggregate is the aggregate-leading superset: it also carries
+    # category / camera_model / lens_model, which serves the lens filter, so
+    # there is no separate lens index.
+    ('idx_gallery_aggregate', 'photos',
+     f'aggregate DESC, path, {_GALLERY_COVER_SQL}, category, camera_model, lens_model'),
+    ('idx_gallery_date_desc', 'photos', f'date_taken DESC, path, {_GALLERY_COVER_SQL}'),
+    ('idx_gallery_date_asc', 'photos', f'date_taken ASC, path, {_GALLERY_COVER_SQL}'),
+    # Category / type dropdown (the most common filter).
+    ('idx_gallery_category', 'photos', f'category, aggregate DESC, path, {_GALLERY_COVER_SQL}'),
+    # Camera filter (and the camera+lens pair).
+    ('idx_gallery_camera', 'photos',
+     f'camera_model, lens_model, aggregate DESC, path, {_GALLERY_COVER_SQL}'),
+    # Sort by star rating (the rating was a bare idx_star_rating: the ORDER BY
+    # ends in path, so that index needed a temp B-tree).
+    ('idx_star_rating_path', 'photos', 'star_rating DESC, path'),
+    # NULLs-last ascending sort. The expression text must match
+    # api.types.order_by_clause's `(aesthetic_iaa IS NULL) ASC, aesthetic_iaa ASC`
+    # for the planner to use it; only aesthetic_iaa gets one of the six nullable
+    # ASC sorts.
+    ('idx_gallery_iaa_asc', 'photos',
+     f'(aesthetic_iaa IS NULL), aesthetic_iaa, path, {_GALLERY_COVER_SQL}'),
+    # Covering index for /api/stats/categories: its GROUP BY category averages
+    # read 13 score columns and the per-category top camera / lens read two more,
+    # so the whole request is answered from the index (6.8 GB of table pages
+    # without it). Every column the statement names must be in this list
+    # (tests/test_stats_category_plan.py pins it).
+    ('idx_stats_categories', 'photos',
+     'category, aggregate, aesthetic, comp_score, tech_sharpness, color_score, '
+     'exposure_score, iso, f_stop, focal_length_35mm, focal_length, face_quality, '
+     'contrast_score, camera_model, lens_model'),
 ]
 
 # Photo tags lookup table for fast exact-match queries (replaces LIKE '%tag%')
@@ -1000,15 +1052,26 @@ def _run_migration_ladder(conn, is_fresh):
             current, SCHEMA_VERSION)
 
 
-def init_database(db_path='photo_scores_pro.db'):
+def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
     """
     Initialize the database schema (idempotent).
 
     Creates all tables and indexes using CREATE IF NOT EXISTS.
     Safe to call on existing databases - automatically adds new columns.
 
+    Each ``INDEXES`` entry is built as its own autocommit statement, after the
+    migration steps above it are committed, and logged at INFO before it starts
+    (a large library takes minutes per index). A start killed mid-build therefore
+    keeps every index it finished and the next call resumes, and a writer is never
+    locked out for the whole build.
+
     Args:
         db_path: Path to the SQLite database file
+        build_photo_indexes: When False, skip the ``INDEXES`` loop and the ANALYZE
+            gate that follows it (tables, columns and every other index group are
+            still created). The viewer passes False when a library job holds the
+            library lock, so it never builds under a running scan; the next start,
+            or ``python database.py``, builds them.
     """
     with sqlite3.connect(db_path) as conn:
         apply_pragmas(conn)
@@ -1195,24 +1258,44 @@ def init_database(db_path='photo_scores_pro.db'):
         # observe idx_moment_confidence, then every other group. All groups come
         # from the single ALL_INDEX_GROUPS registry that db.info also counts, so
         # the two can never disagree.
-        for idx_name, table, column_expr in INDEXES:
-            conn.execute(
-                f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({column_expr})'
-            )
+        if build_photo_indexes:
+            # Everything above ran in one implicit write transaction (the first DML
+            # opened it). Commit it so each CREATE INDEX below is its own autocommit
+            # statement: the write lock is released after every index, and an
+            # interrupted build keeps the indexes it finished instead of rolling
+            # all of them back with the migration steps (which are idempotent, so
+            # a re-run is safe).
+            conn.commit()
+            existing = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'")}
+            for idx_name, table, column_expr in INDEXES:
+                if idx_name not in existing:
+                    logger.info(
+                        "Creating index %s (a large library can take minutes)", idx_name)
+                conn.execute(
+                    f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({column_expr})'
+                )
 
-        # A freshly created index has no row in sqlite_stat1, and with stale
-        # partial stats the query planner ignores it (the moment / learned_score
-        # sorts kept temp-sorting 126k rows until ANALYZE ran). Analyze the photos
-        # table once when a recent sort index is missing from the stats so upgraded
-        # DBs pick up the new indexes without a manual `database.py --analyze`.
-        try:
-            analyzed = {r[0] for r in conn.execute(
-                "SELECT idx FROM sqlite_stat1 WHERE idx IS NOT NULL"
-            )}
-        except sqlite3.OperationalError:
-            analyzed = set()  # sqlite_stat1 not created yet (never analyzed)
-        if 'idx_moment_confidence' not in analyzed:
-            conn.execute("ANALYZE photos")
+            # A freshly created index has no row in sqlite_stat1, and with stale
+            # partial stats the query planner ignores it (the moment / learned_score
+            # sorts kept temp-sorting 126k rows until ANALYZE ran). Analyze the photos
+            # table once when a recent sort index is missing from the stats so
+            # upgraded DBs pick up the new indexes without a manual
+            # `database.py --analyze`. The gallery covering index is a second key
+            # (a DB upgraded from before it has the moment index analyzed already).
+            # An EMPTY photos table cannot be analyzed (ANALYZE writes no
+            # sqlite_stat1 row for it), so the gate would refire on every init of an
+            # empty DB; skip it there.
+            try:
+                analyzed = {r[0] for r in conn.execute(
+                    "SELECT idx FROM sqlite_stat1 WHERE idx IS NOT NULL"
+                )}
+            except sqlite3.OperationalError:
+                analyzed = set()  # sqlite_stat1 not created yet (never analyzed)
+            if (('idx_moment_confidence' not in analyzed
+                 or 'idx_gallery_aggregate' not in analyzed)
+                    and conn.execute("SELECT 1 FROM photos LIMIT 1").fetchone()):
+                conn.execute("ANALYZE photos")
 
         # Create every remaining index group (photo_tags, comparisons,
         # learned_scores, weight-optimization, snapshots, scan_runs,

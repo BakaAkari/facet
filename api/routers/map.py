@@ -57,7 +57,7 @@ async def _get_clustered_photos(conn, zoom, date_from, date_to, user_id,
         f"   WHERE {p2_where} "
         f"   AND ROUND(p2.gps_latitude / ?, 0) = ROUND(photos.gps_latitude / ?, 0) "
         f"   AND ROUND(p2.gps_longitude / ?, 0) = ROUND(photos.gps_longitude / ?, 0) "
-        f"   ORDER BY p2.aggregate DESC LIMIT 1) AS representative_path "
+        f"   ORDER BY p2.aggregate DESC, p2.path ASC LIMIT 1) AS representative_path "
         f"FROM photos "
         f"WHERE {base_where} "
         f"GROUP BY ROUND(gps_latitude / ?, 0), ROUND(gps_longitude / ?, 0) "
@@ -90,7 +90,7 @@ async def _get_individual_photos(conn, base_where, base_params, limit):
         f"  aggregate, filename, date_taken, category "
         f"FROM photos "
         f"WHERE {base_where} "
-        f"ORDER BY aggregate DESC "
+        f"ORDER BY aggregate DESC, path ASC "
         f"LIMIT ?",
         base_params + [limit],
     )

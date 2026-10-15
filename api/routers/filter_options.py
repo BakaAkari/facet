@@ -148,24 +148,49 @@ async def tags(user: Optional[CurrentUser] = Depends(get_optional_user)):
 
         if photo_tags_ready:
             try:
-                vis_sub = f' AND photo_path IN (SELECT path FROM photos WHERE 1=1{vis})' if vis else ''
-                # UNION (not UNION ALL) de-dupes (photo, tag): a manual tag equal to an
-                # AI tag counts that photo once.
-                tag_pairs = "SELECT photo_path, tag FROM photo_tags"
-                if manual_ready:
-                    tag_pairs += " UNION SELECT photo_path, tag FROM photo_manual_tags"
-                rows = await _fetch_all(
-                    conn,
-                    f"""
-                    SELECT tag, COUNT(*) as cnt
-                    FROM ({tag_pairs})
-                    WHERE 1=1{vis_sub}
-                    GROUP BY tag
-                    ORDER BY cnt DESC, tag ASC
-                    LIMIT ?
-                    """,
-                    vp + [max_tags],
-                )
+                if vis:
+                    # The visibility filter needs the (photo, tag) pair rows, so this
+                    # branch keeps the pair-level UNION. UNION (not UNION ALL) de-dupes
+                    # (photo, tag): a manual tag equal to an AI tag counts that photo once.
+                    vis_sub = f' AND photo_path IN (SELECT path FROM photos WHERE 1=1{vis})'
+                    tag_pairs = "SELECT photo_path, tag FROM photo_tags"
+                    if manual_ready:
+                        tag_pairs += " UNION SELECT photo_path, tag FROM photo_manual_tags"
+                    rows = await _fetch_all(
+                        conn,
+                        f"""
+                        SELECT tag, COUNT(*) as cnt
+                        FROM ({tag_pairs})
+                        WHERE 1=1{vis_sub}
+                        GROUP BY tag
+                        ORDER BY cnt DESC, tag ASC
+                        LIMIT ?
+                        """,
+                        vp + [max_tags],
+                    )
+                else:
+                    # Whole library: count the AI pairs with an index-only GROUP BY on
+                    # idx_photo_tags_tag, then add the manual pairs the AI side does not
+                    # already hold (the anti-join is the same (photo, tag) de-dupe the
+                    # UNION did, without building a temp b-tree over every pair).
+                    manual_half = (
+                        " UNION ALL SELECT m.tag, COUNT(*) FROM photo_manual_tags m"
+                        " WHERE NOT EXISTS (SELECT 1 FROM photo_tags t"
+                        " WHERE t.photo_path = m.photo_path AND t.tag = m.tag)"
+                        " GROUP BY m.tag"
+                        if manual_ready else ""
+                    )
+                    rows = await _fetch_all(
+                        conn,
+                        f"""
+                        SELECT tag, SUM(n) AS cnt
+                        FROM (SELECT tag, COUNT(*) AS n FROM photo_tags GROUP BY tag{manual_half})
+                        GROUP BY tag
+                        ORDER BY cnt DESC, tag ASC
+                        LIMIT ?
+                        """,
+                        [max_tags],
+                    )
                 return {'tags': [(r[0], r[1]) for r in rows], 'cached': False}
             except sqlite3.Error:
                 logger.debug("photo_tags query failed, falling back to split", exc_info=True)

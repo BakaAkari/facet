@@ -172,7 +172,7 @@ async def _fetch_album_photos(conn, album_row, user_id, page, per_page, sort_col
             select_cols, safe_sort == 'top_picks_score' or saved_filters.get('top_picks_filter') == '1')
         cur = await conn.execute(
             f"SELECT {', '.join(select_cols)} FROM {from_clause}{where_str} "
-            f"ORDER BY {order_by_clause(safe_sort, sort_dir)} LIMIT ? OFFSET ?",
+            f"ORDER BY {order_by_clause(safe_sort, sort_dir, tiebreak='photos.path ASC')} LIMIT ? OFFSET ?",
             all_params + [per_page, (page - 1) * per_page]
         )
         rows = await cur.fetchall()
@@ -215,7 +215,7 @@ async def _fetch_album_photos(conn, album_row, user_id, page, per_page, sort_col
             f"SELECT {', '.join(select_cols)} FROM album_photos ap "
             f"JOIN {from_clause} ON photos.path = ap.photo_path "
             f"WHERE {where_str} "
-            f"ORDER BY {order_by_clause(safe_sort, sort_dir)} LIMIT ? OFFSET ?",
+            f"ORDER BY {order_by_clause(safe_sort, sort_dir, tiebreak='photos.path ASC')} LIMIT ? OFFSET ?",
             from_params + base_params + [per_page, (page - 1) * per_page]
         )
         rows = await cur.fetchall()

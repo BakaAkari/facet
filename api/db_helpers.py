@@ -26,6 +26,8 @@ from api.config import (
     is_multi_user_enabled, get_user_directories, _FULL_CONFIG, VIEWER_CONFIG,
     config_load_failed, server_scoring_config,
 )
+from api import database as _database
+from api.change_token import db_change_token
 from api.database import get_db_connection
 from comparison.comparison_manager import record_culling_pairs
 from db import DEFAULT_DB_PATH
@@ -725,28 +727,26 @@ def _count_cache_store(cache_key, count):
                 del _count_cache[k]
 
 
-def _db_change_token():
-    """Cross-process DB-mutation marker for count-cache keys.
+def _count_cache_key(prefix, from_clause, where_str, sql_params):
+    """Cache key for a count-style query: the query, the database it runs on and
+    that database's change token (``api.change_token``).
 
-    A per-request connection cannot use ``PRAGMA data_version`` (it resets to a
-    baseline on every open), so the on-disk size+mtime of the database and its
-    ``-wal`` is used instead: any commit from any process — including the
-    ``--detect-junk`` / ``--recompute-*`` CLI — moves one of them and invalidates
-    stale counts.
+    The path is read from ``api.database`` AT CALL TIME because that module's
+    ``DEFAULT_DB_PATH`` is the global every request connection opens (and the one
+    tests patch); this module's own import-time binding would key one database's
+    counts under another's.
     """
-    parts = []
-    for suffix in ("", "-wal"):
-        try:
-            st = os.stat(f"{DEFAULT_DB_PATH}{suffix}")
-            parts.append(f"{st.st_size}:{st.st_mtime_ns}")
-        except OSError:
-            parts.append("-")
-    return "|".join(parts)
+    db_path = _database.DEFAULT_DB_PATH
+    token = db_change_token(db_path)
+    digest = hashlib.sha256(
+        f"{db_path}:{from_clause}:{where_str}:{tuple(sql_params)}:{token}".encode()
+    ).hexdigest()
+    return prefix + digest
 
 
 def get_cached_count(conn, where_str, sql_params, from_clause="photos"):
     """Cache COUNT results to avoid repeated full-table scans."""
-    cache_key = hashlib.sha256(f"{from_clause}:{where_str}:{tuple(sql_params)}:{_db_change_token()}".encode()).hexdigest()
+    cache_key = _count_cache_key("", from_clause, where_str, sql_params)
     cached = _count_cache_lookup(cache_key)
     if cached is not None:
         return cached
@@ -759,7 +759,7 @@ def get_cached_count(conn, where_str, sql_params, from_clause="photos"):
 
 async def get_cached_count_async(conn, where_str, sql_params, from_clause="photos"):
     """Async variant of get_cached_count for aiosqlite paths."""
-    cache_key = hashlib.sha256(f"{from_clause}:{where_str}:{tuple(sql_params)}:{_db_change_token()}".encode()).hexdigest()
+    cache_key = _count_cache_key("", from_clause, where_str, sql_params)
     cached = _count_cache_lookup(cache_key)
     if cached is not None:
         return cached
@@ -780,9 +780,7 @@ async def get_cached_hidden_aggregates_async(conn, where_str, sql_params, from_c
     with the same TTL/keying as the count cache instead of re-running it on every
     infinite-scroll fetch.
     """
-    cache_key = "hs:" + hashlib.sha256(
-        f"{from_clause}:{where_str}:{tuple(sql_params)}:{_db_change_token()}".encode()
-    ).hexdigest()
+    cache_key = _count_cache_key("hs:", from_clause, where_str, sql_params)
     cached = _count_cache_lookup(cache_key)
     if cached is not None:
         return cached

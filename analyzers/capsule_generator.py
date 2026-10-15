@@ -1217,7 +1217,10 @@ def _generate_seeded(conn, capsule_config, min_aggregate, vis, user_id):
 
         # --- Visual similarity axis (vectorized, uses pre-loaded matrix) ---
         seed_emb = bytes_to_normalized_embedding(seed["clip_embedding"])
-        if seed_emb is not None and emb_matrix is not None:
+        # ``emb_matrix`` was filtered to one dimension; the seed was not, so a
+        # minority-dimension seed skips only this axis (matmul would raise).
+        if (seed_emb is not None and emb_matrix is not None
+                and seed_emb.shape[0] == emb_matrix.shape[1]):
             sims = emb_matrix @ seed_emb  # vectorized cosine similarity
             mask = sims >= embedding_threshold
             similar_idx = np.where(mask)[0]

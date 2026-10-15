@@ -53,6 +53,22 @@ init_database(_TEST_DB_FILE.name)
 
 
 @pytest.fixture(autouse=True)
+def _reset_count_cache_and_change_token():
+    """The count cache is keyed on a per-database change token, so neither it nor
+    the token's sentinel connections may outlive the test that filled them.
+
+    A key from another test's database must never be a hit, and an open sentinel
+    would hold a file handle on a tmp DB the test is about to delete.
+    """
+    from api import config as api_config
+    from api.change_token import close_change_token_sentinels
+    with api_config._count_cache_lock:
+        api_config._count_cache.clear()
+    yield
+    close_change_token_sentinels()
+
+
+@pytest.fixture(autouse=True)
 def _reset_licensing_policy():
     """Licensing policy is process-global state: never let one test's mode leak.
 
