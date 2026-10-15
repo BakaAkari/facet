@@ -62,7 +62,8 @@ async def _cached_filter_query(cache_key, result_key, query_fn, vis):
     """
     from db import get_cached_stat, DEFAULT_DB_PATH
     if not vis and not is_multi_user_enabled():
-        data, is_fresh = get_cached_stat(DEFAULT_DB_PATH, cache_key, max_age_seconds=300)
+        data, is_fresh = await asyncio.to_thread(
+            get_cached_stat, DEFAULT_DB_PATH, cache_key, max_age_seconds=300)
         if data and is_fresh:
             return {result_key: data, 'cached': True}
 
@@ -140,7 +141,8 @@ async def tags(user: Optional[CurrentUser] = Depends(get_optional_user)):
     vis, vp = _vis_where(user)
 
     if not vis and not is_multi_user_enabled():
-        data, is_fresh = get_cached_stat(DEFAULT_DB_PATH, 'tags', max_age_seconds=300)
+        data, is_fresh = await asyncio.to_thread(
+            get_cached_stat, DEFAULT_DB_PATH, 'tags', max_age_seconds=300)
         if data and is_fresh:
             return {'tags': data[:max_tags], 'cached': True}
 
@@ -396,8 +398,11 @@ async def colors(user: Optional[CurrentUser] = Depends(get_optional_user)):
     use_cache = not vis and not is_multi_user_enabled()
 
     if use_cache:
-        temps_cached, temps_fresh = get_cached_stat(DEFAULT_DB_PATH, 'color_temps', max_age_seconds=300)
-        hues_cached, hues_fresh = get_cached_stat(DEFAULT_DB_PATH, 'color_hue_buckets', max_age_seconds=300)
+        def read_cached():
+            return (get_cached_stat(DEFAULT_DB_PATH, 'color_temps', max_age_seconds=300),
+                    get_cached_stat(DEFAULT_DB_PATH, 'color_hue_buckets', max_age_seconds=300))
+
+        (temps_cached, temps_fresh), (hues_cached, hues_fresh) = await asyncio.to_thread(read_cached)
         if temps_fresh and hues_fresh and temps_cached is not None and hues_cached is not None:
             return {'temps': temps_cached, 'hue_buckets': hues_cached, 'cached': True}
 

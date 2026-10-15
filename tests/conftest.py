@@ -69,6 +69,17 @@ def _reset_count_cache_and_change_token():
 
 
 @pytest.fixture(autouse=True)
+def _reset_index_build_status():
+    """The gallery index build status is process-global (one lifespan per server):
+    a lifespan test's final state must not reach the next test's /health or the
+    write-retry decorator, which skips retries while it reads ``building``."""
+    from api import schema_startup
+    schema_startup._set_status(state=schema_startup.STATE_READY, done=0, total=0)
+    yield
+    schema_startup._set_status(state=schema_startup.STATE_READY, done=0, total=0)
+
+
+@pytest.fixture(autouse=True)
 def _reset_licensing_policy():
     """Licensing policy is process-global state: never let one test's mode leak.
 

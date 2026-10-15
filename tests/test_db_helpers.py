@@ -5,7 +5,6 @@ import types
 from unittest import mock
 
 import pytest
-from fastapi import HTTPException
 
 from api import db_helpers
 from api.db_helpers import (
@@ -15,7 +14,6 @@ from api.db_helpers import (
 
 LOCKED_MESSAGE = "database is locked"
 SCHEMA_ERROR_MESSAGE = "no such column: sharpness"
-RETRY_AFTER_HEADERS = {'Retry-After': '1'}
 
 
 class TestToExifDate:
@@ -71,31 +69,50 @@ def clock(monkeypatch):
 
 
 class TestRetryOnLocked:
-    """The retry limit is a wall-clock budget, not just an attempt count.
+    """The retry limit is a wall-clock budget counted from the first lock error.
 
     Each attempt can itself block for the connection's ``busy_timeout`` (5s), so
     counting attempts alone let one handler hold an anyio threadpool token for
-    ~20s before answering 503. ``RETRY_BUDGET_SECONDS`` bounds that; these tests
-    pin the budget so a regression to pure attempt-counting is caught.
+    ~20s before answering 503; and a budget counted from the call's start was
+    already spent by the first attempt's busy_timeout, so no retry ever ran.
+    Giving up re-raises the lock error, which the app answers 503 ``library_busy``
+    (tests/test_error_handlers.py).
     """
 
-    def test_slow_attempts_give_up_on_the_budget_not_the_attempt_count(self, clock):
-        attempt_cost = RETRY_BUDGET_SECONDS / 2
+    BUSY_TIMEOUT = 5.0
+
+    def test_a_first_attempt_that_sat_out_busy_timeout_still_gets_retried(self, clock):
         calls = []
 
         @retry_on_locked()
         def handler():
             calls.append(1)
+            if len(calls) == 1:
+                clock.now += self.BUSY_TIMEOUT
+                raise sqlite3.OperationalError(LOCKED_MESSAGE)
+            return {'success': True}
+
+        assert handler() == {'success': True}
+        assert len(calls) == 2
+
+    def test_slow_attempts_give_up_on_the_budget_not_the_attempt_count(self, clock):
+        attempt_cost = RETRY_BUDGET_SECONDS / 2
+        calls = []
+        first_error_at = []
+
+        @retry_on_locked()
+        def handler():
+            calls.append(1)
             clock.now += attempt_cost
+            if not first_error_at:
+                first_error_at.append(clock.now)
             raise sqlite3.OperationalError(LOCKED_MESSAGE)
 
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
             handler()
 
-        assert excinfo.value.status_code == 503
-        assert excinfo.value.headers == RETRY_AFTER_HEADERS
-        assert 0 < len(calls) < RETRY_ATTEMPTS
-        assert clock.now < RETRY_BUDGET_SECONDS + attempt_cost
+        assert 1 < len(calls) < RETRY_ATTEMPTS
+        assert clock.now - first_error_at[0] < RETRY_BUDGET_SECONDS + attempt_cost
 
     def test_fast_failures_still_get_the_full_attempt_count(self, clock):
         """The budget only bites on slow attempts: a burst that clears instantly
@@ -107,12 +124,30 @@ class TestRetryOnLocked:
             calls.append(1)
             raise sqlite3.OperationalError(LOCKED_MESSAGE)
 
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
             handler()
 
-        assert excinfo.value.status_code == 503
         assert len(calls) == RETRY_ATTEMPTS
         assert sum(clock.slept) < RETRY_BUDGET_SECONDS
+
+    def test_no_retry_while_the_gallery_index_build_holds_the_lock(self, clock, monkeypatch):
+        """One index is seconds to minutes of write lock: a retry only holds the
+        threadpool token longer before the same 503."""
+        from api import schema_startup
+        monkeypatch.setattr(schema_startup, "_status",
+                            {"state": "building", "done": 1, "total": 8})
+        calls = []
+
+        @retry_on_locked()
+        def handler():
+            calls.append(1)
+            raise sqlite3.OperationalError(LOCKED_MESSAGE)
+
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            handler()
+
+        assert calls == [1]
+        assert clock.slept == []
 
     def test_a_later_attempt_succeeding_returns_its_value(self, clock):
         calls = []

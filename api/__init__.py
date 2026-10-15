@@ -6,10 +6,12 @@ Replaces Flask viewer — serves JSON API + Angular static files.
 
 import logging
 import os
+import sqlite3
 import sys
 import time
 import warnings
 from contextlib import asynccontextmanager
+from typing import cast
 
 # Ensure the project root is in Python path for local imports
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,15 +25,56 @@ warnings.filterwarnings(
     message=r".*estimate.*deprecated.*", module=r"insightface\..*",
 )
 
-from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.encoders import jsonable_encoder  # noqa: E402
+from fastapi.exception_handlers import http_exception_handler  # noqa: E402
 from fastapi.exceptions import RequestValidationError  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
+from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# Set by viewer.py for the server it starts. uvicorn runs the app in processes it
+# spawns (every --workers N worker, and the --reload child), which never run
+# viewer.py's own setup, so the factory configures logging there itself.
+CONFIGURE_LOGGING_ENV = "FACET_VIEWER_CONFIGURE_LOGGING"
+
+
+def configure_logging():
+    """Set up structured logging. Level comes from (in priority order):
+    1. FACET_LOG_LEVEL env var
+    2. scoring_config.json log_level field
+    3. Default: INFO
+
+    The config comes from ``config_resolve`` rather than a ``ScoringConfig``:
+    ``config/__init__.py`` imports ``config.percentile_normalizer``, which imports
+    ``db`` -- the whole database layer, pulled in to read one string.
+    ``config_resolve`` is stdlib-only and reads the shipped defaults too, so a log
+    level left at its default is still found in an install whose own config file
+    only overrides three keys. A no-op on a process whose root logger already has a
+    handler.
+    """
+    from config_resolve import load_resolved
+    level_name = os.environ.get("FACET_LOG_LEVEL")
+    if not level_name:
+        try:
+            level_name = load_resolved().get("log_level")
+        except Exception:
+            pass
+    level_name = (level_name or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    # Quiet noisy third-party loggers
+    for name in ("urllib3", "PIL", "matplotlib", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -129,6 +172,64 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """
     logger.warning("422 %s %s — %s", request.method, request.url.path, exc.errors())
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+
+
+def _locked_error_in_chain(exc):
+    """The SQLite busy/locked error ``exc`` is or was raised from, else None."""
+    from api.db_helpers import is_locked_error
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if is_locked_error(exc):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def _library_busy_response(request: Request, exc) -> JSONResponse:
+    """503 ``library_busy`` + Retry-After: the write is possible, just not now.
+
+    One WARNING line and no traceback: the lock is held by another writer (most
+    often the gallery index build after an upgrade, or a scan), not a fault.
+    """
+    from api.db_helpers import LIBRARY_BUSY_DETAIL, LIBRARY_BUSY_RETRY_AFTER_SECONDS
+    logger.warning("503 %s on %s %s: %s", LIBRARY_BUSY_DETAIL, request.method,
+                   request.url.path, exc)
+    return JSONResponse(
+        status_code=503, content={"detail": LIBRARY_BUSY_DETAIL},
+        headers={"Retry-After": str(LIBRARY_BUSY_RETRY_AFTER_SECONDS)},
+    )
+
+
+async def sqlite_operational_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A busy/locked database escaping any route is a 503 ``library_busy``.
+
+    SQLite reports it once the connection's ``busy_timeout`` has run out while
+    another connection held the write lock. Registered for
+    ``sqlite3.OperationalError`` rather than handled in the catch-all below,
+    because Starlette re-raises whatever reaches the catch-all, which logs an
+    "Exception in ASGI application" traceback for every refused write. Any other
+    OperationalError is still a 500, logged like the catch-all logs it.
+    """
+    if _locked_error_in_chain(exc) is not None:
+        return _library_busy_response(request, exc)
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+async def http_error_handler(request: Request, exc: Exception) -> Response:
+    """FastAPI's HTTPException handler, except that a 5xx raised from a busy/locked
+    database is answered 503 ``library_busy``.
+
+    Many write handlers catch ``sqlite3.Error`` and raise ``HTTPException(500)``;
+    the lock error they caught is still on the exception's chain.
+    """
+    http_exc = cast(StarletteHTTPException, exc)  # registered for that class only
+    if http_exc.status_code >= 500:
+        locked = _locked_error_in_chain(http_exc)
+        if locked is not None:
+            return _library_busy_response(request, locked)
+    return await http_exception_handler(request, http_exc)
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -354,6 +455,10 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """FastAPI application factory."""
+    if os.environ.get(CONFIGURE_LOGGING_ENV) == "1":
+        configure_logging()
+
+    from api.db_helpers import warm_schema_caches
     app = FastAPI(
         title="Facet API",
         description="Multi-dimensional photo analysis engine API",
@@ -361,6 +466,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
+        # Before every route: the cached schema probes that handlers read
+        # synchronously are filled on a worker thread, never on the event loop.
+        dependencies=[Depends(warm_schema_caches)],
     )
 
     from api.config import _FULL_CONFIG
@@ -399,6 +507,8 @@ def create_app() -> FastAPI:
 
     # Exception handlers — uniform JSON error responses + server-side logging.
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(StarletteHTTPException, http_error_handler)
+    app.add_exception_handler(sqlite3.OperationalError, sqlite_operational_error_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
     # Register routers

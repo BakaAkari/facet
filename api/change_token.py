@@ -136,6 +136,12 @@ def db_change_token(db_path) -> str:
         return f"{sentinel.generation}:{sentinel.device}:{sentinel.inode}:{data_version}"
 
 
+def change_token_sentinel_open(db_path) -> bool:
+    """True when ``db_path`` has an open sentinel, so a token read opens nothing."""
+    with _lock:
+        return os.fspath(db_path) in _sentinels
+
+
 def close_change_token_sentinels() -> None:
     """Close every sentinel and forget it. Idempotent."""
     with _lock:

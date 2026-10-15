@@ -115,6 +115,19 @@ PARAMETERISED_ROUTES = [
     ('/api/culling/suggest_profile', {'date_from': '2024:06:15 00:00:00', 'date_to': '2024:06:15 23:59:59'}),
 ]
 
+# POST routes with a minimal valid-shaped body naming a photo that does not exist:
+# the handler runs (validation passes) and ends in a 4xx or an empty success.
+POST_ROUTES = [
+    ('/api/photo/set_rating', {'photo_path': '/nonexistent.jpg', 'rating': 3}),
+    ('/api/photo/toggle_favorite', {'photo_path': '/nonexistent.jpg'}),
+    ('/api/photo/toggle_rejected', {'photo_path': '/nonexistent.jpg'}),
+    ('/api/photos/key_subjects', {'paths': []}),
+    ('/api/photos/batch_favorite', {'photo_paths': ['/nonexistent.jpg']}),
+    ('/api/photos/batch_rating', {'photo_paths': ['/nonexistent.jpg'], 'rating': 3}),
+    ('/api/lightroom/manifest', {'paths': ['/nonexistent.jpg']}),
+    ('/api/lightroom/import', {'format': 'facet-lightroom-state', 'version': 1, 'photos': []}),
+]
+
 # Routes that require superadmin (scan).
 SUPERADMIN_ROUTES = [
     '/api/scan/status',
@@ -182,58 +195,16 @@ class TestSuperadminRoutes:
 class TestPostRoutesAcceptValidShape:
     """A handful of POST endpoints that take small JSON payloads.
 
-    Each test passes a minimal valid-shaped body; the response is allowed to
+    Each request passes a minimal valid-shaped body; the response is allowed to
     be a 400/404 (no matching data) but must not 5xx.
     """
 
-    def test_photo_set_rating_validates_payload(self, edition_client):
-        resp = edition_client.post(
-            '/api/photo/set_rating',
-            json={'path': '/nonexistent.jpg', 'rating': 3},
+    @pytest.mark.parametrize('path,body', POST_ROUTES)
+    def test_edition_user_no_5xx(self, edition_client, path, body):
+        resp = edition_client.post(path, json=body)
+        assert _is_acceptable(resp.status_code), (
+            f"{path} {body} -> {resp.status_code} body={resp.text[:200]}"
         )
-        assert _is_acceptable(resp.status_code)
-
-    def test_photo_toggle_favorite_validates_payload(self, edition_client):
-        resp = edition_client.post(
-            '/api/photo/toggle_favorite',
-            json={'path': '/nonexistent.jpg'},
-        )
-        assert _is_acceptable(resp.status_code)
-
-    def test_photo_toggle_rejected_validates_payload(self, edition_client):
-        resp = edition_client.post(
-            '/api/photo/toggle_rejected',
-            json={'path': '/nonexistent.jpg'},
-        )
-        assert _is_acceptable(resp.status_code)
-
-    def test_key_subjects_accepts_empty_list(self, edition_client):
-        resp = edition_client.post(
-            '/api/photos/key_subjects',
-            json={'paths': []},
-        )
-        assert _is_acceptable(resp.status_code)
-
-    def test_batch_favorite_accepts_empty_list(self, edition_client):
-        resp = edition_client.post(
-            '/api/photos/batch_favorite',
-            json={'paths': [], 'is_favorite': True},
-        )
-        assert _is_acceptable(resp.status_code)
-
-    def test_lightroom_manifest_validates_payload(self, edition_client):
-        resp = edition_client.post(
-            '/api/lightroom/manifest',
-            json={'paths': ['/nonexistent.jpg']},
-        )
-        assert _is_acceptable(resp.status_code)
-
-    def test_lightroom_import_validates_payload(self, edition_client):
-        resp = edition_client.post(
-            '/api/lightroom/import',
-            json={'format': 'facet-lightroom-state', 'version': 1, 'photos': []},
-        )
-        assert _is_acceptable(resp.status_code)
 
     def test_immich_webhook_disabled_returns_404(self, client):
         # immich.webhook.token_env is unset in the test config, so the

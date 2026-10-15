@@ -4,16 +4,20 @@
 photos_fts table and every index group but the photos ``INDEXES``; it is quick, and on
 a current schema it takes no write lock, so it runs before the viewer serves.
 
-The gallery covering indexes are minutes of write-locked work per index on a large
-library (13 min in all on a 130k-photo library with a cold page cache), so
-``PhotoIndexBuild`` builds the missing ones on a daemon thread while the viewer
-already answers requests. The thread takes ``facet.LibraryLock`` (origin ``viewer``)
-like every CLI job: a scan started meanwhile fails fast with "a maintenance is already
-running" instead of timing out on ``database is locked``, and with ``--workers N``
-exactly one worker builds while the others serve. Shutdown calls ``stop``, which
-interrupts the CREATE INDEX in progress (``sqlite3.Connection.interrupt``) and joins
-the thread; each index is its own transaction, so only the one in progress is rolled
-back and the next start resumes from there.
+The gallery covering indexes are seconds to minutes of write-locked work per index on
+a large library (76 s for ``idx_gallery_aggregate`` alone on a 130k-photo library with
+a partly cold page cache), so ``PhotoIndexBuild`` builds the missing ones on a daemon
+thread while the viewer already answers reads. Writes cannot proceed while an index is
+written: they wait out ``busy_timeout`` and are answered 503 ``library_busy``
+(api/__init__.py), and ``index_build_status`` tells ``/health`` and the write-retry
+decorator that the build runs. The thread takes ``facet.LibraryLock`` (origin
+``viewer``) like every CLI job: a scan started meanwhile fails fast with "a maintenance
+is already running" instead of timing out on ``database is locked``, and with
+``--workers N`` exactly one worker builds while the others serve. Shutdown calls
+``stop``, which interrupts the CREATE INDEX in progress
+(``sqlite3.Connection.interrupt``) and joins the thread; each index is its own
+transaction, so only the one in progress is rolled back and the next start resumes
+from there.
 """
 
 import logging
@@ -29,10 +33,38 @@ DEFERRED = 'deferred'
 INTERRUPTED = 'interrupted'
 FAILED = 'failed'
 
+# What /health reports, per run() result. ``building`` is set by start(), before the
+# thread runs, so no request can see a stale ``ready`` while the check is pending.
+STATE_BUILDING = 'building'
+STATE_READY = 'ready'
+STATE_DEFERRED = 'deferred'
+STATE_FAILED = 'failed'
+STATE_STOPPED = 'stopped'
+_STATE_OF_RESULT = {
+    BUILT: STATE_READY, CURRENT: STATE_READY, DEFERRED: STATE_DEFERRED,
+    FAILED: STATE_FAILED, INTERRUPTED: STATE_STOPPED,
+}
+
 # Re-interrupt period while stop() waits: sqlite3_interrupt() is a no-op when issued
 # while no statement runs, so a CREATE INDEX that starts right after it is caught by
 # the next one.
 _INTERRUPT_PERIOD_SECONDS = 0.1
+
+# The process-wide build status: one lifespan, one build. A process that never
+# started a build (a CLI, a test app without lifespan) has nothing pending.
+_status_lock = threading.Lock()
+_status = {'state': STATE_READY, 'done': 0, 'total': 0}
+
+
+def index_build_status() -> dict:
+    """``{'state': building|ready|deferred|failed|stopped, 'done': k, 'total': n}``."""
+    with _status_lock:
+        return dict(_status)
+
+
+def _set_status(**fields):
+    with _status_lock:
+        _status.update(fields)
 
 
 def migrate_schema_at_startup(db_path) -> bool:
@@ -50,8 +82,12 @@ def _describe(names):
     return ', '.join(names)
 
 
+def _is_interrupt(ex) -> bool:
+    return isinstance(ex, sqlite3.OperationalError) and "interrupt" in str(ex).lower()
+
+
 class PhotoIndexBuild:
-    """Build the missing photos ``INDEXES`` (and their ANALYZE) under the library lock.
+    """Build the missing photos ``INDEXES`` (and the ANALYZE) under the library lock.
 
     ``run`` is the synchronous body and returns one of ``BUILT``, ``CURRENT``,
     ``DEFERRED``, ``INTERRUPTED`` or ``FAILED``; ``start`` runs it on a daemon thread
@@ -65,17 +101,24 @@ class PhotoIndexBuild:
         self._conn = None
         self._conn_lock = threading.Lock()
         self._thread = None
+        self._done = 0
+        self._total = 0
 
     # -- thread control --------------------------------------------------------------
 
     def start(self):
+        _set_status(state=STATE_BUILDING, done=0, total=0)
         self._thread = threading.Thread(target=self._thread_main, daemon=True,
                                         name="photo-index-build")
         self._thread.start()
         return self
 
     def _thread_main(self):
-        self.result = self.run()
+        try:
+            self.result = self.run()
+        finally:
+            _set_status(state=_STATE_OF_RESULT.get(self.result, STATE_FAILED),
+                        done=self._done, total=self._total)
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -130,6 +173,10 @@ class PhotoIndexBuild:
         finally:
             self._close(conn)
 
+    def _progress(self, done, total):
+        self._done, self._total = done, total
+        _set_status(done=done, total=total)
+
     def run(self) -> str:
         # Lazy, like api/routers/scan.py: importing facet pulls in the scoring stack,
         # which the API process otherwise avoids until a route needs it.
@@ -152,7 +199,14 @@ class PhotoIndexBuild:
                 return self._build()
             finally:
                 lock.release()
-        except Exception:
+        except Exception as ex:
+            # Any statement of the thread can be the one stop()'s interrupt lands on,
+            # the read-only probes included: that is a shutdown, never a failure.
+            if self._stop.is_set() and _is_interrupt(ex):
+                logger.info(
+                    "Gallery index build stopped by shutdown after %d of %d index(es); "
+                    "the next start resumes", self._done, self._total)
+                return INTERRUPTED
             logger.warning("Gallery index build failed", exc_info=True)
             return FAILED
 
@@ -162,33 +216,20 @@ class PhotoIndexBuild:
             photos_need_analyze,
         )
         conn = self._open()
-        missing = []
         try:
-            try:
-                missing = [name for name, _, _ in missing_photo_indexes(conn)]
-                if not missing and not photos_need_analyze(conn):
-                    return CURRENT
-                started = time.monotonic()
-                if missing:
-                    logger.info("Building %d missing gallery index(es) in the background "
-                                "while the viewer serves: %s", len(missing),
-                                _describe(missing))
-                built = create_photo_indexes(conn, should_stop=self._stop.is_set)
-                if self._stop.is_set():
-                    raise sqlite3.OperationalError("interrupted")
-                analyzed = analyze_photos_if_unanalyzed(conn, should_stop=self._stop.is_set)
-                if self._stop.is_set():
-                    raise sqlite3.OperationalError("interrupted")
-            except sqlite3.OperationalError as ex:
-                if self._stop.is_set() and "interrupt" in str(ex).lower():
-                    # From the database: an interrupt inside create_photo_indexes never
-                    # returns its list of finished indexes.
-                    finished = max(len(missing) - len(missing_photo_indexes(conn)), 0)
-                    logger.info(
-                        "Gallery index build stopped by shutdown after %d of %d index(es); "
-                        "the next start resumes", finished, len(missing))
-                    return INTERRUPTED
-                raise
+            missing = [name for name, _, _ in missing_photo_indexes(conn)]
+            self._progress(0, len(missing))
+            if not missing and not photos_need_analyze(conn):
+                return CURRENT
+            started = time.monotonic()
+            if missing:
+                logger.info("Building %d missing gallery index(es) in the background "
+                            "while the viewer serves: %s", len(missing), _describe(missing))
+            built = create_photo_indexes(conn, should_stop=self._stop.is_set,
+                                         on_built=self._progress)
+            if self._stop.is_set():
+                raise sqlite3.OperationalError("interrupted")
+            analyzed = analyze_photos_if_unanalyzed(conn)
             logger.info("Gallery indexes ready: %d built in %.1f s%s", len(built),
                         time.monotonic() - started, ", photos analyzed" if analyzed else "")
             return BUILT
@@ -226,15 +267,14 @@ class PhotoIndexBuild:
             if sibling_viewer:
                 # The building worker analyzes once its indexes are in.
                 return DEFERRED
-            # Statistics need no library lock: one short write per index, so a scan
-            # holding the lock waits at most about 0.2 s per statement.
+            # Statistics need no library lock. The one ANALYZE statement holds the
+            # write lock for its whole run (1.2 s measured on a 130k-photo library
+            # with a warm page cache); a write waits that out within busy_timeout.
             try:
-                if analyze_photos_if_unanalyzed(conn, should_stop=self._stop.is_set):
+                if analyze_photos_if_unanalyzed(conn):
                     logger.info("Photos analyzed for the query planner")
             except sqlite3.OperationalError as err:
                 text = str(err).lower()
-                if self._stop.is_set() and "interrupt" in text:
-                    return INTERRUPTED
                 if "locked" not in text and "busy" not in text:
                     raise
                 logger.info("Planner statistics not refreshed at start-up: the database "

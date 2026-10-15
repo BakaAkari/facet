@@ -488,6 +488,7 @@
     "edition_expired": "编辑模式已失效，请解锁编辑模式后重试",
     "server_error": "服务器出错，请重试",
     "action_failed": "操作失败，已恢复原状",
+    "library_busy": "图库正忙，很可能正在完成一次性升级，暂时无法保存更改，请稍后重试",
     "server_detail": "服务器提示："
   },
   "language": {

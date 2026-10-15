@@ -717,11 +717,13 @@ def test_empty_photos_table_is_never_analyzed(tmp_path):
     init_database(db_path)
     statements = _traced_init(db_path)
     assert not any(s.startswith("ANALYZE") for s in statements)
-    # A fresh init of a populated DB with no stats does analyze (the gate is not dead).
+    # A fresh init of a populated DB with no stats does analyze (the gate is not dead),
+    # in one statement: per-index statements wait writers just as long (M1).
     with sqlite3.connect(db_path) as conn:
         conn.execute("INSERT INTO photos (path, filename) VALUES ('/a.jpg', 'a.jpg')")
         conn.commit()
-    assert any(s.startswith("ANALYZE") for s in _traced_init(db_path))
+    analyzes = [s for s in _traced_init(db_path) if s.startswith("ANALYZE")]
+    assert analyzes == ["ANALYZE photos"]
 
 
 def test_second_init_creates_nothing(tmp_path, caplog):

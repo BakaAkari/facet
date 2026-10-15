@@ -9,7 +9,6 @@ Or directly with uvicorn:
     uvicorn api:create_app --factory --reload --port 5000
 """
 
-import logging
 import os
 import sys
 import argparse
@@ -18,41 +17,6 @@ import argparse
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
-
-from config_resolve import load_resolved  # noqa: E402 - needs _script_dir on sys.path
-
-
-def _configure_logging():
-    """Set up structured logging. Level comes from (in priority order):
-    1. FACET_LOG_LEVEL env var
-    2. scoring_config.json log_level field
-    3. Default: INFO
-
-    The config comes from ``config_resolve`` rather than a ``ScoringConfig``:
-    this runs before ``logging.basicConfig``, and ``config/__init__.py`` imports
-    ``config.percentile_normalizer``, which imports ``db`` -- the whole database
-    layer, pulled in to read one string. ``config_resolve`` is stdlib-only and
-    reads the shipped defaults too, so a log level left at its default is still
-    found in an install whose own config file only overrides three keys.
-    """
-    level_name = os.environ.get("FACET_LOG_LEVEL")
-    if not level_name:
-        try:
-            level_name = load_resolved().get("log_level")
-        except Exception:
-            pass
-    level_name = (level_name or "INFO").upper()
-    level = getattr(logging, level_name, logging.INFO)
-
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    # Quiet noisy third-party loggers
-    for name in ("urllib3", "PIL", "matplotlib", "httpcore"):
-        logging.getLogger(name).setLevel(logging.WARNING)
-
 
 def main():
     parser = argparse.ArgumentParser(description='Facet API Server')
@@ -63,7 +27,12 @@ def main():
     parser.add_argument('--workers', type=int, default=1, help='Number of workers (production)')
     args = parser.parse_args()
 
-    _configure_logging()
+    from api import CONFIGURE_LOGGING_ENV, configure_logging
+    configure_logging()
+    # uvicorn serves from processes it spawns (each --workers worker, the --reload
+    # child); they inherit the environment, and the app factory configures their
+    # logging from this flag, so the app's INFO lines reach the log there too.
+    os.environ[CONFIGURE_LOGGING_ENV] = "1"
 
     import uvicorn
 

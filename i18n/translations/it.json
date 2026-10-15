@@ -488,6 +488,7 @@
     "edition_expired": "La modalità di modifica non è più attiva - sbloccala e riprova",
     "server_error": "Errore del server — riprovare",
     "action_failed": "Azione non riuscita — modifica annullata",
+    "library_busy": "La libreria è occupata, probabilmente per un aggiornamento una tantum — al momento le modifiche non possono essere salvate; riprova tra un momento",
     "server_detail": "Messaggio del server:"
   },
   "language": {

@@ -502,6 +502,7 @@ export const I18N = {
     edition_expired: "errors.edition_expired",
     server_error: "errors.server_error",
     action_failed: "errors.action_failed",
+    library_busy: "errors.library_busy",
     server_detail: "errors.server_detail",
   },
   language: {

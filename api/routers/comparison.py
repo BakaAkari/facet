@@ -270,10 +270,11 @@ async def api_download_single(
 
     # --- Darktable profile export ---
     if type == 'darktable':
-        raw_path = find_companion_raw(real_disk)
+        raw_path = await asyncio.to_thread(find_companion_raw, real_disk)
         if not raw_path:
             # Fall back to original when no RAW companion exists
-            return _serve_original(real_disk, db_path, quality, sequence_kind)
+            return await asyncio.to_thread(
+                _serve_original, real_disk, db_path, quality, sequence_kind)
 
         try:
             jpeg_bytes = await convert_raw_darktable_async(raw_path, profile, quality)
@@ -293,9 +294,10 @@ async def api_download_single(
 
     # --- RAW file download ---
     if type == 'raw':
-        raw_path = find_companion_raw(real_disk)
+        raw_path = await asyncio.to_thread(find_companion_raw, real_disk)
         if not raw_path:
-            return _serve_original(real_disk, db_path, quality, sequence_kind)
+            return await asyncio.to_thread(
+                _serve_original, real_disk, db_path, quality, sequence_kind)
 
         return FileResponse(
             raw_path,
@@ -304,7 +306,8 @@ async def api_download_single(
         )
 
     # --- Original file download ---
-    return _serve_original(real_disk, db_path, quality, sequence_kind)
+    # rawpy decodes a standalone RAW here: seconds of CPU, so off the event loop.
+    return await asyncio.to_thread(_serve_original, real_disk, db_path, quality, sequence_kind)
 
 
 def _serve_original(real_disk: str, db_path: str, quality: int,
@@ -459,7 +462,7 @@ async def api_update_weights(
             backup=body.modifiers is not None or body.filters is not None,
         )
 
-        reload_config()
+        await asyncio.to_thread(reload_config)  # re-reads the config and secret files
         invalidate_stats_cache()
 
         result = {

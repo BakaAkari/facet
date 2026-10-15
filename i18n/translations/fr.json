@@ -488,6 +488,7 @@
     "edition_expired": "Le mode édition n'est plus actif - déverrouillez Édition et réessayez",
     "server_error": "Erreur serveur — veuillez réessayer",
     "action_failed": "Échec de l'action — modification annulée",
+    "library_busy": "La bibliothèque est occupée, sans doute par une mise à niveau ponctuelle — les modifications ne peuvent pas être enregistrées pour l'instant ; réessayez dans un moment",
     "server_detail": "Message du serveur :"
   },
   "language": {

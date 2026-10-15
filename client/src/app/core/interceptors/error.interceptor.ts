@@ -5,7 +5,7 @@ import { catchError, throwError } from 'rxjs';
 import { AuthService } from '../services/auth.service';
 import { I18nService } from '../services/i18n.service';
 import { I18N } from '../i18n/keys';
-import { extractErrorDetail } from '../utils/http-error.util';
+import { extractErrorDetail, isLibraryBusyError } from '../utils/http-error.util';
 
 const CLIENT_ERRORS_URL = '/api/client-errors';
 
@@ -63,6 +63,13 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
             { duration: detail ? 8000 : (lostEdition ? 6000 : 3000) },
           );
         });
+      } else if (isLibraryBusyError(error)) {
+        // Not a fault: another writer -- most often the one-time gallery index
+        // build after an upgrade -- holds the library, so nothing is reported as
+        // a crash. Opened on the next task, after the caller's own error handling
+        // (an optimistic revert and its generic "action failed" toast) has run, so
+        // that toast cannot replace the one that says why and what to do.
+        setTimeout(() => snackBar.open(i18n.t(I18N.errors.library_busy), '', { duration: 6000 }));
       } else if (error.status >= 500) {
         snackBar.open(i18n.t(I18N.errors.server_error), '', { duration: 3000 });
         if (!isCrashReportUrl(req.url)) {

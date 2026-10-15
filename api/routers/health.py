@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -56,10 +57,32 @@ def _sanitize_log_field(value: str | None) -> str:
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health")
+class GalleryIndexStatus(BaseModel):
+    """The background gallery index build of this process (api/schema_startup.py).
+
+    ``building`` while the indexes are written: reads are served, writes are
+    refused with 503 ``library_busy`` while an index holds the write lock.
+    ``deferred`` when another job holds the library lock (with ``--workers N``,
+    the workers that do not build report it), ``stopped`` after a shutdown
+    interrupted the build. ``done`` of ``total`` counts the missing indexes this
+    start found.
+    """
+    state: Literal['building', 'ready', 'deferred', 'failed', 'stopped']
+    done: int
+    total: int
+
+
+class HealthResponse(BaseModel):
+    status: Literal['ok']
+    gallery_indexes: GalleryIndexStatus
+
+
+@router.get("/health", response_model=HealthResponse)
 def health():
-    """Liveness check — confirms the process is running."""
-    return {"status": "ok"}
+    """Liveness check — confirms the process is running, and reports the gallery
+    index build that follows an upgrade (in-process state, no database access)."""
+    from api.schema_startup import index_build_status
+    return {"status": "ok", "gallery_indexes": index_build_status()}
 
 
 @router.get("/ready")

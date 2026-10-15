@@ -416,6 +416,21 @@ def test_stop_before_the_thread_reaches_the_build_stops_it(tmp_path):
     assert not set(GALLERY_INDEXES) & _present_indexes(db)
 
 
+def test_an_interrupt_landing_on_the_read_only_probe_is_a_shutdown(tmp_path, caplog):
+    """M4: stop() re-interrupts every 0.1 s, so the interrupt can land on any statement
+    of the thread, the pending-work probe that runs before the build included. That is
+    a shutdown, never a failure with a traceback."""
+    db = _make_db(tmp_path, drop_gallery_indexes=True)
+    build = PhotoIndexBuild(db)
+    build._stop.set()
+    interrupted = sqlite3.OperationalError("interrupted")
+    with mock.patch("db.schema.missing_photo_indexes", side_effect=interrupted), \
+            caplog.at_level(logging.INFO, logger="api.schema_startup"):
+        assert build.run() == 'interrupted'
+    assert "stopped by shutdown" in caplog.text
+    assert "Gallery index build failed" not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Step 12: the shutdown checkpoint
 # ---------------------------------------------------------------------------

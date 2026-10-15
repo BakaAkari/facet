@@ -1349,14 +1349,15 @@ def missing_photo_indexes(conn):
     return [entry for entry in INDEXES if entry[0] not in existing]
 
 
-def create_photo_indexes(conn, should_stop=None):
+def create_photo_indexes(conn, should_stop=None, on_built=None):
     """Build every missing ``INDEXES`` entry, each its own autocommit statement.
 
     Logs one INFO line before each index and one after it. Each CREATE INDEX
     holds the write lock only for itself, and a run killed or interrupted
     (``sqlite3.Connection.interrupt``) mid-build keeps every index it finished.
     ``should_stop`` is checked before each index; when it returns True the build
-    stops there. Returns the names built.
+    stops there. ``on_built(done, total)`` is called after each finished index.
+    Returns the names built.
     """
     if conn.in_transaction:
         conn.commit()
@@ -1371,6 +1372,8 @@ def create_photo_indexes(conn, should_stop=None):
         conn.execute(f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({column_expr})')
         logger.info("Created index %s in %.1f s", idx_name, time.monotonic() - started)
         built.append(idx_name)
+        if on_built is not None:
+            on_built(position, len(missing))
     return built
 
 
@@ -1392,35 +1395,23 @@ def photos_need_analyze(conn):
     return bool(unanalyzed) and conn.execute("SELECT 1 FROM photos LIMIT 1").fetchone() is not None
 
 
-def analyze_photos_if_unanalyzed(conn, should_stop=None):
-    """Full statistics for every photos index when ``photos_need_analyze``; returns whether it ran.
+def analyze_photos_if_unanalyzed(conn):
+    """Full statistics for the photos table when ``photos_need_analyze``; returns whether it ran.
 
-    One ``ANALYZE <index>`` statement per index rather than one ``ANALYZE photos``:
-    the statistics are the same, but each statement holds the write lock only for
-    its own index (at most about 0.2 s on a 130k-photo library, against 1.4 to
-    3.3 s for the whole table in one statement), so a running scan's or the
-    viewer's own writes never wait long. Statistics are never sampled
-    (``PRAGMA analysis_limit``): on that library a sampled pass left the default
-    gallery count on a MULTI-INDEX OR plan, 0.5 s warm instead of 25 ms.
-
-    The ``ANALYZE_KEY_INDEXES`` go last, because they are what the gate reads: a
-    pass stopped part-way (``should_stop``, checked before each index, or an
-    interrupt) is redone in full by the next call.
+    One ``ANALYZE photos`` statement. Statistics are never sampled
+    (``PRAGMA analysis_limit``): on a 130k-photo library a sampled pass left the
+    default gallery count on a MULTI-INDEX OR plan, 0.5 s warm instead of 25 ms.
+    The statement holds the write lock for its whole run (about 1.2 s on that
+    library with a warm page cache); an interrupted one is rolled back and redone
+    by the next call.
     """
     if conn.in_transaction:
         conn.commit()
     if not photos_need_analyze(conn):
         return False
-    names = [r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'photos' "
-        "AND sql IS NOT NULL ORDER BY name")]
-    names.sort(key=lambda name: name in ANALYZE_KEY_INDEXES)
-    for name in names:
-        if should_stop is not None and should_stop():
-            return False
-        conn.execute(f"ANALYZE {name}")
-        if conn.in_transaction:
-            conn.commit()
+    conn.execute("ANALYZE photos")
+    if conn.in_transaction:
+        conn.commit()
     return True
 
 

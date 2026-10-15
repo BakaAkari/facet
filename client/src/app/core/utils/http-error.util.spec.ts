@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { extractErrorDetail } from './http-error.util';
+import { extractErrorDetail, isLibraryBusyError } from './http-error.util';
 
 describe('extractErrorDetail', () => {
   it('returns a string detail field', () => {
@@ -46,5 +46,19 @@ describe('extractErrorDetail', () => {
     const result = extractErrorDetail(error);
     expect(result!.length).toBeLessThan(400);
     expect(result!.endsWith('…')).toBe(true);
+  });
+});
+
+describe('isLibraryBusyError', () => {
+  it('matches the server 503 library_busy', () => {
+    const error = new HttpErrorResponse({ status: 503, error: { detail: 'library_busy' } });
+    expect(isLibraryBusyError(error)).toBe(true);
+  });
+
+  it('does not match another 503, or library_busy under another status', () => {
+    expect(isLibraryBusyError(new HttpErrorResponse({ status: 503, error: { detail: 'Service unavailable' } }))).toBe(false);
+    expect(isLibraryBusyError(new HttpErrorResponse({ status: 503 }))).toBe(false);
+    expect(isLibraryBusyError(new HttpErrorResponse({ status: 500, error: { detail: 'library_busy' } }))).toBe(false);
+    expect(isLibraryBusyError(null)).toBe(false);
   });
 });

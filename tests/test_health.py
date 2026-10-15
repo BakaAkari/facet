@@ -18,7 +18,19 @@ class TestHealthEndpoint:
     def test_liveness_returns_ok(self, client):
         resp = client.get("/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        # No build was started in this process (no lifespan): nothing pending.
+        assert resp.json() == {
+            "status": "ok",
+            "gallery_indexes": {"state": "ready", "done": 0, "total": 0},
+        }
+
+    def test_liveness_reports_a_running_gallery_index_build(self, client, monkeypatch):
+        from api import schema_startup
+        monkeypatch.setattr(schema_startup, "_status",
+                            {"state": "building", "done": 3, "total": 8})
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["gallery_indexes"] == {"state": "building", "done": 3, "total": 8}
 
 
 class TestSecurityHeaders:

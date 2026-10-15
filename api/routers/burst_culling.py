@@ -10,6 +10,7 @@ import json
 import logging
 import random
 import sqlite3
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -1156,11 +1157,42 @@ def _culling_sort_reverse(sort, direction):
 _culling_groups_cache: dict = {}
 _CULLING_GROUPS_CACHE_TTL = 45.0
 _CULLING_GROUPS_CACHE_MAX = 16
+# Handlers run on threadpool threads, so a GET can be computing the groups while
+# a confirm commits and invalidates. Each invalidation bumps the generation, and
+# a result is only stored when no invalidation ran since its computation began:
+# otherwise the GET would put back the set the confirm had just changed, and the
+# memo would serve it for the rest of its TTL.
+_culling_groups_lock = threading.Lock()
+_culling_groups_generation = 0
 
 
 def _invalidate_culling_groups_cache():
     """Drop the enriched culling-groups memo after a confirm changes the set."""
-    _culling_groups_cache.clear()
+    global _culling_groups_generation
+    with _culling_groups_lock:
+        _culling_groups_generation += 1
+        _culling_groups_cache.clear()
+
+
+def _cached_culling_groups(cache_key, now):
+    """``(groups or None, generation)``: the memoized set if still fresh, and the
+    generation a computation starting now must hand to ``_store_culling_groups``."""
+    with _culling_groups_lock:
+        cached = _culling_groups_cache.get(cache_key)
+        generation = _culling_groups_generation
+    if cached is not None and now - cached[0] < _CULLING_GROUPS_CACHE_TTL:
+        return cached[1], generation
+    return None, generation
+
+
+def _store_culling_groups(cache_key, now, groups, generation):
+    """Memoize ``groups`` unless the set was invalidated while they were computed."""
+    with _culling_groups_lock:
+        if generation != _culling_groups_generation:
+            return
+        if len(_culling_groups_cache) >= _CULLING_GROUPS_CACHE_MAX:
+            _culling_groups_cache.clear()
+        _culling_groups_cache[cache_key] = (now, groups)
 
 
 def _category_comparison_needs(conn):
@@ -1482,10 +1514,10 @@ def api_culling_groups(
                 # instead of re-materializing + re-scoring every group per page.
                 cache_key = (round(similarity_threshold, 3), seed, sort, direction, exclude_rejected,
                              user_id, album_id, date_from, date_to, group_by)
-                cached = _culling_groups_cache.get(cache_key)
                 now = time.time()
-                if cached is not None and now - cached[0] < _CULLING_GROUPS_CACHE_TTL:
-                    all_groups = cached[1]
+                cached_groups, generation = _cached_culling_groups(cache_key, now)
+                if cached_groups is not None:
+                    all_groups = cached_groups
                 elif group_by in _KEEP_WHOLE_KINDS:
                     # Brackets and panoramas are each their own granularity, and
                     # never merged into `all`: their frames were shot to be
@@ -1513,9 +1545,7 @@ def api_culling_groups(
                                     reverse=_culling_sort_reverse(sort, direction))
                     if sort == 'chronological':
                         _order_group_photos_by_capture(all_groups)
-                    if len(_culling_groups_cache) >= _CULLING_GROUPS_CACHE_MAX:
-                        _culling_groups_cache.clear()
-                    _culling_groups_cache[cache_key] = (now, all_groups)
+                    _store_culling_groups(cache_key, now, all_groups, generation)
                 else:
                     burst_groups = []
                     if group_by in ('all', 'burst'):
@@ -1555,9 +1585,7 @@ def api_culling_groups(
                     if sort == 'chronological':
                         _order_group_photos_by_capture(all_groups)
 
-                    if len(_culling_groups_cache) >= _CULLING_GROUPS_CACHE_MAX:
-                        _culling_groups_cache.clear()
-                    _culling_groups_cache[cache_key] = (now, all_groups)
+                    _store_culling_groups(cache_key, now, all_groups, generation)
 
             total_groups = len(all_groups)
             total_pages, offset = paginate(total_groups, page, per_page)

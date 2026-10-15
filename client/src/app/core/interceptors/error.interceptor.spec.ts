@@ -209,6 +209,47 @@ describe('errorInterceptor', () => {
     );
   });
 
+  describe('503 library_busy', () => {
+    const busy = () => new HttpErrorResponse({
+      status: 503, url: '/api/photo/set_rating', error: { detail: 'library_busy' },
+    });
+
+    it('explains the refusal instead of reporting a server error, and sends no crash report', async () => {
+      next.mockReturnValue(throwError(() => busy()));
+      const seen: unknown[] = [];
+      runInterceptor(new HttpRequest('POST', '/api/photo/set_rating', {})).subscribe({ error: e => seen.push(e) });
+
+      await vi.waitFor(() =>
+        expect(snackBarMock.open).toHaveBeenCalledWith('errors.library_busy', '', { duration: 6000 }),
+      );
+      expect(seen).toHaveLength(1);
+      expect(snackBarMock.open).not.toHaveBeenCalledWith('errors.server_error', '', expect.anything());
+      expect(backendMock.handle).not.toHaveBeenCalled();
+    });
+
+    it("opens after the caller's generic failure toast, so that toast cannot replace it", async () => {
+      next.mockReturnValue(throwError(() => busy()));
+      runInterceptor(new HttpRequest('POST', '/api/photo/set_rating', {})).subscribe({
+        // What an optimistic write does on failure: revert, then a generic toast.
+        error: () => queueMicrotask(() => snackBarMock.open('errors.action_failed', '', { duration: 3000 })),
+      });
+
+      await vi.waitFor(() => expect(snackBarMock.open).toHaveBeenCalledTimes(2));
+      expect(snackBarMock.open.mock.calls.map(call => call[0])).toEqual(['errors.action_failed', 'errors.library_busy']);
+    });
+
+    it('keeps a 503 without that detail on the server-error path', () =>
+      new Promise<void>((resolve) => {
+        next.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 503, url: '/api/photos' })));
+        runInterceptor(new HttpRequest('GET', '/api/photos')).subscribe({
+          error: () => {
+            expect(snackBarMock.open).toHaveBeenCalledWith('errors.server_error', '', { duration: 3000 });
+            resolve();
+          },
+        });
+      }));
+  });
+
   it('shows snackbar on 500 server error', () =>
     new Promise<void>((resolve) => {
       const req = new HttpRequest('GET', '/api/photos');

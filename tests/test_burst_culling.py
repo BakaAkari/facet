@@ -1446,3 +1446,85 @@ class TestPanoramaGroupsCarryTheOverride:
         conn = self._db([(f'/p{i}.jpg', 'hdr_panorama', '/p0.jpg') for i in range(3)])
         photos = self._fetch(conn)[0]['photos']
         assert {p['sequence_override'] for p in photos} == {'hdr_panorama'}
+
+
+class TestCullingGroupsMemoAcrossConfirm:
+    """Handlers run on threadpool threads, so a GET can be computing the culling
+    groups while a confirm commits. The GET must not then memoize the set the
+    confirm just changed: every later GET would be served it until the TTL ran out.
+    """
+
+    def test_a_confirm_during_a_get_is_not_undone_by_the_memo(self):
+        import threading
+        from fastapi.testclient import TestClient
+        from api import create_app
+        from api.auth import CurrentUser, get_optional_user, require_edition
+        from api.routers.burst_culling import _invalidate_culling_groups_cache
+
+        conn = TestConfirmBracketGroup._db()
+        app = create_app()
+        fake_user = CurrentUser(user_id="test", edition_authenticated=True)
+        app.dependency_overrides[get_optional_user] = lambda: fake_user
+        app.dependency_overrides[require_edition] = lambda: fake_user
+        client = TestClient(app)
+
+        computing = threading.Event()
+        release = threading.Event()
+        reads = []
+
+        def fetch_bursts(conn, *args, **kwargs):
+            # Read the set as it stands when the computation starts, as the real
+            # fetch does; the first GET then waits until the confirm has run.
+            unreviewed = [r['path'] for r in conn.execute(
+                "SELECT path FROM photos WHERE sequence_kind = 'bracket' AND is_rejected = 0"
+            ).fetchall()]
+            reads.append(unreviewed)
+            if len(reads) == 1:
+                computing.set()
+                assert release.wait(10)
+            if len(unreviewed) < 2:
+                return []
+            return [{"group_id": 1, "type": "burst", "reason": "burst", "photos": [],
+                     "best_path": None, "count": len(unreviewed), "category": None}]
+
+        responses = {}
+
+        def first_get():
+            responses['first'] = client.get("/api/culling-groups?group_by=burst")
+
+        _invalidate_culling_groups_cache()
+        try:
+            with (
+                mock.patch("api.routers.burst_culling.get_db", lambda: _cm(conn)),
+                mock.patch("api.routers.burst_culling.get_visibility_clause",
+                           return_value=("1=1", [])),
+                mock.patch("api.db_helpers.get_visibility_clause", return_value=("1=1", [])),
+                mock.patch("api.db_helpers.is_multi_user_enabled", return_value=False),
+                mock.patch("api.routers.burst_culling._fetch_unreviewed_burst_groups",
+                           side_effect=fetch_bursts),
+                mock.patch("api.routers.burst_culling.attach_keeper_probs"),
+            ):
+                getter = threading.Thread(target=first_get)
+                getter.start()
+                assert computing.wait(10)
+                confirm = client.post("/api/culling-groups/confirm", json={
+                    "group_id": 1, "type": "bracket",
+                    "paths": ["/k0.jpg", "/k1.jpg", "/k2.jpg"], "keep_paths": ["/k1.jpg"],
+                })
+                release.set()
+                getter.join(10)
+                assert not getter.is_alive()
+                after = client.get("/api/culling-groups?group_by=burst")
+        finally:
+            release.set()
+            _invalidate_culling_groups_cache()
+            app.dependency_overrides.clear()
+
+        assert confirm.status_code == 200, confirm.text
+        assert confirm.json()["rejected"] == 2
+        # The GET that overlapped the confirm answers with what it read.
+        assert responses['first'].status_code == 200
+        assert responses['first'].json()["total_groups"] == 1
+        # The next GET recomputes from the confirmed set instead of the memo.
+        assert len(reads) == 2
+        assert after.json()["total_groups"] == 0

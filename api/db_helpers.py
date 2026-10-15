@@ -3,6 +3,7 @@ Database helper functions for the FastAPI API server.
 
 """
 
+import asyncio
 import functools
 import hashlib
 import logging
@@ -17,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException, Query
+from fastapi import Query
 
 from api.config import (
     _existing_columns_cache, _existing_columns_lock,
@@ -46,12 +47,21 @@ logger = logging.getLogger("facet.api.db_helpers")
 # a hard error into a slightly slower success.
 RETRY_ATTEMPTS = 4
 RETRY_BASE_DELAY = 0.05
-# Total wall clock a retried handler may spend, attempts notwithstanding. Every
-# attempt already waits out the connection's own `busy_timeout` (5s), so an
-# attempt count alone let one sync handler hold one of the 40 anyio threadpool
-# tokens for ~20s before answering 503. Whichever limit is reached first ends
-# the retries, so a burst that clears instantly still gets all its attempts.
+# Wall clock the RETRIES may spend, counted from the first lock error, attempts
+# notwithstanding. The first attempt has already waited out the connection's own
+# `busy_timeout` (5 s) when it reports the lock, so a budget counted from the
+# call's start was spent before the first retry and no retry ever ran. Each retry
+# can wait out busy_timeout again, so an attempt count alone would let one sync
+# handler hold one of the 40 anyio threadpool tokens for ~20 s before answering
+# 503. Whichever limit is reached first ends the retries, so a burst that clears
+# instantly still gets all its attempts.
 RETRY_BUDGET_SECONDS = 2.5
+
+# The stable `detail` code of the 503 answered when SQLite reports the database
+# locked or busy past every wait (api/__init__.py maps any such error escaping a
+# route to it). The client keys its "try again in a moment" message on it.
+LIBRARY_BUSY_DETAIL = 'library_busy'
+LIBRARY_BUSY_RETRY_AFTER_SECONDS = 5
 
 
 def is_locked_error(ex) -> bool:
@@ -76,40 +86,94 @@ def retry_on_locked(attempts=RETRY_ATTEMPTS, base_delay=RETRY_BASE_DELAY,
     that is not a lock error propagates untouched on the first raise.
 
     Retrying stops at ``attempts`` OR once ``budget_seconds`` of wall clock is
-    spent, whichever comes first — each attempt can itself sit out the
-    connection's ``busy_timeout``, so an attempt count alone does not bound how
-    long the caller's threadpool token is held. Giving up yields 503 +
-    Retry-After — the write is still possible, the server is merely busy, so it
-    is not a 500.
+    spent after the first lock error, whichever comes first — each attempt can
+    itself sit out the connection's ``busy_timeout``, so an attempt count alone
+    does not bound how long the caller's threadpool token is held. No retry is
+    made while this process builds its gallery indexes: one index is seconds to
+    minutes of write lock, so a retry would only hold the token longer. Giving
+    up re-raises the lock error, which the app's handler answers with 503
+    ``library_busy`` + Retry-After — the write is still possible, the server is
+    merely busy, so it is not a 500.
     """
     def decorate(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            started = time.monotonic()
+            first_lock_error_at = None
             for attempt in range(attempts):
                 try:
                     return fn(*args, **kwargs)
                 except sqlite3.OperationalError as ex:
                     if not is_locked_error(ex):
                         raise
+                    now = time.monotonic()
+                    if first_lock_error_at is None:
+                        first_lock_error_at = now
                     # Exponential backoff, jittered so parallel writers from the
                     # same burst don't line up and collide again in lockstep.
                     delay = base_delay * (2 ** attempt) * (0.5 + random.random())
-                    elapsed = time.monotonic() - started
-                    if attempt == attempts - 1 or elapsed + delay >= budget_seconds:
-                        logger.warning(
-                            "%s still blocked by a database lock after %d attempts "
-                            "in %.2fs, giving up",
-                            fn.__name__, attempt + 1, elapsed, exc_info=True,
-                        )
-                        raise HTTPException(
-                            status_code=503,
-                            detail='Database is busy, please retry',
-                            headers={'Retry-After': '1'},
-                        ) from ex
+                    retrying_for = now - first_lock_error_at
+                    if (attempt == attempts - 1
+                            or retrying_for + delay >= budget_seconds
+                            or gallery_index_build_running()):
+                        raise
                     time.sleep(delay)
         return wrapper
     return decorate
+
+
+def gallery_index_build_running() -> bool:
+    """True while this process builds the gallery indexes (api/schema_startup.py)."""
+    from api.schema_startup import index_build_status
+    return index_build_status()['state'] == 'building'
+
+
+def _schema_caches_warm(now: float) -> bool:
+    """True when no cached schema probe would open a connection for a while yet."""
+    from api import config as _config_mod
+    with _existing_columns_lock:
+        if _existing_columns_cache is None:
+            return False
+    with _photo_tags_lock:
+        # Refreshed at half its lifetime, so it cannot expire between this check
+        # and the handler that reads it.
+        if (_photo_tags_available is None
+                or now - _config_mod._photo_tags_checked_at >= PHOTO_TAGS_CACHE_TTL / 2):
+            return False
+    if str(DEFAULT_DB_PATH) not in _manual_tags_present:
+        return False
+    from api.change_token import change_token_sentinel_open
+    return change_token_sentinel_open(DEFAULT_DB_PATH)
+
+
+def _warm_schema_caches() -> None:
+    from api import config as _config_mod
+    get_existing_columns()
+    with _photo_tags_lock:
+        if time.monotonic() - _config_mod._photo_tags_checked_at >= PHOTO_TAGS_CACHE_TTL / 2:
+            # Expire it so the call below re-probes instead of answering from cache.
+            _config_mod._photo_tags_checked_at = 0.0
+    is_photo_tags_available()
+    is_manual_tags_available()
+    db_change_token(DEFAULT_DB_PATH)
+
+
+async def warm_schema_caches() -> None:
+    """App-wide dependency: fill the cached schema probes on a worker thread.
+
+    The column list, the photo_tags and photo_manual_tags probes and the
+    change-token sentinel are read synchronously deep inside async handlers
+    (``build_photo_select_columns``, ``_add_tag_filter``, the count-cache key);
+    a cold or expiring entry would open a SQLite connection on the event loop
+    and stall every request in flight. Warm, this costs a few lookups.
+    """
+    if _schema_caches_warm(time.monotonic()):
+        return
+    try:
+        await asyncio.to_thread(_warm_schema_caches)
+    except Exception:
+        # Never fail a request (/health included) over a warm-up: the handler that
+        # needs a probe runs it itself and reports its own error.
+        logger.debug("Warming the schema caches failed", exc_info=True)
 
 
 def trigger_auto_retrain(db_path, user_id, added=1, conn=None):
