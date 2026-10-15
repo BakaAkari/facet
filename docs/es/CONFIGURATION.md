@@ -627,7 +627,7 @@ Cuando `vram_profile` es `"auto"` (por defecto), el sistema detecta la VRAM disp
 | ≥ 6GB | `8gb` |
 | Sin GPU | `legacy` (usa la RAM del sistema) |
 
-**Las tarjetas de 10-14GB pueden optar por el conjunto completo de funciones.** La detección automática no cambia: por debajo de 14GB sigue seleccionando `8gb`. En su lugar, una tarjeta de 10-14GB puede ejecutar el perfil `16gb` (embeddings SigLIP 2, TOPIQ, etiquetado con Qwen3.5-2B, Q-ReAlign, saliencia) definiendo `"vram_profile": "16gb"` o `FACET_VRAM_PROFILE=16gb`. El planificador de pases divide entonces los modelos en tres pases que caben (consulta [Agrupación dinámica de pases](#agrupación-dinámica-de-pases)), la saliencia, que antes se quedaba sin memoria aquí, ahora dimensiona su lote según la VRAM libre, y una foto que aun así no puede puntuar guarda NULL y registra un ERROR en lugar de una puntuación neutra. **Cambiar una biblioteca `8gb` existente a `16gb` cambia el modelo de embeddings** (CLIP ViT-L-14 de 768 dimensiones → SigLIP 2 de 1152 dimensiones), por lo que la biblioteca mezclaría dos dimensiones de embedding: vuelve a escanearla o ejecuta `--recompute-embeddings` para volver a incrustarla. Consulta *Búsqueda semántica y una biblioteca incrustada con un perfil distinto* en [Modelos](#modelos) para saber cómo se comporta la búsqueda hasta entonces.
+**Las tarjetas de 10-14GB pueden optar por el conjunto completo de funciones.** La detección automática no cambia: por debajo de 14GB sigue seleccionando `8gb`. En su lugar, una tarjeta de 10-14GB puede ejecutar el perfil `16gb` (embeddings SigLIP 2, TOPIQ, etiquetado con Qwen3.5-2B, Q-ReAlign, saliencia) definiendo `"vram_profile": "16gb"` o `FACET_VRAM_PROFILE=16gb`. El planificador de pases divide entonces los modelos en cuatro pases que caben (tres en una tarjeta que informa de 11,8 GiB o más) (consulta [Agrupación dinámica de pases](#agrupación-dinámica-de-pases)), la saliencia, que antes se quedaba sin memoria aquí, ahora dimensiona su lote según la VRAM libre, y una foto que aun así no puede puntuar guarda NULL y registra un ERROR en lugar de una puntuación neutra. **Cambiar una biblioteca `8gb` existente a `16gb` cambia el modelo de embeddings** (CLIP ViT-L-14 de 768 dimensiones → SigLIP 2 de 1152 dimensiones), por lo que la biblioteca mezclaría dos dimensiones de embedding: vuelve a escanearla o ejecuta `--recompute-embeddings` para volver a incrustarla. Consulta *Búsqueda semántica y una biblioteca incrustada con un perfil distinto* en [Modelos](#modelos) para saber cómo se comporta la búsqueda hasta entonces.
 
 ---
 
@@ -797,16 +797,19 @@ El sistema monitoriza el uso de recursos y ajusta:
 
 Cuando la VRAM lo permite, varios modelos pequeños se ejecutan juntos:
 
-| VRAM | Pase 1 | Pase 2 | Pase 3 |
-|------|--------|--------|--------|
-| 8GB | CLIP + SAMP-Net + InsightFace | TOPIQ | - |
-| 12GB (perfil `16gb`, opcional) | Etiquetador Qwen3.5 + Q-ReAlign | SigLIP + saliencia + TOPIQ | TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace |
-| 16GB | Etiquetador Qwen3.5 + SigLIP + TOPIQ | Q-ReAlign + saliencia + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
-| 24GB+ | Todos los modelos juntos (monopase) | - | - |
+| VRAM | Pase 1 | Pase 2 | Pase 3 | Pase 4 |
+|---|---|---|---|---|
+| 8GB (perfil `8gb`) | CLIP | Q-ReAlign + saliencia | TOPIQ IAA + TOPIQ NR-Face + LIQE | SAMP-Net + InsightFace |
+| 12GB\* (perfil `16gb`, opcional) | Etiquetador Qwen3.5 + Q-ReAlign | SigLIP + saliencia + TOPIQ IAA | TOPIQ + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
+| 16GB (perfil `16gb`) | Etiquetador Qwen3.5 + SigLIP + TOPIQ | Q-ReAlign + saliencia + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace | - |
+| 24GB (perfil `24gb`) | Etiquetador Qwen3.5 4B + SigLIP + Q-ReAlign + saliencia | TOPIQ + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace | - | - |
+| 35GB+ (perfil `24gb`) | Todos los modelos juntos (monopase) | - | - | - |
 
-Las filas de 12GB y 16GB son la salida del planificador para el perfil `16gb`. Una tarjeta de 12GB no se selecciona automáticamente (consulta [Detección automática de VRAM](#detección-automática-de-vram)): necesita `"vram_profile": "16gb"` o `FACET_VRAM_PROFILE=16gb`.
+Las filas de 8GB, 12GB, 16GB y 24GB son la salida del planificador de pases para el perfil indicado, con una tarjeta que informa de 8,0, 11,7, 15,99 y 23,99 GiB de VRAM total; una tarjeta que informa de 34,8 GiB o más planifica un solo pase con el perfil `24gb` (fila 35GB+). El planificador reparte los modelos según su VRAM estimada en la VRAM total de la tarjeta menos 1,3 GiB, que reserva para la sobrecarga de CUDA y ONNX Runtime y para el escritorio. Una tarjeta de 12GB no se selecciona automáticamente (consulta [Detección automática de VRAM](#detección-automática-de-vram)): necesita `"vram_profile": "16gb"` o `FACET_VRAM_PROFILE=16gb`.
 
-Medido en una ejecución de 49 fotos con un límite estricto de 11,7 GiB sobre PyTorch, ONNX Runtime y la lectura de VRAM libre (RTX 4070 Ti SUPER): pico de VRAM de 9,06 GiB para toda la tarjeta, escritorio incluido (picos por pase de ~8,5, ~9,1 y ~3,9 GiB), tamaño de lote de saliencia 2 y resultados idénticos a una ejecución sin límite en 16 GiB (etiquetas 49/49, cajas de sujeto de saliencia 44 frente a 44, caras iguales). El tiempo total fue de 226 s frente a ~240 s sin límite. En la tarjeta de 16 GiB sin límite, el tamaño de lote de saliencia es 3.
+\* La fila de 12GB es el plan para una tarjeta que informa de 11,7 GiB. Una tarjeta de 12GB que informa de 11,8 GiB o más (por ejemplo, 11,99 GiB) planifica en cambio tres pases: etiquetador Qwen3.5 + Q-ReAlign; SigLIP + saliencia + TOPIQ; TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace.
+
+Medido en una ejecución de 49 fotos con un límite estricto de 11,7 GiB en PyTorch, ONNX Runtime y la lectura de VRAM libre (RTX 4070 Ti SUPER): el plan de cuatro pases terminó sin ningún error de memoria insuficiente, con un pico de VRAM de 9,74 GiB para toda la tarjeta, escritorio incluido (pase más pesado: SigLIP + saliencia + TOPIQ IAA), tamaño de lote de saliencia 2 y 246 s de duración; las etiquetas, los embeddings de 1152 dimensiones, los recuadros del sujeto (44/44) y las caras coincidieron con una ejecución sin límite.
 
 ### Opciones de CLI
 

@@ -178,7 +178,8 @@ Configuration:
                         help='Repair INTEGER columns whose stored value is a REAL (e.g. a '
                              'fractional EXIF ISO). Database-only, no image decode')
     db_group.add_argument('--score-topiq', action='store_true',
-                        help='Backfill TOPIQ quality scores from stored thumbnails (requires GPU)')
+                        help='Re-score TOPIQ quality (topiq_score) for every photo with a stored '
+                             'thumbnail (requires GPU); a photo TOPIQ cannot score keeps its stored value')
     db_group.add_argument('--recompute-iqa', action='store_true',
                         help='Recompute supplementary IQA metrics (TOPIQ IAA, NR-Face, LIQE) from stored thumbnails')
     db_group.add_argument('--detect-text', action='store_true',

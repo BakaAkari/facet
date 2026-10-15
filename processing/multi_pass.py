@@ -947,31 +947,52 @@ class ChunkedMultiPassProcessor:
                         on_error(path, model_name, f"required model pass failed: {model_name}: {e}")
 
     def _pass_pyiqa(self, scorer: Any, model_name: str, images: Dict, results: Dict):
-        """PyIQA pass: quality assessment using TOPIQ, HyperIQA, DBCNN, etc."""
+        """PyIQA pass: quality assessment using TOPIQ, HyperIQA, DBCNN, etc.
+
+        ``score_batch`` returns ``None`` for an image the model could not score.
+        That is never written as a value: a supplementary model leaves its key
+        unset (a restricted save then keeps the stored value, a full save stores
+        NULL); a primary model flags the photo ``SCAN_FAILED_KEY`` so it is
+        recorded in ``scan_failures``, skipped by the save and retried, instead
+        of being saved with a neutral score. An exception that escapes
+        ``score_batch`` is chunk-wide: swallowed for a supplementary model,
+        re-raised for a primary one so ``_process_chunk`` marks the chunk retryable.
+        """
         pil_imgs = [img['pil'] for img in images.values()]
         paths = list(images.keys())
+        supplementary = model_name in self.PYIQA_COLUMN_MAP
 
         try:
             scores = scorer.score_batch(pil_imgs)
 
-            # Supplementary models store to dedicated columns
-            if model_name in self.PYIQA_COLUMN_MAP:
-                column = self.PYIQA_COLUMN_MAP[model_name]
-                for i, path in enumerate(paths):
-                    results[path][column] = scores[i]
-            else:
-                # Primary quality model stores to aesthetic/quality_score. When
-                # that model is TOPIQ, also fill the dedicated topiq_score column
-                # (free — already computed) so the viewer's TOPIQ range filter
-                # works after a normal scan instead of only after --score-topiq.
-                for i, path in enumerate(paths):
-                    results[path]['aesthetic'] = scores[i]
+            for i, path in enumerate(paths):
+                score = scores[i]
+                if score is None:
+                    if not supplementary:
+                        results[path][SCAN_FAILED_KEY] = model_name
+                        on_error = getattr(self, 'on_error', None)
+                        if on_error:
+                            on_error(path, model_name,
+                                     f"required model pass failed: {model_name}: no score")
+                    continue
+                if supplementary:
+                    # Supplementary models store to dedicated columns
+                    results[path][self.PYIQA_COLUMN_MAP[model_name]] = score
+                else:
+                    # Primary quality model stores to aesthetic/quality_score. When
+                    # that model is TOPIQ, also fill the dedicated topiq_score column
+                    # (free — already computed) so the viewer's TOPIQ range filter
+                    # works after a normal scan instead of only after --score-topiq.
+                    results[path]['aesthetic'] = score
                     results[path]['scoring_model'] = model_name
-                    results[path]['quality_score'] = scores[i]
+                    results[path]['quality_score'] = score
                     if model_name == 'topiq':
-                        results[path]['topiq_score'] = scores[i]
+                        results[path]['topiq_score'] = score
         except Exception as e:
             licensing.reraise_if_refused()
+            if not supplementary:
+                # _process_chunk logs it and records the chunk retryable.
+                raise
             logger.error("PyIQA %s pass failed: %s", model_name, e)
 
     def _compute_aggregates(self, results: Dict, images: Dict):

@@ -213,21 +213,21 @@ class TestAestheticSelection:
 
 class TestPassGrouping:
     def test_group_passes_single_bin_when_capacity_ample(self, manager):
-        # Capacity = vram - 1.0 safety margin.
+        # Capacity = vram - 1.3 safety margin (18.7).
         bins = manager.group_passes_by_vram(['topiq', 'clip', 'samp_net'], 20.0)
         assert len(bins) == 1
         assert set(bins[0]) == {'topiq', 'clip', 'samp_net'}
 
     def test_group_passes_splits_when_capacity_tight(self, manager):
-        # clip (5) + insightface (2) + samp_net (2) = 9 GB; cap = 9-1 = 8 → split.
+        # clip (5) + insightface (2) + samp_net (2) = 9 GB; cap = 9-1.3 = 7.7 → split.
         bins = manager.group_passes_by_vram(['clip', 'insightface', 'samp_net'], 9.0)
         assert len(bins) >= 2
 
     def test_group_passes_first_fit_descending_order(self, manager):
         # Verify bin-packing is first-fit DECREASING by requirement.
-        # At vram=20, capacity = 20-1 = 19. vlm_tagger (18 GB) gets placed
-        # first; topiq (2 GB) tries to share its bin but 18+2=20 > 19, so
-        # it spills to a new bin. clip (5 GB) joins topiq (2+5=7 ≤ 19).
+        # At vram=20, capacity = 20-1.3 = 18.7. vlm_tagger (18 GB) gets placed
+        # first; topiq (2.5 GB) tries to share its bin but 18+2.5=20.5 > 18.7,
+        # so it spills to a new bin. clip (5 GB) joins topiq (2.5+5=7.5 ≤ 18.7).
         bins = manager.group_passes_by_vram(
             ['clip', 'vlm_tagger', 'topiq'], 20.0
         )
@@ -235,6 +235,29 @@ class TestPassGrouping:
         assert vlm_bin == ['vlm_tagger']
         other_bin = next(b for b in bins if 'vlm_tagger' not in b)
         assert set(other_bin) == {'clip', 'topiq'}
+
+    def test_the_cuda_margin_is_a_named_constant_of_1_3_gib(self):
+        from models.model_manager import ModelManager
+        assert ModelManager._CUDA_PASS_MARGIN_GB == 1.3
+
+    def test_a_roster_that_only_fits_under_the_old_margin_now_splits(self, manager):
+        # clip (5) + saliency (3) + topiq (2.5) = 10.5 declared. A card reporting
+        # 11.7 GiB leaves 10.4 after the 1.3 margin (10.7 at the old 1.0 margin).
+        roster = ['clip', 'saliency', 'topiq']
+        assert len(manager.group_passes_by_vram(roster, 11.7)) == 2
+        # 11.99 GiB leaves 10.69, so the whole roster still shares one pass.
+        assert len(manager.group_passes_by_vram(roster, 11.99)) == 1
+
+    def test_the_16gb_roster_on_a_11_7_gib_card_plans_four_passes(self, manager):
+        roster = ['qwen3_5_tagger', 'qrealign', 'clip', 'saliency', 'topiq_iaa',
+                  'topiq', 'topiq_nr_face', 'liqe', 'samp_net', 'insightface']
+        bins = manager.group_passes_by_vram(roster, 11.7)
+        assert [set(b) for b in bins] == [
+            {'qwen3_5_tagger', 'qrealign'},
+            {'clip', 'saliency', 'topiq_iaa'},
+            {'topiq', 'topiq_nr_face', 'liqe', 'samp_net'},
+            {'insightface'},
+        ]
 
     def test_group_passes_cpu_uses_ram(self, manager, monkeypatch):
         monkeypatch.setattr(system_memory, 'memory_limit_bytes', lambda: None)
@@ -547,6 +570,86 @@ class TestLoadedModelsTracking:
         assert 'vlm_tagger' not in manager.models
         assert 'vlm_tagger' not in manager._cpu_cache
         fake_model.cpu.assert_called_once()
+
+
+class _ReportingScorer:
+    """A cached wrapper that counts report_skips() calls (torch-free)."""
+
+    def __init__(self):
+        self.model = mock.MagicMock(spec=['cpu', 'to'])
+        self.reports = 0
+
+    def report_skips(self):
+        self.reports += 1
+
+
+class TestSkipTotalsAreReportedWhenACachedScorerIsDropped:
+    """A RAM-cached PyIQAScorer never reaches ``unload()``, so the manager
+    reports its skip totals when it drops the cache entry. Parking one for the
+    next chunk reports nothing: that would print once per chunk."""
+
+    def test_unload_all_reports_each_dropped_cached_scorer_once(self, manager):
+        a, b = _ReportingScorer(), _ReportingScorer()
+        manager._cpu_cache = {'topiq_nr_face': a, 'liqe': b}
+
+        manager.unload_all()
+
+        assert (a.reports, b.reports) == (1, 1)
+        assert manager._cpu_cache == {}
+
+    def test_evict_cpu_cache_reports_each_evicted_scorer_once(self, manager):
+        a = _ReportingScorer()
+        manager._cpu_cache = {'topiq_nr_face': a}
+
+        manager.evict_cpu_cache()
+
+        assert a.reports == 1
+
+    def test_parking_in_the_ram_cache_reports_nothing(self, manager):
+        a = _ReportingScorer()
+        manager.models = {'topiq_nr_face': a}
+        manager.keep_in_ram = 'always'
+
+        with mock.patch.object(manager, '_move_to_cpu'):
+            manager.unload_model('topiq_nr_face')
+
+        assert 'topiq_nr_face' in manager._cpu_cache
+        assert a.reports == 0
+
+    def test_a_cached_entry_without_report_skips_is_dropped_quietly(self, manager):
+        manager._cpu_cache = {'clip': mock.MagicMock(spec=['cpu', 'to'])}
+        manager.unload_all()
+        assert manager._cpu_cache == {}
+
+    @pytest.fixture()
+    def real_scorer(self):
+        pytest.importorskip("torch")
+        from models.pyiqa_scorer import PyIQAScorer
+        scorer = PyIQAScorer('topiq_nr_face', device='cpu')
+        scorer._skipped_totals = {'No face detected in the input image.': 3}
+        return scorer
+
+    @pytest.mark.parametrize('drop', ['unload_all', 'evict_cpu_cache'])
+    def test_the_real_scorer_logs_its_total_exactly_once(self, manager, real_scorer, caplog, drop):
+        manager._cpu_cache = {'topiq_nr_face': real_scorer}
+
+        with caplog.at_level('WARNING', logger='facet.pyiqa'):
+            getattr(manager, drop)()
+
+        totals = [r.getMessage() for r in caplog.records if 'in total' in r.getMessage()]
+        assert len(totals) == 1
+        assert 'skipped 3 image(s)' in totals[0] and 'No face detected' in totals[0]
+
+    def test_the_real_scorer_parked_by_unload_model_logs_nothing(self, manager, real_scorer, caplog):
+        manager.models = {'topiq_nr_face': real_scorer}
+        manager.keep_in_ram = 'always'
+
+        with caplog.at_level('WARNING', logger='facet.pyiqa'), \
+                mock.patch.object(manager, '_move_to_cpu'):
+            manager.unload_model('topiq_nr_face')
+
+        assert [r for r in caplog.records if 'in total' in r.getMessage()] == []
+        assert real_scorer._skipped_totals  # still pending, reported when it finally leaves
 
 
 class TestWeightsDestination:

@@ -275,6 +275,25 @@ def _flush_saliency_batch(conn, scorer_model, batch_paths, batch_pil, batch_cv):
     return written
 
 
+def _flush_topiq_batch(conn, scorer_model, batch_paths, batch_images):
+    """Score one batch with TOPIQ and UPDATE its photos; returns how many rows were written.
+
+    ``score_batch`` yields ``None`` for an image it could not score. That photo is
+    not written and not counted, so its stored ``topiq_score`` (or NULL) survives.
+    """
+    scores = scorer_model.score_batch(batch_images)
+    written = 0
+    for path, score in zip(batch_paths, scores):
+        if score is None:
+            continue
+        conn.execute(
+            "UPDATE photos SET topiq_score = ? WHERE path = ?",
+            (round(score, 2), path)
+        )
+        written += 1
+    return written
+
+
 def _report_dry_run(results, sample_count):
     """Print the dry-run results table and return the process exit code.
 
@@ -2867,7 +2886,9 @@ def main():
         logger.info("Run --recompute-average to update aggregate scores with saliency metrics.")
         exit()
 
-    # Score TOPIQ from stored thumbnails (requires GPU)
+    # Score TOPIQ from stored thumbnails (requires GPU). Re-scores every photo that
+    # has a thumbnail (there is no NULL filter); a photo TOPIQ cannot score keeps its
+    # stored topiq_score (see _flush_topiq_batch).
     if args.score_topiq:
         import numpy as np
         import cv2
@@ -2890,15 +2911,6 @@ def main():
         batch_paths = []
         batch_images = []
         batch_size = 16
-
-        def _flush_topiq_batch(conn, scorer_model, batch_paths, batch_images):
-            scores = scorer_model.score_batch(batch_images)
-            for i, score in enumerate(scores):
-                conn.execute(
-                    "UPDATE photos SET topiq_score = ? WHERE path = ?",
-                    (round(score, 2), batch_paths[i])
-                )
-            return len(scores)
 
         with get_connection(args.db) as read_conn, get_connection(args.db) as conn:
             for path in tqdm(paths, desc="TOPIQ scoring"):

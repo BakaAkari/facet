@@ -123,7 +123,7 @@ Ces commandes mettent à jour des métriques spécifiques, dérivent de nouvelle
 | `python facet.py --recompute-saliency` | `[GPU]` `[16gb/24gb]` Recalcule les métriques de saillance du sujet (BiRefNet_dynamic). Une photo dont la saillance échoue (par exemple faute de mémoire) est journalisée en ERROR et n'est pas écrite : une ligne jamais notée reste à NULL et est resélectionnée par l'exécution suivante, et avec `--force` une ligne qui a déjà une saillance conserve ses valeurs stockées. Sur CUDA, la taille de lot est déduite de la VRAM libre. |
 | `python facet.py --recompute-composition-cpu` | Recalcule la composition, basé sur des règles (CPU, tout profil) |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` Recalcule la composition avec SAMP-Net |
-| `python facet.py --recompute-iqa` | `[GPU]` `[8gb/16gb/24gb]` Recalcule les métriques IQA supplémentaires (TOPIQ IAA, NR-Face, LIQE) à partir des miniatures stockées |
+| `python facet.py --recompute-iqa` | `[GPU]` `[8gb/16gb/24gb]` Recalcule les métriques IQA supplémentaires (TOPIQ IAA, NR-Face, LIQE) à partir des miniatures stockées. Ne remplit que les colonnes NULL : une photo qu'un modèle ne peut pas noter reste NULL et est resélectionnée à l'exécution suivante ; NR-Face ignore les photos sans visage détecté ; une valeur déjà stockée (y compris un 5,0 neutre d'une version antérieure) n'est jamais remplacée. Voir [Modèles de qualité supplémentaires](#modèles-de-qualité-supplémentaires) |
 | `python facet.py --detect-text` | Extrait le texte présent dans l'image (panneaux, affiches, documents) vers `ocr_text` via OCR sur les miniatures stockées, le rendant cherchable depuis la barre de recherche de la galerie. Ignore les photos déjà évaluées, si bien que les ré-exécutions ne lisent que les nouvelles. Optionnel : nécessite `ocr.enabled` dans `scoring_config.json` plus `pip install easyocr` — voir [Configuration — OCR](CONFIGURATION.md#ocr) |
 | `python facet.py --recompute-text` | Relance l'OCR sur toute la bibliothèque, en relisant les photos déjà évaluées par `--detect-text` |
 | `python facet.py --recompute-colors` | Extrait la teinte dominante + la température de couleur chaude/froide depuis les miniatures (CPU, rapide) vers `dominant_hue` / `color_temp` |
@@ -144,7 +144,7 @@ Ces commandes mettent à jour des métriques spécifiques, dérivent de nouvelle
 | `python facet.py --extract-gps` | Extrait les coordonnées GPS des données EXIF vers les colonnes de la base de données |
 | `python facet.py --rescan-gps` | Réextrait les coordonnées GPS depuis l'EXIF pour toutes les photos (écrase l'existant) |
 | `python facet.py --recompute-embeddings` | Recalcule les embeddings CLIP/SigLIP pour toutes les photos (requis après un changement de modèle) |
-| `python facet.py --score-topiq` | Remplit les scores de qualité TOPIQ à partir des miniatures stockées (GPU requis) |
+| `python facet.py --score-topiq` | Recalcule `topiq_score` avec TOPIQ pour chaque photo qui a une miniature stockée (GPU requis). Il n'y a pas de filtre sur NULL : les valeurs existantes sont écrasées ; une photo que TOPIQ ne peut pas noter conserve sa valeur stockée |
 | `python facet.py --backfill-focal-35mm` | Remplit la focale équivalente 35 mm depuis l'EXIF pour les photos qui en manquent |
 | `python facet.py --backfill-clipping` | Dérive les pourcentages d'écrêtage par canal depuis les histogrammes stockés. Base de données uniquement (aucun décodage d'image) et reprenable ; les photos dont l'histogramme précède le format RVB restent inconnues (NULL) |
 | `python facet.py --repair-int-columns` | Répare les colonnes INTEGER de `photos` dont la valeur stockée est un REAL — l'affinité SQLite n'est pas une contrainte, donc une sensibilité ISO fractionnaire écrite par un outil externe est conservée telle quelle. Arrondit chaque valeur sur place (une valeur que SQLite ne peut pas stocker comme entier — non finie, ou au-delà de 2^53 — devient NULL) et ne touche à rien d'autre. Base de données uniquement (aucun décodage d'image). L'API arrondit les lignes non réparées à la lecture, la galerie fonctionne donc sans cela ; les filtres et les tris comparent la valeur réellement stockée, lancez-le donc pour éviter qu'une photo affichée à ISO 63 soit ignorée par une plage ISO |
@@ -160,6 +160,8 @@ Trois modèles PyIQA additionnels notent au-delà du score esthétique TOPIQ pri
 - **TOPIQ IAA** (`--pass quality-iaa`) : mérite esthétique artistique entraîné sur AVA, distinct de la qualité technique. Stocké dans `aesthetic_iaa`.
 - **TOPIQ NR-Face** (`--pass quality-face`) : évaluation de la qualité de la région du visage. Stocké dans `face_quality_iqa`.
 - **LIQE** (`--pass quality-liqe`) : score de qualité plus un diagnostic du type de distorsion (par ex. flou de bougé, surexposition, bruit). Stocké dans `liqe_score`.
+
+Une photo qu'un modèle ne peut pas noter (pour NR-Face, aucun visage trouvé par son détecteur ; pour LIQE, un petit côté inférieur à 224 px) stocke NULL dans cette colonne, et non un 5,0 neutre ; une erreur de mémoire insuffisante du GPU est d'abord retentée avec la moitié de la taille de lot, jusqu'à une seule image. `--recompute-iqa` resélectionne une telle photo à chaque exécution, car il ne remplit que les colonnes NULL (et ignore NR-Face pour les photos avec `face_count` 0) ; chaque nouvel essai coûte un passage de la miniature dans le modèle. Il ne remplace jamais une valeur déjà stockée, y compris un 5,0 neutre écrit par une version antérieure : seul un nouveau scan qui réécrit la photo (par exemple avec `--force`) le fait. Avec `--pass quality`, `quality-iaa`, `quality-face` et `quality-liqe`, une photo dont le modèle échoue conserve sa valeur stockée. Un scan complet enregistre dans `scan_failures` une photo dont le modèle TOPIQ principal échoue (à retenter avec `--retry-failed`) ; `--pass quality` n'enregistre rien. Voir [Dimensions IQA supplémentaires](SCORING.md#dimensions-iqa-supplémentaires).
 
 ### Benchmarks et scores supplémentaires
 
@@ -352,6 +354,8 @@ Seuls les cas 4 et 5 peuvent ne rien trouver. Les cas 1 et 2 nomment un chemin 
 | `python tag_existing.py --force` | Ré-étiquette toutes les photos |
 | `python tag_existing.py --db custom.db` | Utilise une base de données personnalisée |
 | `python tag_existing.py --config my.json` | Utilise une configuration personnalisée |
+
+Sur une machine CUDA, un profil SigLIP (`16gb`, `24gb`) encode désormais le vocabulaire de tags en fp16, comme le faisait déjà le scoreur monopasse ; `tag_existing.py` le chargeait auparavant en fp32. `python tag_existing.py`, `python tag_existing.py --force`, `python facet.py --tag-untagged` et l'étape d'étiquetage en fin de scan partagent ce chargeur. Mesuré sur 49 photos, l'ensemble de tags a changé pour 2 d'entre elles (4 %) : relancez `python tag_existing.py --force` pour ré-étiqueter les photos étiquetées auparavant. Le CPU et les profils CLIP ViT-L-14 (`legacy`, `8gb`) ne changent pas.
 
 ## Validation de la base de données
 

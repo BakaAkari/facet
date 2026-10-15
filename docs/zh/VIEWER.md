@@ -156,6 +156,8 @@ python database.py --migrate-user-preferences --user alice
 | **内容** | 标签、黑白开关 |
 | **拍摄时刻** | 叙事时刻置信度（0–1 区间滑块：`min_moment_confidence` / `max_moment_confidence`） |
 
+对美学 IAA、人脸画质 IQA、LIQE 和 Aesthetic V2.5 的范围筛选只匹配有评分的照片。模型未能评分的照片存为 NULL（以前是中性的 5.0），因此即使筛选从 0 开始也会将其排除；按美学（IAA）、人脸画质（IQA）或 LIQE 升序排序时，无论在图库还是相册（包括智能相册和共享相册）中，它都排在最后。见[补充 IQA 维度](SCORING.md#补充-iqa-维度)。
+
 ### 构图模式
 
 按 SAMP-Net 检测出的模式筛选（模型只会输出以下 8 种，来自

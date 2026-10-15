@@ -124,7 +124,7 @@ These commands update specific metrics, derive new data (AI captions, GPS, embed
 | `python facet.py --recompute-saliency` | `[GPU]` Recompute subject saliency metrics (BiRefNet_dynamic) from stored thumbnails — works with the library volume offline. Skips photos that already have `subject_bbox` (resumable); `--force` redoes all. Saliency is enabled on all profiles (legacy runs it on CPU, slower); GPU strongly recommended. A photo whose saliency fails (for example out of memory) is logged as an ERROR and not written: a never-scored row stays NULL and is selected again by the next run, and under `--force` a row that already has saliency keeps its stored values. The batch size is derived from the free VRAM on CUDA. |
 | `python facet.py --recompute-composition-cpu` | Recompute composition, rule-based (CPU, any profile) |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` Recompute composition with SAMP-Net |
-| `python facet.py --recompute-iqa` | `[GPU]` Recompute supplementary IQA metrics (TOPIQ IAA, NR-Face, LIQE) from stored thumbnails. Enabled on all profiles (legacy runs on CPU, slower); GPU strongly recommended |
+| `python facet.py --recompute-iqa` | `[GPU]` Recompute supplementary IQA metrics (TOPIQ IAA, NR-Face, LIQE) from stored thumbnails. Enabled on all profiles (legacy runs on CPU, slower); GPU strongly recommended. Fills only NULL columns: a photo a model cannot score stays NULL and is selected again by the next run; NR-Face skips photos with no detected face; a value already stored (including a neutral 5.0 from an earlier version) is never replaced. See [Supplementary Quality Models](#supplementary-quality-models) |
 | `python facet.py --detect-text` | Extract in-image text (signs, posters, documents) into `ocr_text` via OCR over stored thumbnails, making it searchable from the gallery search box. Skips already-evaluated photos, so re-runs only read new ones. Opt-in: needs `ocr.enabled` in `scoring_config.json` plus `pip install easyocr` — see [Configuration — OCR](CONFIGURATION.md#ocr) |
 | `python facet.py --recompute-text` | Re-run OCR over the whole library, re-reading photos `--detect-text` has already evaluated |
 | `python facet.py --recompute-colors` | Extract dominant hue + warm/cool color temperature from thumbnails (CPU, fast) into `dominant_hue` / `color_temp` |
@@ -145,7 +145,7 @@ These commands update specific metrics, derive new data (AI captions, GPS, embed
 | `python facet.py --extract-gps` | Extract GPS coordinates from EXIF data into database columns |
 | `python facet.py --rescan-gps` | Re-extract GPS coordinates from EXIF for all photos (overwrites existing) |
 | `python facet.py --recompute-embeddings` | Recompute CLIP/SigLIP embeddings for all photos (required after model switch) |
-| `python facet.py --score-topiq` | Backfill TOPIQ quality scores from stored thumbnails (GPU required) |
+| `python facet.py --score-topiq` | Re-score `topiq_score` with TOPIQ for every photo that has a stored thumbnail (GPU required). There is no NULL filter, so existing values are overwritten; a photo TOPIQ cannot score keeps its stored value |
 | `python facet.py --backfill-focal-35mm` | Backfill 35mm-equivalent focal length from EXIF for photos missing it |
 | `python facet.py --backfill-clipping` | Derive per-channel clipping percentages from stored histograms. Database-only (no image decode) and resumable; photos whose histogram predates the RGB format stay unknown (NULL) |
 | `python facet.py --repair-int-columns` | Repair `photos` INTEGER columns whose stored value is a REAL — SQLite affinity is not a constraint, so an external EXIF writer's fractional ISO is kept as a REAL. Rounds each one in place (a value SQLite cannot hold as an integer — non-finite, or beyond 2^53 — becomes NULL) and leaves everything else alone. Database-only (no image decode). The API rounds unrepaired rows on read, so the gallery works without this; filters and sorts compare the value actually stored, so run it to stop a photo displayed as ISO 63 from being missed by an ISO range |
@@ -161,6 +161,8 @@ Three additional PyIQA models score beyond the primary TOPIQ aesthetic score. Th
 - **TOPIQ IAA** (`--pass quality-iaa`): AVA-trained artistic aesthetic merit, separate from technical quality. Stored as `aesthetic_iaa`.
 - **TOPIQ NR-Face** (`--pass quality-face`): face-region quality assessment. Stored as `face_quality_iqa`.
 - **LIQE** (`--pass quality-liqe`): quality score plus a distortion-type diagnosis (e.g. motion blur, overexposure, noise). Stored as `liqe_score`.
+
+A photo a model cannot score (for NR-Face, no face its detector finds; for LIQE, a short side under 224 px) stores NULL in that column, not a neutral 5.0; a GPU out-of-memory error is retried at half the batch size, down to one image, before that happens. `--recompute-iqa` selects such a photo again on every run, because it fills only NULL columns (and skips NR-Face for photos with `face_count` 0); each retry costs one thumbnail forward pass. It never replaces a value that is already stored, including a neutral 5.0 written by an earlier version: only a rescan that rewrites the photo (for example `--force`) does. Under `--pass quality`, `quality-iaa`, `quality-face` and `quality-liqe`, a photo whose model fails keeps its stored value. A full scan records a photo whose primary TOPIQ model fails in `scan_failures` (retry it with `--retry-failed`); `--pass quality` records nothing. See [Supplementary IQA Dimensions](SCORING.md#supplementary-iqa-dimensions).
 
 ### Benchmarks & supplementary scores
 
@@ -353,6 +355,8 @@ Only cases 4 and 5 may find nothing. Cases 1 and 2 name a path, so a missing fil
 | `python tag_existing.py --force` | Re-tag all photos |
 | `python tag_existing.py --db custom.db` | Use custom database |
 | `python tag_existing.py --config my.json` | Use custom config |
+
+On a CUDA machine, a SigLIP profile (`16gb`, `24gb`) now encodes the tag vocabulary in fp16, as the single-pass scorer already did; `tag_existing.py` used to load it in fp32. `python tag_existing.py`, `python tag_existing.py --force`, `python facet.py --tag-untagged` and the tagging step at the end of a scan share that loader. Measured on 49 photos, the tag set changed for 2 of them (4%): re-run `python tag_existing.py --force` to re-tag photos tagged earlier. CPU and the CLIP ViT-L-14 profiles (`legacy`, `8gb`) are unchanged.
 
 ## Database Validation
 

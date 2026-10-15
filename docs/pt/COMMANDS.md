@@ -122,7 +122,7 @@ Esses comandos atualizam métricas específicas, derivam novos dados (legendas p
 | `python facet.py --recompute-saliency` | `[GPU]` `[16gb/24gb]` Recalcula as métricas de saliência do sujeito (BiRefNet_dynamic). Uma foto cuja saliência falha (por exemplo, por falta de memória) é registrada como ERROR e não é gravada: uma linha nunca pontuada continua NULL e é selecionada novamente na próxima execução, e com `--force` uma linha que já tem saliência mantém seus valores gravados. Em CUDA, o tamanho do lote é derivado da VRAM livre. |
 | `python facet.py --recompute-composition-cpu` | Recalcula a composição, baseada em regras (CPU, qualquer perfil) |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` Recalcula a composição com SAMP-Net |
-| `python facet.py --recompute-iqa` | `[GPU]` `[8gb/16gb/24gb]` Recalcula métricas IQA suplementares (TOPIQ IAA, NR-Face, LIQE) a partir das miniaturas armazenadas |
+| `python facet.py --recompute-iqa` | `[GPU]` `[8gb/16gb/24gb]` Recalcula métricas IQA suplementares (TOPIQ IAA, NR-Face, LIQE) a partir das miniaturas armazenadas. Preenche apenas colunas NULL: uma foto que um modelo não consegue pontuar continua NULL e é selecionada novamente pela próxima execução; o NR-Face ignora fotos sem rosto detectado; um valor já gravado (incluindo um 5,0 neutro de uma versão anterior) nunca é substituído. Veja [Modelos de Qualidade Suplementares](#modelos-de-qualidade-suplementares) |
 | `python facet.py --detect-text` | Extrai o texto presente na imagem (placas, cartazes, documentos) para `ocr_text` via OCR sobre as miniaturas armazenadas, tornando-o pesquisável a partir da barra de busca da galeria. Pula fotos já avaliadas, então reexecuções leem apenas as novas. Opcional: precisa de `ocr.enabled` em `scoring_config.json` mais `pip install easyocr` — veja [Configuração — OCR](CONFIGURATION.md#ocr) |
 | `python facet.py --recompute-text` | Reexecuta o OCR em toda a biblioteca, relendo as fotos que `--detect-text` já avaliou |
 | `python facet.py --recompute-colors` | Extrai a matiz dominante + a temperatura de cor quente/fria das miniaturas (CPU, rápido) para `dominant_hue` / `color_temp` |
@@ -143,7 +143,7 @@ Esses comandos atualizam métricas específicas, derivam novos dados (legendas p
 | `python facet.py --extract-gps` | Extrai coordenadas GPS dos dados EXIF para colunas do banco de dados |
 | `python facet.py --rescan-gps` | Re-extrai as coordenadas GPS do EXIF para todas as fotos (sobrescreve as existentes) |
 | `python facet.py --recompute-embeddings` | Recalcula os embeddings CLIP/SigLIP para todas as fotos (necessário após troca de modelo) |
-| `python facet.py --score-topiq` | Preenche retroativamente as pontuações de qualidade TOPIQ a partir das miniaturas armazenadas (requer GPU) |
+| `python facet.py --score-topiq` | Recalcula `topiq_score` com o TOPIQ para cada foto que tenha uma miniatura armazenada (requer GPU). Não há filtro de NULL, então os valores existentes são sobrescritos; uma foto que o TOPIQ não consegue pontuar mantém o valor armazenado |
 | `python facet.py --backfill-focal-35mm` | Preenche retroativamente a distância focal equivalente a 35mm a partir do EXIF para fotos que não a têm |
 | `python facet.py --backfill-clipping` | Deriva as percentagens de recorte por canal a partir dos histogramas armazenados. Apenas base de dados (sem descodificar imagens) e retomável; as fotos cujo histograma é anterior ao formato RGB ficam desconhecidas (NULL) |
 | `python facet.py --repair-int-columns` | Repara as colunas INTEGER de `photos` cujo valor armazenado é um REAL — a afinidade do SQLite não é uma restrição, pelo que um ISO fracionário escrito por uma ferramenta externa fica guardado como REAL. Arredonda cada valor no lugar (um valor que o SQLite não consegue guardar como inteiro — não finito, ou além de 2^53 — passa a NULL) e não toca em mais nada. Apenas base de dados (sem descodificar imagens). A API arredonda na leitura as linhas não reparadas, pelo que a galeria funciona sem isto; os filtros e as ordenações comparam o valor realmente guardado, pelo que vale a pena executá-lo para que uma foto mostrada como ISO 63 não fique de fora de um intervalo ISO |
@@ -159,6 +159,8 @@ Três modelos PyIQA adicionais pontuam além da pontuação estética primária 
 - **TOPIQ IAA** (`--pass quality-iaa`): mérito estético artístico treinado com AVA, separado da qualidade técnica. Armazenado como `aesthetic_iaa`.
 - **TOPIQ NR-Face** (`--pass quality-face`): avaliação de qualidade da região do rosto. Armazenado como `face_quality_iqa`.
 - **LIQE** (`--pass quality-liqe`): pontuação de qualidade mais um diagnóstico de tipo de distorção (por exemplo, desfoque de movimento, superexposição, ruído). Armazenado como `liqe_score`.
+
+Uma foto que um modelo não consegue pontuar (para o NR-Face, nenhum rosto encontrado pelo seu detector; para o LIQE, um lado menor abaixo de 224 px) grava NULL nessa coluna, não um 5,0 neutro; antes disso, um erro de falta de memória da GPU é repetido com metade do tamanho do lote, até chegar a uma única imagem. `--recompute-iqa` seleciona essa foto novamente a cada execução, porque preenche apenas colunas NULL (e ignora o NR-Face em fotos com `face_count` 0); cada nova tentativa custa uma passagem da miniatura pelo modelo. Ele nunca substitui um valor já gravado, incluindo um 5,0 neutro escrito por uma versão anterior: somente uma nova varredura que reescreve a foto (por exemplo com `--force`) faz isso. Com `--pass quality`, `quality-iaa`, `quality-face` e `quality-liqe`, uma foto cujo modelo falha mantém o valor gravado. Uma varredura completa registra em `scan_failures` uma foto cujo modelo TOPIQ principal falha (tente de novo com `--retry-failed`); `--pass quality` não registra nada. Veja [Dimensões Suplementares de IQA](SCORING.md#dimensões-suplementares-de-iqa).
 
 ### Benchmarks e pontuações suplementares
 
@@ -356,6 +358,8 @@ Só os casos 4 e 5 podem não encontrar nada. Os casos 1 e 2 nomeiam um caminho,
 | `python tag_existing.py --force` | Re-marca todas as fotos |
 | `python tag_existing.py --db custom.db` | Usa um banco de dados personalizado |
 | `python tag_existing.py --config my.json` | Usa uma configuração personalizada |
+
+Em uma máquina com CUDA, um perfil SigLIP (`16gb`, `24gb`) agora codifica o vocabulário de tags em fp16, como o pontuador de passagem única já fazia; o `tag_existing.py` o carregava antes em fp32. `python tag_existing.py`, `python tag_existing.py --force`, `python facet.py --tag-untagged` e a etapa de marcação ao final de uma varredura compartilham esse carregador. Medido em 49 fotos, o conjunto de tags mudou em 2 delas (4 %): execute `python tag_existing.py --force` novamente para re-marcar as fotos marcadas antes. CPU e os perfis CLIP ViT-L-14 (`legacy`, `8gb`) não mudam.
 
 ## Database Validation
 

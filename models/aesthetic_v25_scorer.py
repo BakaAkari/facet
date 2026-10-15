@@ -194,12 +194,14 @@ class AestheticV25Scorer:
         raw = self._extract_raw(output)
         return self._normalize_score(raw)
 
-    def score_batch(self, images: list[Image.Image]) -> list[float]:
+    def score_batch(self, images: list[Image.Image]) -> list[Optional[float]]:
         """Score a list of PIL images, each normalized to 0-10.
 
         The SigLIP processor can batch, so same-shaped inputs are processed in a
         single forward pass. Any failure falls back to per-image scoring so one
-        bad image never fails the whole batch.
+        bad image never fails the whole batch. An image that fails even alone
+        yields ``None`` in its slot (never a neutral number, which a writer
+        would store as a measurement).
         """
         if not self._loaded:
             self.load()
@@ -230,11 +232,11 @@ class AestheticV25Scorer:
             )
         except Exception as e:  # noqa: BLE001 — defensive per-image fallback
             logger.debug("Aesthetic V2.5 batch fell back to serial: %s", e)
-            scores: list[float] = []
+            scores: list[Optional[float]] = []
             for im in images:
                 try:
                     scores.append(self.score_image(im))
                 except Exception as e2:  # noqa: BLE001
                     logger.warning("Aesthetic V2.5 skipped an image: %s", e2)
-                    scores.append(5.0)
+                    scores.append(None)
             return scores

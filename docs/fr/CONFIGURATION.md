@@ -627,7 +627,7 @@ Lorsque `vram_profile` vaut `"auto"` (par défaut), le système détecte la VRAM
 | ≥ 6 Go | `8gb` |
 | Pas de GPU | `legacy` (utilise la RAM système) |
 
-**Les cartes de 10 à 14 Go peuvent choisir l'ensemble complet des fonctionnalités.** La détection automatique ne change pas : en dessous de 14 Go, elle sélectionne toujours `8gb`. Une carte de 10 à 14 Go peut à la place exécuter le profil `16gb` (embeddings SigLIP 2, TOPIQ, tagging Qwen3.5-2B, Q-ReAlign, saillance) en définissant `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`. Le planificateur de passes répartit alors les modèles en trois passes qui tiennent (voir [Regroupement dynamique des passes](#regroupement-dynamique-des-passes)), la saillance, qui manquait de mémoire ici auparavant, dimensionne désormais son lot d'après la VRAM libre, et une photo qu'elle ne peut toujours pas noter enregistre NULL et journalise une ERROR au lieu d'un score neutre. **Passer une bibliothèque `8gb` existante à `16gb` change le modèle d'embeddings** (CLIP ViT-L-14 en 768 dimensions → SigLIP 2 en 1152 dimensions), de sorte que la bibliothèque mélangerait deux dimensions d'embedding : relancez un scan ou exécutez `--recompute-embeddings` pour la ré-embarquer. Voir *Recherche sémantique et bibliothèque embarquée sous un profil différent* dans [Modèles](#modèles) pour le comportement de la recherche d'ici là.
+**Les cartes de 10 à 14 Go peuvent choisir l'ensemble complet des fonctionnalités.** La détection automatique ne change pas : en dessous de 14 Go, elle sélectionne toujours `8gb`. Une carte de 10 à 14 Go peut à la place exécuter le profil `16gb` (embeddings SigLIP 2, TOPIQ, tagging Qwen3.5-2B, Q-ReAlign, saillance) en définissant `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`. Le planificateur de passes répartit alors les modèles en quatre passes qui tiennent (trois sur une carte qui annonce 11,8 GiB ou plus) (voir [Regroupement dynamique des passes](#regroupement-dynamique-des-passes)), la saillance, qui manquait de mémoire ici auparavant, dimensionne désormais son lot d'après la VRAM libre, et une photo qu'elle ne peut toujours pas noter enregistre NULL et journalise une ERROR au lieu d'un score neutre. **Passer une bibliothèque `8gb` existante à `16gb` change le modèle d'embeddings** (CLIP ViT-L-14 en 768 dimensions → SigLIP 2 en 1152 dimensions), de sorte que la bibliothèque mélangerait deux dimensions d'embedding : relancez un scan ou exécutez `--recompute-embeddings` pour la ré-embarquer. Voir *Recherche sémantique et bibliothèque embarquée sous un profil différent* dans [Modèles](#modèles) pour le comportement de la recherche d'ici là.
 
 ---
 
@@ -797,16 +797,19 @@ Le système surveille l'utilisation des ressources et ajuste :
 
 Quand la VRAM le permet, plusieurs petits modèles s'exécutent ensemble :
 
-| VRAM | Passe 1 | Passe 2 | Passe 3 |
-|------|---------|---------|---------|
-| 8 Go | CLIP + SAMP-Net + InsightFace | TOPIQ | - |
-| 12 Go (profil `16gb`, optionnel) | Tagger Qwen3.5 + Q-ReAlign | SigLIP + saillance + TOPIQ | TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace |
-| 16 Go | Tagger Qwen3.5 + SigLIP + TOPIQ | Q-ReAlign + saillance + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
-| 24 Go+ | Tous les modèles ensemble (single-pass) | - | - |
+| VRAM | Passe 1 | Passe 2 | Passe 3 | Passe 4 |
+|---|---|---|---|---|
+| 8 Go (profil `8gb`) | CLIP | Q-ReAlign + saillance | TOPIQ IAA + TOPIQ NR-Face + LIQE | SAMP-Net + InsightFace |
+| 12 Go\* (profil `16gb`, optionnel) | Tagger Qwen3.5 + Q-ReAlign | SigLIP + saillance + TOPIQ IAA | TOPIQ + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace |
+| 16 Go (profil `16gb`) | Tagger Qwen3.5 + SigLIP + TOPIQ | Q-ReAlign + saillance + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net | InsightFace | - |
+| 24 Go (profil `24gb`) | Tagger Qwen3.5 4B + SigLIP + Q-ReAlign + saillance | TOPIQ + TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace | - | - |
+| 35 Go+ (profil `24gb`) | Tous les modèles ensemble (single-pass) | - | - | - |
 
-Les lignes 12 Go et 16 Go sont la sortie du planificateur pour le profil `16gb`. Une carte de 12 Go n'est pas sélectionnée automatiquement (voir [Détection automatique de la VRAM](#détection-automatique-de-la-vram)) : elle nécessite `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`.
+Les lignes 8 Go, 12 Go, 16 Go et 24 Go sont la sortie du planificateur de passes pour le profil indiqué, pour une carte annonçant 8,0, 11,7, 15,99 et 23,99 GiB de VRAM totale ; une carte annonçant 34,8 GiB ou plus planifie une seule passe avec le profil `24gb` (ligne 35 Go+). Le planificateur répartit les modèles selon leur VRAM estimée dans la VRAM totale de la carte moins 1,3 GiB, qu'il met de côté pour la surcharge de CUDA et d'ONNX Runtime et pour le bureau. Une carte de 12 Go n'est pas sélectionnée automatiquement (voir [Détection automatique de la VRAM](#détection-automatique-de-la-vram)) : elle nécessite `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`.
 
-Mesuré sur une exécution de 49 photos avec un plafond strict de 11,7 GiB sur PyTorch, ONNX Runtime et la lecture de VRAM libre (RTX 4070 Ti SUPER) : pic de VRAM de 9,06 GiB pour toute la carte, bureau compris (pics par passe d'environ 8,5, 9,1 et 3,9 GiB), taille de lot de saillance de 2, et résultats identiques à une exécution sans plafond sur 16 GiB (tags 49/49, cadres de sujet de saillance 44 contre 44, visages identiques). La durée totale était de 226 s contre environ 240 s sans plafond. Sur la carte de 16 GiB sans plafond, la taille de lot de saillance est de 3.
+\* La ligne 12 Go est le plan pour une carte annonçant 11,7 GiB. Une carte de 12 Go qui annonce 11,8 GiB ou plus (par exemple 11,99 GiB) planifie à la place trois passes : tagger Qwen3.5 + Q-ReAlign ; SigLIP + saillance + TOPIQ ; TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace.
+
+Mesuré sur 49 photos avec un plafond strict de 11,7 GiB sur PyTorch, ONNX Runtime et la lecture de la VRAM libre (RTX 4070 Ti SUPER) : le plan en quatre passes s'est terminé sans aucune erreur de mémoire insuffisante, avec un pic de VRAM de 9,74 GiB pour toute la carte, bureau compris (passe la plus lourde : SigLIP + saillance + TOPIQ IAA), une taille de lot de saillance de 2 et 246 s de durée ; les tags, les embeddings de 1152 dimensions, les cadres du sujet (44/44) et les visages sont identiques à ceux d'une exécution sans plafond.
 
 ### Options en ligne de commande
 

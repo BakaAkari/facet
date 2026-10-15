@@ -156,6 +156,8 @@ python database.py --migrate-user-preferences --user alice
 | **Content** | Tags, monochrome toggle |
 | **Moments** | Narrative moment confidence (0–1 range slider: `min_moment_confidence` / `max_moment_confidence`) |
 
+Range filters on Aesthetic IAA, Face Quality IQA, LIQE and Aesthetic V2.5 match only photos that have a score. A photo a model could not score is stored as NULL (it used to carry a neutral 5.0), so even a filter that starts at 0 excludes it, and an ascending sort on Aesthetic (IAA), Face Quality (IQA) or LIQE lists it last, in the gallery and in albums (smart and shared included). See [Supplementary IQA Dimensions](SCORING.md#supplementary-iqa-dimensions).
+
 ### Composition Patterns
 
 Filter by SAMP-Net detected patterns (the model emits exactly these 8, from

@@ -30,7 +30,7 @@ from api.db_helpers import (
 )
 from api.top_picks import get_top_picks_score_sql, get_top_picks_threshold
 from api.types import (
-    VALID_SORT_COLS, TYPE_FILTERS, normalize_params, get_photo_types,
+    VALID_SORT_COLS, TYPE_FILTERS, normalize_params, get_photo_types, order_by_clause,
     JUNK_ANY, JUNK_NOT_JUNK,
     SEQUENCE_OVERRIDE_FORCED, SEQUENCE_OVERRIDE_SUPPRESSED, SEQUENCE_OVERRIDE_VALUES,
 )
@@ -874,19 +874,12 @@ def _prepare_gallery_params(qp: dict):
 def _resolve_order_by(params: dict) -> str:
     """Build the ORDER BY clause matching the gallery's sort semantics.
 
-    ``learned_score`` / ``narrative_moment_confidence`` can be NULL (untrained /
-    unlabelled) and must always sink. In DESC, SQLite already orders NULLs last,
-    so the ``(col IS NULL)`` guard is omitted — that lets a ``(… col DESC, path)``
-    index satisfy the sort with no temp B-tree (the default, common direction).
-    In ASC the explicit guard stays, since NULLs would otherwise sort first.
+    The nullable columns (``api.types.NULLABLE_SORT_COLS``) always sink; the
+    guard itself lives in ``api.types.order_by_clause``, shared with the albums.
     """
     sort_col = params['sort'] if params['sort'] in VALID_SORT_COLS else 'aggregate'
     sort_dir = 'ASC' if params['dir'] == 'ASC' else 'DESC'
-    if sort_col in ('learned_score', 'narrative_moment_confidence'):
-        if sort_dir == 'ASC':
-            return f"({sort_col} IS NULL) ASC, {sort_col} ASC, path ASC"
-        return f"{sort_col} DESC, path ASC"
-    return f"{sort_col} {sort_dir}, path ASC"
+    return order_by_clause(sort_col, sort_dir, 'path ASC')
 
 
 def _raise_422_for_invalid_gallery_params(exc: ValidationError, log: logging.Logger,

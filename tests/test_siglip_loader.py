@@ -40,10 +40,47 @@ def test_non_cuda_keeps_fp32(fake_auto, device):
     assert 'dtype' not in auto.from_pretrained.call_args.kwargs
 
 
+def test_cpu_path_needs_no_torch(monkeypatch):
+    """The CPU/MPS path must not import torch (CI's Python job has none).
+
+    ``tag_existing.build_clip_tagger`` reaches the helper on CPU in tests that
+    run where torch is absent; only the CUDA branch needs ``torch.float16``.
+    """
+    model = MagicMock()
+    model.to.return_value = model
+    model.eval.return_value = model
+    auto = MagicMock()
+    auto.from_pretrained.return_value = model
+    monkeypatch.setitem(sys.modules, 'transformers', SimpleNamespace(AutoModel=auto))
+    monkeypatch.setitem(sys.modules, 'torch', None)  # `import torch` -> ImportError
+    out = load_siglip_model('m', 'cpu')
+    assert out is model
+    assert 'dtype' not in auto.from_pretrained.call_args.kwargs
+
+
+# Every file allowed to call ``AutoModel.from_pretrained`` for SigLIP itself.
+# Anything else must go through ``utils.siglip.load_siglip_model``.
+SIGLIP_DIRECT_LOAD_ALLOW_LIST = [
+    # text-only query encoder, deliberately fp32 (see the comment there)
+    'api/routers/search.py',
+    # the shared loader itself
+    'utils/siglip.py',
+]
+
+
 def test_all_siglip_sites_use_helper():
+    """No file in the repo calls the literal ``AutoModel.from_pretrained``, bar the allow-list.
+
+    The grep matches only that exact string: it does not see other loader classes
+    (``AutoModelForX``, ``Qwen2VLForConditionalGeneration``, aliases), which is
+    enough for its purpose, keeping SigLIP on ``utils.siglip.load_siglip_model``.
+    ``tests/`` is excluded (this file and ``test_tagging.py`` contain the
+    string); ``conda/`` is excluded because it is untracked and ``--untracked``
+    would otherwise scan the whole local environment.
+    """
     repo_root = Path(__file__).resolve().parent.parent
     out = subprocess.run(
-        ['git', 'grep', '--untracked', '-ln', 'AutoModel.from_pretrained', '--', 'models/', 'processing/',
-         'scripts/', 'utils/'],
-        capture_output=True, text=True, cwd=repo_root).stdout.split()
-    assert out == ['utils/siglip.py']
+        ['git', 'grep', '--untracked', '-l', 'AutoModel.from_pretrained', '--', '*.py',
+         ':(exclude)tests', ':(exclude)conda'],
+        capture_output=True, text=True, cwd=repo_root, check=True).stdout.split()
+    assert sorted(out) == sorted(SIGLIP_DIRECT_LOAD_ALLOW_LIST)
