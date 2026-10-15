@@ -34,6 +34,7 @@ Design notes / safety:
   nothing. All DB / thread work is best-effort and never raises into the caller.
 """
 
+from typing import Any
 import logging
 import os
 import threading
@@ -101,7 +102,7 @@ _retrain_running = False
 _active_threads: "list[threading.Thread]" = []
 # scope -> Timer armed by a threshold crossing, awaiting the idle window.
 # Guarded by _retrain_lock.
-_pending_timers = {}
+_pending_timers: dict[Any, tuple[threading.Timer, Any, int]] = {}
 
 
 def should_retrain(new_count: int, threshold: int, is_running: bool) -> bool:
@@ -388,8 +389,8 @@ def cancel_pending_retrains():
     return len(pending)
 
 
-def maybe_retrain(db_path, user_id, added: int = 1, threshold: int = None, conn=None,
-                  idle_seconds: float = None):
+def maybe_retrain(db_path, user_id, added: int = 1, threshold: int | None = None, conn=None,
+                  idle_seconds: float | None = None):
     """Record new comparisons for a scope and arm a retrain if warranted.
 
     Call this AFTER a culling confirm or rating change has committed. It:

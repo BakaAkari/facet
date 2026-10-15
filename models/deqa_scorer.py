@@ -19,7 +19,7 @@ lazily inside ``load()`` / ``score_image`` — never in the constructor.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Any
 
 from PIL import Image
 
@@ -66,8 +66,8 @@ class DeQAScorer:
         """
         self._device = device
         self.device = device  # resolved to a concrete string in load()
-        self.model = None
-        self.processor = None
+        self.model: Any = None
+        self.processor: Any = None
         self._loaded = False
 
     @classmethod

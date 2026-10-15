@@ -4,6 +4,8 @@ Facet - AI-powered photo quality assessment system.
 
 CLI entry point. The scoring engine is in processing/scorer.py.
 """
+from typing import Any
+import importlib
 import atexit
 import os
 import random
@@ -700,15 +702,15 @@ def run_junk_detection(db_path, config, model_manager=None, only_missing=True,
     }
 
 
-try:
-    import fcntl
-except ImportError:
-    fcntl = None
+def _optional_import(name: str) -> Any:
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
 
-try:
-    import msvcrt
-except ImportError:
-    msvcrt = None
+
+fcntl: Any = _optional_import('fcntl')
+msvcrt: Any = _optional_import('msvcrt')
 
 LIBRARY_LOCK_DIRNAME = '.facet_cache'
 LIBRARY_LOCK_FILENAME = 'library.lock'
@@ -1193,7 +1195,7 @@ def _filesystem_type(path):
     return matched_type
 
 
-_host_local_lock_warned = set()
+_host_local_lock_warned: set[str] = set()
 
 
 def _warn_if_lock_is_host_local(lock_path):
@@ -2618,7 +2620,7 @@ def main():
         exit()
 
     # Import scorer (deferred to avoid loading heavy modules for --help)
-    from processing.scorer import Facet, process_bursts, _load_image_modules
+    from processing.scorer import Facet, process_bursts
 
     # Compute recommendations mode (lightweight - no GPU needed)
     if args.compute_recommendations:
@@ -2876,7 +2878,6 @@ def main():
 
     # Recompute composition with SAMP-Net (requires GPU)
     if args.recompute_composition_gpu:
-        _load_image_modules()  # Load cv2, PIL, numpy
         scorer = Facet(db_path=args.db, config_path=args.config, lightweight=True)
         batch_size = scorer.config.get_processing_settings().get('gpu_batch_size', 16)
         scorer.rescan_samp_composition(batch_size=batch_size)

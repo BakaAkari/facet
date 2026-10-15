@@ -856,7 +856,7 @@ class SAMPNetScorer:
         # result: {'comp_score': 7.5, 'pattern': 'rule_of_thirds', ...}
     """
 
-    def __init__(self, model_path: str = None, device: str | None = None):
+    def __init__(self, model_path: str | None = None, device: str | None = None):
         """
         Initialize SAMP-Net scorer with saliency detector.
 
@@ -1114,7 +1114,7 @@ class SAMPNetScorer:
         return results
 
 
-def create_samp_scorer(config) -> SAMPNetScorer:
+def create_samp_scorer(config) -> SAMPNetScorer | None:
     """
     Factory function to create SAMP-Net scorer from config.
 

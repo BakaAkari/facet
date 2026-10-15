@@ -6,13 +6,14 @@ similarity to predefined tag vocabulary.
 """
 
 
+from typing import Any
 import logging
 
 from utils import bytes_to_embedding
 
 logger = logging.getLogger("facet.tagger")
 
-_tokenizer_cache = {}
+_tokenizer_cache: dict[tuple[Any, Any], Any] = {}
 
 
 def _get_tokenizer(backend, model_name):

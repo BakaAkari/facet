@@ -61,10 +61,10 @@ FACE_PASS_COLUMNS = frozenset({
 })
 
 # Lazy imports
-torch = None
-np = None
-cv2 = None
-PIL_Image = None
+torch: Any = None
+np: Any = None
+cv2: Any = None
+PIL_Image: Any = None
 
 
 def _ensure_imports():
@@ -455,7 +455,7 @@ class ChunkedMultiPassProcessor:
         self.metrics['io_time'] += time.time() - io_start
 
         # Track results for each photo
-        results = {path: {} for path in paths}
+        results: dict[str, dict[str, Any]] = {path: {} for path in paths}
         failed_stages: List[str] = []
 
         # Supplementary/optional models — load failures skip rather than abort

@@ -10,7 +10,7 @@ import logging
 import secrets
 import sqlite3
 import time
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -527,7 +527,7 @@ def update_album(
         _check_album_access(conn, album_id, user_id)
 
         updates = []
-        params = []
+        params: list[Any] = []
         if body.name is not None:
             updates.append("name = ?")
             params.append(body.name)
@@ -963,7 +963,7 @@ def set_album_scoring_context(
 
         conn.commit()
 
-    result = {'updated': len(stampable), 'conflicts': conflicts, 'manual_skipped': len(manual_paths)}
+    result: dict[str, Any] = {'updated': len(stampable), 'conflicts': conflicts, 'manual_skipped': len(manual_paths)}
     if bool(album['is_smart']) and not paths:
         result['warning'] = 'Smart album currently matches no photos; nothing was updated.'
     return result

@@ -7,7 +7,7 @@ import asyncio
 import logging
 import math
 import sqlite3
-from typing import NoReturn, Optional
+from typing import NoReturn, Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
 
@@ -720,7 +720,7 @@ async def api_photo(
         raise HTTPException(status_code=500, detail='Internal server error')
 
 
-_EMPTY_PHOTO_SET = {'kind': None, 'group_id': None, 'count': 0, 'ev_span': None, 'members': []}
+_EMPTY_PHOTO_SET: dict[str, Any] = {'kind': None, 'group_id': None, 'count': 0, 'ev_span': None, 'members': []}
 
 
 async def _fetch_sequence_set(conn, vis_sql, vis_params, kind, group_id):

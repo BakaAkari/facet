@@ -16,7 +16,7 @@ The count is environment-dependent. CI's lint job installs only ``ruff
 mypy`` (no project dependencies), so mypy resolves far fewer imports than it
 would in a venv with the project's own dependencies (fastapi, pydantic,
 numpy, torch, ...) installed -- the same tree reports a different, higher
-count under a dev venv (e.g. 161 there vs. 154 in CI, at the time this was
+count under a dev venv (e.g. 6 there vs. 0 in CI, at the time this was
 written). ``mypy-baseline.txt`` tracks CI's environment, not a dev venv. To
 check the baseline honestly before changing it, reproduce CI's number: run
 mypy from a venv containing only mypy itself, not this project's
@@ -26,7 +26,7 @@ Usage::
 
     python scripts/check_mypy_ratchet.py                         # what CI runs
     venv/bin/python scripts/check_mypy_ratchet.py --baseline 161  # dev venv: see above
-    venv/bin/python scripts/check_mypy_ratchet.py --baseline 0    # force a failure, for testing
+    venv/bin/python scripts/check_mypy_ratchet.py --baseline -1   # force a failure, for testing (the baseline is 0, so 0 passes)
 
 Run from a dev venv with no ``--baseline``, this EXITS 1 by design: it compares
 that venv's higher count against CI's baseline. That is the environment

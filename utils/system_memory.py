@@ -12,6 +12,7 @@ a cache went stale.
 
 from __future__ import annotations
 
+import sys
 import os
 from typing import NamedTuple
 
@@ -296,6 +297,8 @@ def _sysconf_total_bytes() -> int | None:
     Keeps the unlimited-limit rule working without psutil, whose absence
     must not let cgroup v1's sentinel become an 8 EiB memory budget.
     """
+    if sys.platform == 'win32':
+        return None
     try:
         page_size = os.sysconf('SC_PAGE_SIZE')
         page_count = os.sysconf('SC_PHYS_PAGES')

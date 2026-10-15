@@ -21,8 +21,8 @@ logger = logging.getLogger("facet.vlm_tagger")
 MAX_TAG_WORDS = 4
 
 # Lazy imports
-torch = None
-AutoProcessor = None
+torch: Any = None
+AutoProcessor: Any = None
 
 
 def _ensure_imports():
@@ -78,8 +78,8 @@ class VLMTagger:
         self.model_config = model_config
         self.scoring_config = scoring_config
         self.backend = backend
-        self.model = None
-        self.processor = None
+        self.model: Any = None
+        self.processor: Any = None
         from utils.device import get_device
         self.device = get_device()
 
@@ -121,7 +121,7 @@ class VLMTagger:
             self.valid_tags = set(vocab.keys())
 
         # Build prompt from config vocabulary (cached after first build)
-        self._prompt = None
+        self._prompt: str | None = None
 
     def _build_prompt(self) -> str:
         """Build a dynamic prompt from the config tag vocabulary.
@@ -742,7 +742,7 @@ Tags:"""
 
         # Split logprobs by comma tokens to get per-tag confidence
         tag_segments = []
-        current_logprobs = []
+        current_logprobs: list[float] = []
         for tok_text, logprob in zip(token_texts, token_logprobs):
             if ',' in tok_text and current_logprobs:
                 tag_segments.append(current_logprobs)

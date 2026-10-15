@@ -12,7 +12,7 @@ import threading
 import time
 from collections import deque
 from datetime import timedelta
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -42,7 +42,7 @@ JOB_KIND_PANORAMAS = 'panoramas'
 
 # Global scan state (only one scan or recompute job at a time)
 _scan_lock = threading.Lock()
-_scan_state = {
+_scan_state: dict[str, Any] = {
     'running': False,
     'kind': None,
     'process': None,
@@ -494,11 +494,18 @@ def recompute_status(
     local_running = _scan_state['running']
     holder = None if local_running else _cross_process_job_holder()
 
-    if local_running or holder is not None:
+    if local_running:
         return {
             'running': True,
-            'kind': _scan_state.get('kind') if local_running else holder.get('kind'),
-            'progress': _scan_state.get('progress') if local_running else None,
+            'kind': _scan_state.get('kind'),
+            'progress': _scan_state.get('progress'),
+            'exit_code': None,
+        }
+    if holder is not None:
+        return {
+            'running': True,
+            'kind': holder.get('kind'),
+            'progress': None,
             'exit_code': None,
         }
 

@@ -3,6 +3,7 @@ Facet scoring engine.
 
 Facet class and supporting functions extracted from facet.py.
 """
+from typing import Any
 import os
 import sys
 import time
@@ -122,29 +123,29 @@ from utils import (
 from utils.image_transforms import generate_photo_thumbnail
 
 # Lazy imports for image processing modules
-cv2 = None
-imagehash = None
-Image = None
-ExifTags = None
-BytesIO = None
-ThreadPoolExecutor = None
-as_completed = None
-TechnicalAnalyzer = None
-CompositionAnalyzer = None
-ImageCache = None
+cv2: Any = None
+imagehash: Any = None
+Image: Any = None
+ExifTags: Any = None
+BytesIO: Any = None
+ThreadPoolExecutor: Any = None
+as_completed: Any = None
+TechnicalAnalyzer: Any = None
+CompositionAnalyzer: Any = None
+ImageCache: Any = None
 
 # Lazy imports for GPU-dependent modules (torch, open_clip, batch_processor)
-torch = None
-F = None
-open_clip = None
-BatchProcessor = None
-load_aesthetic_head = None
-score_aesthetic = None
+torch: Any = None
+F: Any = None
+open_clip: Any = None
+BatchProcessor: Any = None
+load_aesthetic_head: Any = None
+score_aesthetic: Any = None
 
 # Lazy imports for new model manager
-ModelManager = None
-VLMCompositionAnalyzer = None
-SAMPNetScorer = None
+ModelManager: Any = None
+VLMCompositionAnalyzer: Any = None
+SAMPNetScorer: Any = None
 
 def _load_image_modules():
     """Load image processing modules only when needed."""
@@ -2108,6 +2109,8 @@ class Facet:
 
         Updates comp_score, composition_pattern, and power_point_score columns.
         """
+        # Load image modules (cv2, Image) - needed even in lightweight mode
+        _load_image_modules()
         from models.samp_net import SAMPNetScorer
 
         logger.info("Rescanning composition with SAMP-Net from stored thumbnails...")
@@ -2296,7 +2299,7 @@ class Facet:
                     total, device, len(passes), ", ".join("+".join(p) for p in passes))
 
         # Mutable counters shared across passes
-        counters = {'updated': {col: 0 for col in columns}, 'errors': 0,
+        counters: dict[str, Any] = {'updated': {col: 0 for col in columns}, 'errors': 0,
                     'declined': 0, 'liqe_too_small': 0}
 
         for pass_models in passes:

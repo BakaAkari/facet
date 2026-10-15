@@ -302,7 +302,10 @@ class PluginManager:
         query = quote(unquote(parsed.query), safe="=&+%")
         # urlunparse constructs a new URL — CodeQL treats this as untainted.
         safe_url = urlunparse((scheme, netloc, path, "", query, ""))
-        return safe_url, parsed.hostname
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("No hostname in URL")
+        return safe_url, hostname
 
     @classmethod
     def _send_webhook(cls, url: str, event_name: str, data: dict) -> None:

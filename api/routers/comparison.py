@@ -11,7 +11,7 @@ import sqlite3
 import sys
 from io import BytesIO
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
@@ -1629,11 +1629,15 @@ def api_get_panorama_detection():
 #: in the client's interface, with nothing keeping the three in step -- and they
 #: had already drifted: the client was one key short, so any body built from its
 #: type rather than echoed back from the GET would 422.
-PanoramaDetectionBody = create_model(
-    'PanoramaDetectionBody',
-    __config__=ConfigDict(extra='forbid'),
-    **{key: (type(value), ...) for key, value in PANORAMA_DEFAULTS.items()},
-)
+if TYPE_CHECKING:
+    class PanoramaDetectionBody(BaseModel):
+        pass
+else:
+    PanoramaDetectionBody = create_model(
+        'PanoramaDetectionBody',
+        __config__=ConfigDict(extra='forbid'),
+        **{key: (type(value), ...) for key, value in PANORAMA_DEFAULTS.items()},
+    )
 
 
 @router.put("/api/config/panorama_detection", response_model=PanoramaDetectionUpdateResponse, response_model_exclude_unset=True)

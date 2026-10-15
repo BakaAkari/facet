@@ -98,8 +98,9 @@ pip install pre-commit
 pre-commit install
 ```
 
-CI additionally runs an advisory (non-blocking) `mypy api/` type-check; run it
-locally with `mypy api/`.
+CI also runs `mypy api/` as a blocking ratchet: the build fails when the error
+count rises above `mypy-baseline.txt` (now 0). Run it locally with
+`python scripts/check_mypy_ratchet.py` from a venv holding only mypy.
 
 A `commit-msg` guard (`.githooks/commit-msg`) rejects commit messages that
 contain Claude session links or AI attribution trailers (`Claude-Session:`,

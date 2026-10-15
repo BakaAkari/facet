@@ -247,6 +247,7 @@ def _push_fields(row, prev: dict, push_ratings: bool, push_favorites: bool,
     pushes Immich's own rejected value (-1) whatever its star rating, because a
     photo the user threw away is not a 5-star one.
     """
+    rating: int | None
     if push_rejected and row["is_rejected"]:
         rating = REJECTED_RATING
     else:
@@ -603,7 +604,7 @@ def sync_to_immich(db_path, config: dict, user_id: str | None = None,
                 if new_state != current:
                     _save_synced_state(write_conn, scope, new_state)
     except (urllib_error.URLError, TimeoutError) as e:
-        e.partial_summary = dict(summary)
+        setattr(e, "partial_summary", dict(summary))
         raise
     for path in unmatched_paths[:UNMATCHED_LOG_LIMIT]:
         logger.warning("No Immich asset found for %s", path)
@@ -684,7 +685,7 @@ def push_photo_updates(db_path, config: dict, entries) -> list:
                        len(entries), e, exc_info=True)
         return [(RESULT_FAILED, e)] * len(entries)
 
-    results = []
+    results: list[tuple[str, BaseException | None]] = []
     pushed: dict[str, dict] = {}
     for facet_path, asset_id in entries:
         row = rows.get(facet_path)

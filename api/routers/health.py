@@ -328,7 +328,7 @@ def metrics(request: Request):
             1 if enabled else 0,
             "1 if WAL checkpoint thread is configured to run (performance.wal_checkpoint_minutes > 0)",
         )
-        if enabled:
+        if wal_thread is not None:
             gauge(
                 "facet_wal_thread_alive",
                 1 if wal_thread.is_alive() else 0,

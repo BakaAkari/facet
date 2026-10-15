@@ -15,7 +15,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from itertools import groupby
-from typing import Literal, Optional
+from typing import Literal, Optional, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -1609,11 +1609,11 @@ def keeper_hints(
             )
         }
         group_ids = [g for g in set(req.values()) if g is not None]
-        hints = {}
+        hints: dict[str, dict[str, Any]] = {}
         if not group_ids:
             return hints
         from_clause, from_params, is_rejected_col = _rejected_clause(user_id)
-        rows_by_group = {}
+        rows_by_group: dict[Any, list[dict[str, Any]]] = {}
         for r in select_in_chunks(
                 conn,
                 f"SELECT {_keeper_photo_cols(conn)} FROM {from_clause} "

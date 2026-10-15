@@ -5,7 +5,7 @@ Comparison submission and statistics management.
 import logging
 import sqlite3
 import uuid
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 from db import DEFAULT_DB_PATH, get_connection
 
@@ -208,7 +208,7 @@ class ComparisonManager:
         with get_connection(self.db_path) as conn:
             # Build WHERE clause
             conditions = []
-            params = []
+            params: list[Any] = []
 
             if category:
                 conditions.append("c.category = ?")
@@ -471,7 +471,7 @@ def record_culling_pairs(
         f"SELECT path, category FROM photos WHERE path IN ({placeholders})",
         keep_paths,
     ).fetchall())
-    rows = []
+    rows: list[tuple[Any, ...]] = []
     kept = sorted(keep_paths)
     for i, rejected in enumerate(sorted(reject_paths)):
         picks = {kept[i % len(kept)], kept[(i + 1) % len(kept)]}
