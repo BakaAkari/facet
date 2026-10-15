@@ -9,6 +9,10 @@ import { extractErrorDetail, isLibraryBusyError } from '../utils/http-error.util
 
 const CLIENT_ERRORS_URL = '/api/client-errors';
 
+// A read refused as library_busy changed nothing the user did, so it gets no
+// "try again" toast; only a save the user made is told why it did not land.
+const READ_METHODS = new Set(['GET', 'HEAD']);
+
 const isAuthUrl = (url: string) => url.startsWith('/api/auth/') || url.includes('/api/auth/');
 
 // Match the exact crash-report endpoint, not any URL that happens to contain
@@ -69,7 +73,11 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
         // a crash. Opened on the next task, after the caller's own error handling
         // (an optimistic revert and its generic "action failed" toast) has run, so
         // that toast cannot replace the one that says why and what to do.
-        setTimeout(() => snackBar.open(i18n.t(I18N.errors.library_busy), '', { duration: 6000 }));
+        if (!READ_METHODS.has(req.method)) {
+          // Assumes the caller's error handling runs within the current task (its
+          // own microtasks included), which a macrotask is guaranteed to follow.
+          setTimeout(() => snackBar.open(i18n.t(I18N.errors.library_busy), '', { duration: 6000 }));
+        }
       } else if (error.status >= 500) {
         snackBar.open(i18n.t(I18N.errors.server_error), '', { duration: 3000 });
         if (!isCrashReportUrl(req.url)) {

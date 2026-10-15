@@ -432,6 +432,76 @@ def test_an_interrupt_landing_on_the_read_only_probe_is_a_shutdown(tmp_path, cap
 
 
 # ---------------------------------------------------------------------------
+# The build status that /health and the write-retry decorator read
+# ---------------------------------------------------------------------------
+
+def test_a_real_build_reports_building_then_progress_then_ready(tmp_path, monkeypatch):
+    """start() reports ``building`` before the thread runs; each index built by
+    create_photo_indexes advances ``done`` through on_built; the end is ``ready``."""
+    from api import schema_startup
+    db = _make_db(tmp_path, drop_gallery_indexes=True)
+    real_set_status = schema_startup._set_status
+    updates = []
+
+    def recording_set_status(**fields):
+        updates.append(dict(fields))
+        real_set_status(**fields)
+
+    monkeypatch.setattr(schema_startup, "_set_status", recording_set_status)
+    build = PhotoIndexBuild(db).start()
+    build._thread.join(60)
+    assert not build.is_running()
+
+    n = len(GALLERY_INDEXES)
+    assert updates[0] == {"state": schema_startup.STATE_BUILDING, "done": 0, "total": 0}
+    progress = [(u["done"], u["total"]) for u in updates[1:-1]]
+    assert progress == [(k, n) for k in range(n + 1)]
+    assert updates[-1] == {"state": schema_startup.STATE_READY, "done": n, "total": n}
+    assert schema_startup.index_build_status() == {
+        "state": schema_startup.STATE_READY, "done": n, "total": n}
+
+
+@pytest.mark.parametrize("result, state", [
+    ("built", "ready"), ("current", "ready"), ("deferred", "deferred"),
+    ("interrupted", "stopped"), ("failed", "failed"),
+])
+def test_each_run_result_ends_in_its_state(tmp_path, monkeypatch, result, state):
+    from api import schema_startup
+    seen_while_running = []
+
+    def run(self):
+        seen_while_running.append(schema_startup.index_build_status()["state"])
+        self._progress(2, 3)
+        return result
+
+    monkeypatch.setattr(PhotoIndexBuild, "run", run)
+    build = PhotoIndexBuild(str(tmp_path / "unused.db")).start()
+    build._thread.join(10)
+    assert seen_while_running == [schema_startup.STATE_BUILDING]
+    assert schema_startup.index_build_status() == {"state": state, "done": 2, "total": 3}
+
+
+def test_a_run_that_raises_never_leaves_building(tmp_path, monkeypatch):
+    """run() catches Exception itself, but anything escaping it (a BaseException, a
+    bug) must not leave ``building`` behind: writes would never retry again and
+    /health would report a build that is over. Driven on this thread, so the raise
+    reaches the test instead of the thread excepthook."""
+    from api import schema_startup
+
+    def run(self):
+        self._progress(1, 4)
+        raise RuntimeError("escaped run()")
+
+    monkeypatch.setattr(PhotoIndexBuild, "run", run)
+    build = PhotoIndexBuild(str(tmp_path / "unused.db"))
+    schema_startup._set_status(state=schema_startup.STATE_BUILDING, done=0, total=0)
+    with pytest.raises(RuntimeError, match="escaped run"):
+        build._thread_main()
+    assert schema_startup.index_build_status() == {
+        "state": schema_startup.STATE_FAILED, "done": 1, "total": 4}
+
+
+# ---------------------------------------------------------------------------
 # Step 12: the shutdown checkpoint
 # ---------------------------------------------------------------------------
 

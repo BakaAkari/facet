@@ -217,3 +217,60 @@ class TestResolveHideDefaults:
         with mock.patch.object(db_helpers, "VIEWER_CONFIG", {"defaults": {"hide_blinks": True}}):
             resolve_hide_defaults(params)
         assert params == {"hide_bursts": "0"}
+
+
+class TestIsLockedError:
+    """Only SQLITE_BUSY is "come back in a moment". SQLITE_LOCKED is a conflict
+    inside one connection that waiting does not clear: it stays a 500."""
+
+    @pytest.mark.parametrize("message", [LOCKED_MESSAGE, "database is busy"])
+    def test_busy_is_a_lock_error(self, message):
+        assert db_helpers.is_locked_error(sqlite3.OperationalError(message))
+
+    @pytest.mark.parametrize("message", [
+        "database table is locked", "database table is locked: photos",
+        "database schema is locked: main", SCHEMA_ERROR_MESSAGE,
+    ])
+    def test_locked_table_or_schema_is_not(self, message):
+        assert not db_helpers.is_locked_error(sqlite3.OperationalError(message))
+
+
+class TestManualTagsProbeCache:
+    """``is_manual_tags_available`` caches both answers: a True for good (the table
+    never goes away), a False for ``PHOTO_TAGS_CACHE_TTL`` (a CLI upgrade may create
+    it while the server is up)."""
+
+    @pytest.fixture()
+    def probe(self, tmp_path, monkeypatch, clock):
+        db_path = tmp_path / "library.db"
+        sqlite3.connect(db_path).close()
+        opened = []
+
+        def connect():
+            opened.append(1)
+            return sqlite3.connect(db_path)
+
+        monkeypatch.setattr(db_helpers, "DEFAULT_DB_PATH", db_path)
+        monkeypatch.setattr(db_helpers, "get_db_connection", connect)
+        monkeypatch.setattr(db_helpers, "_manual_tags_present", {})
+        return types.SimpleNamespace(db_path=db_path, opened=opened, clock=clock)
+
+    def test_a_missing_table_is_cached_for_the_ttl(self, probe):
+        assert db_helpers.is_manual_tags_available() is False
+        probe.clock.now += db_helpers.PHOTO_TAGS_CACHE_TTL - 1
+        assert db_helpers.is_manual_tags_available() is False
+        assert probe.opened == [1]
+
+        with sqlite3.connect(probe.db_path) as conn:
+            conn.execute("CREATE TABLE photo_manual_tags (photo_path TEXT, tag TEXT)")
+        probe.clock.now += 1
+        assert db_helpers.is_manual_tags_available() is True
+        assert probe.opened == [1, 1]
+
+    def test_a_present_table_is_never_probed_again(self, probe):
+        with sqlite3.connect(probe.db_path) as conn:
+            conn.execute("CREATE TABLE photo_manual_tags (photo_path TEXT, tag TEXT)")
+        assert db_helpers.is_manual_tags_available() is True
+        probe.clock.now += 10 * db_helpers.PHOTO_TAGS_CACHE_TTL
+        assert db_helpers.is_manual_tags_available() is True
+        assert probe.opened == [1]

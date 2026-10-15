@@ -32,6 +32,26 @@ class TestHealthEndpoint:
         assert resp.status_code == 200
         assert resp.json()["gallery_indexes"] == {"state": "building", "done": 3, "total": 8}
 
+    def test_liveness_never_opens_the_database(self, client):
+        """The app-wide schema warm-up skips /health: with every schema cache cold,
+        liveness still opens no connection, while any other route does (control)."""
+        import sqlite3
+        from tests.test_async_routes_do_not_block import _cold_caches
+        real_connect = sqlite3.connect
+        opened = []
+
+        def recording_connect(*args, **kwargs):
+            opened.append(args[0] if args else kwargs.get("database"))
+            return real_connect(*args, **kwargs)
+
+        _cold_caches()
+        with mock.patch.object(sqlite3, "connect", recording_connect):
+            resp = client.get("/health")
+            assert resp.status_code == 200
+            assert opened == []
+            client.get("/ready")
+        assert opened, "control: a cold warm-up on any other route opens the database"
+
 
 class TestSecurityHeaders:
     def test_safe_headers_always_present(self, client):

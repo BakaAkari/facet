@@ -1107,7 +1107,7 @@ python database.py --optimize        # 整理数据库碎片
 
 图库的计数、被隐藏照片的汇总以及每一页，都会在各自的隐藏子句中读取同一组可见性列（眨眼、连拍、重复、包围曝光、全景、被拒绝、垃圾）。八个覆盖索引（`idx_gallery_aggregate`、`idx_gallery_date_desc`、`idx_gallery_date_asc`、`idx_gallery_category`、`idx_gallery_camera`、`idx_star_rating_path`、`idx_gallery_iaa_asc` 和 `idx_stats_categories`，定义在 `db/schema.py` 中）把这些列与排序列放在一起，因此这些查询直接由索引回答，而不必遍历整张 `photos` 表。在一个 13 万张照片的图库上，默认图库页面因此从约 1.2 秒降到约 30 毫秒。
 
-- **在查看器启动时于后台构建一次。** 升级后的第一次启动会在后台线程中构建所有缺失的索引，同时查看器已经在提供服务：在一个 13 万张照片的图库上，页面缓存为热时每个索引约 5 秒，为冷时超过一分钟（实测 4.8 至 6.3 秒；`idx_gallery_aggregate` 为 76 秒），并使数据库增大约 106 至 111 MB（实测）。某个索引正在写入时，保存会以 503 `library_busy` 被拒绝，并提示稍后重试。如果先运行的是扫描（`python facet.py`）或 `python database.py`，则由它构建这些索引。关于构建期间的写入、关闭、图库锁、`--workers N` 和 Docker，参见 [DEPLOYMENT.md](DEPLOYMENT.md#查看器启动与图库索引)。
+- **在查看器启动时于后台构建一次。** 升级后的第一次启动会在后台线程中构建所有缺失的索引，同时查看器已经在提供服务：在一个 13 万张照片的图库上，仅 `idx_gallery_aggregate` 一个索引在两次实测中分别耗时 45.6 秒和 54.1 秒，这些索引使数据库增大约 106 至 111 MB（实测）。某个索引正在写入时，保存会以 503 `library_busy` 被拒绝，并提示稍后重试。如果先运行的是扫描（`python facet.py`）或 `python database.py`，则由它构建这些索引。关于构建期间的写入、关闭、图库锁、`--workers N` 和 Docker，参见 [DEPLOYMENT.md](DEPLOYMENT.md#查看器启动与图库索引)。
 - **写入略慢。** 更新这些索引包含的某一列（例如 `is_burst_lead` 或 `aggregate`）时，每行约多花 0.5 至 0.7 毫秒；扫描保存整行时，未观察到超出多次运行间波动（每张照片最多约 1 毫秒）的差异（在同一图库的 5 万行副本上实测）。
 - **计数缓存。** 计数和被隐藏照片的汇总会缓存 5 分钟。缓存键包含数据库的变更令牌，因此同一主机上任何进程的任何连接提交（包括 `--detect-junk` 和 `--recompute-*` 命令）都会使其失效。通过网络共享从另一台机器提交的更改，要等该缓存项过期后才会被发现。
 

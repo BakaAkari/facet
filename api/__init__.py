@@ -189,8 +189,10 @@ def _locked_error_in_chain(exc):
 def _library_busy_response(request: Request, exc) -> JSONResponse:
     """503 ``library_busy`` + Retry-After: the write is possible, just not now.
 
-    One WARNING line and no traceback: the lock is held by another writer (most
-    often the gallery index build after an upgrade, or a scan), not a fault.
+    This logs one WARNING line and no traceback: the lock is held by another writer
+    (most often the gallery index build after an upgrade, or a scan), not a fault.
+    A route that logged the error itself before raising its HTTPException(500)
+    has already logged it, traceback included; only the response changes.
     """
     from api.db_helpers import LIBRARY_BUSY_DETAIL, LIBRARY_BUSY_RETRY_AFTER_SECONDS
     logger.warning("503 %s on %s %s: %s", LIBRARY_BUSY_DETAIL, request.method,

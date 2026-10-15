@@ -80,6 +80,17 @@ def _reset_index_build_status():
 
 
 @pytest.fixture(autouse=True)
+def _reset_culling_groups_cache():
+    """The culling-groups memo is process-global with a 45 s TTL: a result one test
+    computed (an empty feed, say) would otherwise be served to the next test that
+    asks with the same parameters."""
+    from api.routers.burst_culling import _invalidate_culling_groups_cache
+    _invalidate_culling_groups_cache()
+    yield
+    _invalidate_culling_groups_cache()
+
+
+@pytest.fixture(autouse=True)
 def _reset_licensing_policy():
     """Licensing policy is process-global state: never let one test's mode leak.
 

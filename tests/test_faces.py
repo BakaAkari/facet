@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from api import create_app
 from api.auth import CurrentUser, require_authenticated
+from api.db_helpers import LIBRARY_BUSY_DETAIL, LIBRARY_BUSY_RETRY_AFTER_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +467,9 @@ class TestLockedDatabaseRetry:
         conn_mock, _ = self._locking_conn(fail_times=99)
         resp = self._post(conn_mock, raise_server_exceptions=False)
         assert resp.status_code == 503
-        assert resp.headers.get("Retry-After") == "1"
+        # The app's library_busy contract (api/__init__.py), shared by every route.
+        assert resp.json() == {"detail": LIBRARY_BUSY_DETAIL}
+        assert resp.headers.get("Retry-After") == str(LIBRARY_BUSY_RETRY_AFTER_SECONDS)
 
     def test_non_lock_database_error_still_500s_without_retrying(self):
         conn_mock = mock.MagicMock()

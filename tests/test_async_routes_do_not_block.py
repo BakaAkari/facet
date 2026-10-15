@@ -32,8 +32,8 @@ from fastapi.testclient import TestClient
 
 from api import create_app
 from api.auth import (
-    CurrentUser, get_optional_user, require_authenticated, require_edition,
-    require_superadmin,
+    CurrentUser, get_optional_user, require_auth, require_authenticated, require_edition,
+    require_scan_access, require_superadmin,
 )
 from tests.test_route_coverage import (
     AUTH_ROUTES, PARAMETERISED_ROUTES, POST_ROUTES, PUBLIC_ROUTES, SUPERADMIN_ROUTES,
@@ -117,11 +117,14 @@ def _cold_caches():
     with api_config._count_cache_lock:
         api_config._count_cache.clear()
     close_change_token_sentinels()
+    from api.routers.burst_culling import _invalidate_culling_groups_cache
+    _invalidate_culling_groups_cache()
 
 
 def _user_app(user):
     app = create_app()
-    for dep in (require_edition, require_authenticated, require_superadmin, get_optional_user):
+    for dep in (require_edition, require_auth, require_authenticated, require_superadmin,
+                require_scan_access, get_optional_user):
         app.dependency_overrides[dep] = lambda u=user: u
     return app
 
@@ -170,8 +173,11 @@ def _requests():
 REQUESTS = list(_requests())
 
 
-def _drive(requests):
-    """Run ``requests`` with cold caches under the guard; return the hits per request."""
+def _drive(requests, statuses=None):
+    """Run ``requests`` with cold caches under the guard; return the hits per request.
+
+    ``statuses``, when given, receives ``(method, path, status code)`` per request.
+    """
     apps = {}
     found = []
     for method, path, params, body, user in requests:
@@ -182,14 +188,100 @@ def _drive(requests):
         client = apps[key]
         _cold_caches()
         with loop_guard() as hits:
-            client.request(method, path, params=params, json=body)
+            resp = client.request(method, path, params=params, json=body)
+        if statuses is not None:
+            statuses.append((method, path, resp.status_code))
         found.extend(f"{method} {path}: {hit}" for hit in hits)
     return found
 
 
-@pytest.mark.usefixtures("seeded_photos")
-def test_no_route_runs_a_blocking_opener_on_the_event_loop():
-    assert _drive(REQUESTS) == []
+# The placeholders of the request lists, bound to real rows by the test below so
+# that a handler runs to its end instead of stopping at its 404.
+_PLACEHOLDER_PHOTO = '/nonexistent.jpg'
+_PLACEHOLDER_ALBUM_ID = 1
+_SHARE_TOKEN = 'x'  # the token ASYNC_EXTRA_ROUTES sends to /api/shared/album
+# Required parameters the request lists leave out (they only assert "no 5xx").
+_REQUIRED_PARAMS = {
+    '/api/timeline/dates': {'year': 2026},
+    '/api/timeline/months': {'year': 2026},
+}
+
+# Every request answers 2xx except these, each for a reason the guard cannot cheaply
+# remove. Anything else that misses its 2xx fails the test, so a route that starts
+# stopping at a 404 before its handler body runs does not pass unnoticed.
+EXPECTED_NON_2XX = {
+    ('GET', '/api/download/options'): 404,  # the seeded row has no file on disk
+    ('GET', '/api/frame/photos'): 404,  # frame.tokens is empty: the feature 404s
+    ('GET', '/api/frame/next'): 404,
+    ('GET', '/api/frame/image/1.deadbeef'): 404,
+    ('GET', '/dav/nonexistent.jpg'): 404,  # upload.username is empty: /dav 404s
+    ('GET', '/api/capsules/x/photos'): 404,  # capsule ids are computed; 'x' is none
+    # A relative path (no leading slash) names no photo; the absolute form of the
+    # same route is driven by PARAMETERISED_ROUTES and answers 200.
+    ('GET', '/api/similar_photos/conftest-seeded/a.jpg'): 404,
+}
+
+
+@pytest.fixture()
+def seeded_album(seeded_photos):
+    """An album shared under ``_SHARE_TOKEN`` holding the first seeded photo; its id."""
+    conn = sqlite3.connect(os.environ["DB_PATH"])
+    try:
+        album_id = conn.execute(
+            "INSERT INTO albums (user_id, name, share_token) VALUES (?, ?, ?)",
+            (EDITION.user_id, "loop-guard album", _SHARE_TOKEN)).lastrowid
+        conn.execute("INSERT INTO album_photos (album_id, photo_path) VALUES (?, ?)",
+                     (album_id, seeded_photos[0]["path"]))
+        conn.commit()
+    finally:
+        conn.close()
+    yield album_id
+    conn = sqlite3.connect(os.environ["DB_PATH"])
+    try:
+        conn.execute("DELETE FROM album_photos WHERE album_id = ?", (album_id,))
+        conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _bind(requests, photo_path, album_id):
+    """``requests`` with the photo and album placeholders replaced by real rows."""
+    def value(v):
+        if v == _PLACEHOLDER_PHOTO:
+            return photo_path
+        if isinstance(v, list):
+            return [value(item) for item in v]
+        return v
+
+    album_segment = f"/{_PLACEHOLDER_ALBUM_ID}/"
+    for method, path, params, body, user in requests:
+        if path.startswith('/api/'):
+            path = path.replace(_PLACEHOLDER_PHOTO, photo_path)
+            if path.startswith(('/api/albums/', '/api/shared/album/')):
+                path = (path + '/').replace(album_segment, f"/{album_id}/", 1).rstrip('/')
+        params = {**_REQUIRED_PARAMS.get(path, {}), **{k: value(v) for k, v in params.items()}}
+        if params.get('album_id') == _PLACEHOLDER_ALBUM_ID:
+            params['album_id'] = album_id
+        if isinstance(body, dict):
+            body = {k: value(v) for k, v in body.items()}
+        yield method, path, params, body, user
+
+
+def _answered_as_expected(method, path, status):
+    expected = EXPECTED_NON_2XX.get((method, path))
+    return status == expected if expected is not None else 200 <= status < 300
+
+
+def test_no_route_runs_a_blocking_opener_on_the_event_loop(seeded_photos, seeded_album,
+                                                           monkeypatch):
+    from api.routers import scan
+    monkeypatch.setitem(scan.VIEWER_CONFIG, 'features',
+                        {**scan.VIEWER_CONFIG.get('features', {}), 'show_scan_button': True})
+    statuses = []
+    assert _drive(list(_bind(REQUESTS, seeded_photos[0]["path"], seeded_album)), statuses) == []
+    assert [st for st in statuses if not _answered_as_expected(*st)] == []
+    assert len(statuses) == len(REQUESTS)
 
 
 def test_a_raw_download_converts_off_the_event_loop(tmp_path, seed_photos_prefix):

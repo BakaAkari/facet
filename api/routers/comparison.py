@@ -26,7 +26,7 @@ from api.config import (
 )
 from api.database import get_db
 from api.path_validation import resolve_photo_disk_path
-from api.db_helpers import get_visibility_clause
+from api.db_helpers import get_visibility_clause, refuse_while_gallery_index_build_runs
 from api.models.comparison import (
     NextPairResponse, DownloadOptionsResponse, CategoryPrioritiesResponse,
     ScoringContextsResponse, ComparisonStatsResponse, CategoryWeightsResponse,
@@ -393,6 +393,7 @@ async def api_recalculate(
 
     Runs the same logic as ``python facet.py --recompute-average``.
     """
+    refuse_while_gallery_index_build_runs()
     try:
         config_path = str(_CONFIG_PATH)
 

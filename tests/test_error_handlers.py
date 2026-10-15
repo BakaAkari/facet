@@ -7,6 +7,7 @@ throwaway app — no database, auth, or shared fixtures involved.
 import logging
 import time
 
+import pytest
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
@@ -178,7 +179,7 @@ class TestLibraryBusy:
     def test_an_undecorated_write_route_answers_503_with_one_warning(self, monkeypatch, caplog):
         """POST /api/albums has no retry decorator and no try: the raw lock error."""
         client = self._client(monkeypatch)
-        client.get("/health")  # warm the schema caches before the lock is taken
+        client.get("/ready")  # warm the schema caches before the lock is taken (/health skips it)
         caplog.clear()
         with self._write_locked(), caplog.at_level(logging.INFO, logger="api"):
             resp = client.post("/api/albums", json={"name": "busy-probe"})
@@ -201,6 +202,54 @@ class TestLibraryBusy:
             resp = client.post("/api/photo/set_rating",
                                json={"photo_path": seeded_photos[0]["path"], "rating": 4})
         self._assert_busy(resp)
+
+    @pytest.mark.parametrize("path, body", [
+        ("/api/recalculate", None),
+        ("/api/stats/categories/recompute", {"category": "portrait"}),
+    ])
+    def test_a_facet_child_is_not_spawned_during_the_index_build(self, monkeypatch, path, body):
+        """The build holds facet.LibraryLock: a child spawned now fails on it (500)."""
+        import asyncio
+        from api import schema_startup
+        spawned = []
+
+        async def no_spawn(*args, **kwargs):
+            spawned.append(args)
+            raise AssertionError("spawned a facet.py child during the index build")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", no_spawn)
+        schema_startup._set_status(state=schema_startup.STATE_BUILDING, done=1, total=8)
+        resp = self._client(monkeypatch).post(path, json=body)
+        self._assert_busy(resp)
+        assert spawned == []
+
+    @pytest.mark.parametrize("message", [
+        "database table is locked", "database schema is locked: main",
+    ])
+    def test_a_locked_table_or_schema_is_still_a_500(self, message):
+        """SQLITE_LOCKED is a conflict inside one connection, not another writer."""
+        import sqlite3
+        from fastapi import HTTPException
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+        from api import http_error_handler, sqlite_operational_error_handler
+        app = _make_app()
+        app.add_exception_handler(sqlite3.OperationalError, sqlite_operational_error_handler)
+        app.add_exception_handler(StarletteHTTPException, http_error_handler)
+
+        @app.get("/raw")
+        def raw():
+            raise sqlite3.OperationalError(message)
+
+        @app.get("/wrapped")
+        def wrapped():
+            try:
+                raise sqlite3.OperationalError(message)
+            except sqlite3.Error as ex:
+                raise HTTPException(status_code=500, detail="Failed") from ex
+
+        client = TestClient(app)
+        assert client.get("/raw").status_code == 500
+        assert client.get("/wrapped").status_code == 500
 
     def test_a_non_lock_operational_error_is_still_a_500(self, caplog):
         import sqlite3

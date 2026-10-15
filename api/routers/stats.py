@@ -22,7 +22,9 @@ from api.config import (
     _CONFIG_PATH, reload_config, server_scoring_config,
 )
 from api.database import get_async_db, get_db
-from api.db_helpers import get_visibility_clause, to_exif_date, to_iso_date
+from api.db_helpers import (
+    get_visibility_clause, refuse_while_gallery_index_build_runs, to_exif_date, to_iso_date,
+)
 from api.config_writes import update_category_weights
 from api.models.stats import (
     StatsCategoryCorrelationsResponse, StatsCategoryOverlapResponse,
@@ -1104,6 +1106,7 @@ async def api_stats_categories_recompute(
     if not body.category:
         raise HTTPException(status_code=400, detail='Missing category')
 
+    refuse_while_gallery_index_build_runs()
     try:
         config_path = str(_CONFIG_PATH)
         proc = await asyncio.create_subprocess_exec(

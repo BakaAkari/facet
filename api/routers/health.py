@@ -56,6 +56,10 @@ def _sanitize_log_field(value: str | None) -> str:
 
 router = APIRouter(tags=["health"])
 
+# The liveness route. The app-wide schema warm-up skips it (api/db_helpers.py),
+# so a liveness probe never touches the database.
+LIVENESS_PATH = "/health"
+
 
 class GalleryIndexStatus(BaseModel):
     """The background gallery index build of this process (api/schema_startup.py).
@@ -77,7 +81,7 @@ class HealthResponse(BaseModel):
     gallery_indexes: GalleryIndexStatus
 
 
-@router.get("/health", response_model=HealthResponse)
+@router.get(LIVENESS_PATH, response_model=HealthResponse)
 def health():
     """Liveness check — confirms the process is running, and reports the gallery
     index build that follows an upgrade (in-process state, no database access)."""

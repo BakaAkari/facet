@@ -238,6 +238,18 @@ describe('errorInterceptor', () => {
       expect(snackBarMock.open.mock.calls.map(call => call[0])).toEqual(['errors.action_failed', 'errors.library_busy']);
     });
 
+    it('stays silent on a read refused as busy: no toast and no crash report', async () => {
+      next.mockReturnValue(throwError(() => busy()));
+      const seen: unknown[] = [];
+      runInterceptor(new HttpRequest('GET', '/api/photos')).subscribe({ error: e => seen.push(e) });
+
+      // Past the task the busy toast would have been opened on.
+      await new Promise(resolve => setTimeout(resolve));
+      expect(seen).toHaveLength(1);
+      expect(snackBarMock.open).not.toHaveBeenCalled();
+      expect(backendMock.handle).not.toHaveBeenCalled();
+    });
+
     it('keeps a 503 without that detail on the server-error path', () =>
       new Promise<void>((resolve) => {
         next.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 503, url: '/api/photos' })));
