@@ -28,7 +28,7 @@ from api.db_helpers import (
     build_photo_select_columns, album_filter_clause,
     format_date, to_exif_date, paginate,
 )
-from api.top_picks import get_top_picks_score_sql, get_top_picks_threshold
+from api.top_picks import get_top_picks_score_sql, get_top_picks_threshold, with_top_picks_alias
 from api.types import (
     VALID_SORT_COLS, TYPE_FILTERS, normalize_params, get_photo_types, order_by_clause,
     JUNK_ANY, JUNK_NOT_JUNK,
@@ -950,9 +950,7 @@ async def api_select_bottom_percent(
 
             # top_picks_score is a computed SELECT alias (not a column); learned_score
             # is now a denormalized photos column, so only top_picks needs injecting.
-            select_cols = ["path"]
-            if 'top_picks_score' in order_by_clause:
-                select_cols.append(f"({get_top_picks_score_sql()}) as top_picks_score")
+            select_cols = with_top_picks_alias(["path"], 'top_picks_score' in order_by_clause)
             limit = min(cut, _SELECT_BOTTOM_MAX)
             # Offset to the bottom of the ranking so a capped selection returns the
             # WORST `limit` photos, not the best of the cut. When not truncated
@@ -1168,9 +1166,7 @@ async def api_photos(
                 params.get('top_picks_filter') == '1' or
                 'top_picks_score' in order_by_clause
             )
-            if needs_top_picks_score:
-                top_picks_expr = get_top_picks_score_sql()
-                select_cols.append(f"({top_picks_expr}) as top_picks_score")
+            select_cols = with_top_picks_alias(select_cols, needs_top_picks_score)
 
             # learned_score is a denormalized, indexed photos column (synced by
             # train_ranker for the global ranker), so the "My Taste" sort orders by

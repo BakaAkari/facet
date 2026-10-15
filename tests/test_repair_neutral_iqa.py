@@ -21,6 +21,7 @@ import pytest
 import db.maintenance as maintenance
 from db.maintenance import NEUTRAL_IQA_COLUMNS, repair_neutral_iqa
 from db.schema import init_database
+from db.stats_cache import METRIC_RANGES_KEY
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FACET_SCRIPT = os.path.join(_REPO_ROOT, "facet.py")
@@ -138,7 +139,7 @@ class TestMetricRangesCache:
     def _seed_cache(self, path):
         conn = sqlite3.connect(path)
         conn.execute("INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-                     ('metric_ranges', json.dumps({'ranges': {}}), 1.0))
+                     (METRIC_RANGES_KEY, json.dumps({'ranges': {}}), 1.0))
         conn.execute("INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
                      ('other_key', '1', 1.0))
         conn.commit()
@@ -161,7 +162,7 @@ class TestMetricRangesCache:
         _insert(db_path, '/r/a.jpg', liqe_score=6.0)
         self._seed_cache(db_path)
         repair_neutral_iqa(db_path, verbose=False)
-        assert self._keys(db_path) == {'metric_ranges', 'other_key'}
+        assert self._keys(db_path) == {METRIC_RANGES_KEY, 'other_key'}
 
 
 def test_aggregate_is_unchanged():

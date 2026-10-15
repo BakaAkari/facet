@@ -312,6 +312,30 @@ def _resolve_single_pass(requested, aesthetic_model, policy_=None):
     return False
 
 
+def _scan_route(args, single_pass):
+    """Which processor a scan runs, and the ``scan_runs.mode`` label it records.
+
+    ``single_pass`` is the resolved decision (``--single-pass`` or
+    ``processing.mode: single-pass``, after ``_resolve_single_pass``), not the
+    flag. Returns ``(route, scan_mode)``:
+
+    * ``'pass'``: ``--pass NAME``, one pass of the multi-pass loader;
+    * ``'multi'``: ``ChunkedMultiPassProcessor`` (the default, and the fallback
+      for a profile with no aesthetic head);
+    * ``'single-tuned'``: ``BatchProcessor`` with auto-tuning, for the explicit
+      ``--single-pass`` flag;
+    * ``'single-bare'``: ``BatchProcessor`` for ``processing.mode: single-pass``
+      from config alone.
+
+    ``--dry-run`` never reaches the processors, so it is not an input here.
+    """
+    if args.single_pass_name:
+        return 'pass', f"pass:{args.single_pass_name}"
+    if not single_pass:
+        return 'multi', 'multi-pass'
+    return ('single-tuned' if args.single_pass else 'single-bare'), 'single-pass'
+
+
 def _report_dry_run(results, sample_count):
     """Print the dry-run results table and return the process exit code.
 
@@ -1822,8 +1846,7 @@ def _run_scan(args, resumed_run):
             exit(1)
         logger.warning("A scan appears to be running concurrently; starting a separate run.")
 
-    scan_mode = (f"pass:{args.single_pass_name}" if args.single_pass_name
-                 else 'single-pass' if single_pass else 'multi-pass')
+    route, scan_mode = _scan_route(args, single_pass)
     scan_run = ScanRun.start(
         args.db, scan_mode,
         {'directories': [os.path.realpath(str(p)) for p in args.photo_paths], 'force': args.force},
@@ -1840,7 +1863,7 @@ def _run_scan(args, resumed_run):
     emit_progress('scoring', 0, len(todo_list), force=True)
     try:
         # Check for single-pass mode or specific pass
-        if args.single_pass_name:
+        if route == 'pass':
             # Run specific pass only
             from processing.multi_pass import run_single_pass
             from models.model_manager import ModelManager
@@ -1859,7 +1882,7 @@ def _run_scan(args, resumed_run):
                     exit(1)
             logger.info("Processed %d photos with %s pass", processed, args.single_pass_name)
 
-        elif args.single_pass and single_pass:
+        elif route == 'single-tuned':
             # Force single-pass mode (old --batch behavior - all models loaded at once)
             from processing.batch_processor import BatchProcessor
             from config import recalculate_batch_settings
@@ -1946,7 +1969,7 @@ def _run_scan(args, resumed_run):
             # `processing.mode: single-pass` from config, after the TOPIQ-profile fallback
             proc_settings = scorer.config.get_processing_settings()
 
-            if not single_pass:
+            if route == 'multi':
                 processor = ChunkedMultiPassProcessor(
                     scorer, model_manager, scorer.config.config,
                     on_error=scan_run.record_failure,

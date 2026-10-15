@@ -110,7 +110,7 @@ it 820, pt 818, zh 806).
   real method) and `tests/test_batch_processor_e2e.py` (its `FakeScorer` stays as is; the new tests build their
   own).
 - `scripts/bench/scoring_throughput.py` (passes `--single-pass`, lines 284/348): on `16gb`/`24gb` it now
-  silently measures multi-pass. Flagged in Q13, not edited.
+  silently measures multi-pass. Q13 flagged it; Step 8(d) later put that fact in its `--single-pass` help.
 - `docs/CONFIGURATION.md:794` "35GB+ (`24gb` profile) | All models together (single pass)": that is the
   multi-pass PLANNER's one-group plan, not `--single-pass`. `docs/CONFIGURATION.md:589` likewise.
 - `db/info.py`, `tests/test_route_coverage.py` (drives GET routes generically, no reference to the removed
@@ -118,10 +118,11 @@ it 820, pt 818, zh 806).
   mentions `scan_failures` outside `processing/` and `tests/`, and `db/maintenance.py:554-700` syncs `photos`
   and `faces` only, so no bulk copy enumerates side tables).
 - The `--score-topiq` flow and the `topiq_score` / `aesthetic` / `aesthetic_v25` columns (Q2).
-- The `scan_failures` PRIMARY KEY `(scan_run_id, path)`, and `processing/multi_pass.py` (including the
-  `'load'` stage label that `BatchProcessor` stamps on every batch failure).
-- `get_aesthetic_with_embedding` (scorer.py:1072, `aesthetic_score = 5.0` at 1079) and the dead
-  `get_aesthetic_score` (1061, no caller anywhere): flagged in Q7.
+- The `scan_failures` PRIMARY KEY `(scan_run_id, path)`, and `processing/multi_pass.py`. (The `'load'` stage
+  label that `BatchProcessor` stamped on every batch failure was changed later, by Step 8(a): inference and
+  post-processing failures are now `'score'`.)
+- `get_aesthetic_with_embedding` and the dead `get_aesthetic_score`: flagged in Q7, then fixed by Step 8(b)
+  (`get_aesthetic_score` deleted; `get_aesthetic_with_embedding` returns `None` with no head).
 - `ChunkedMultiPassProcessor.mode` (assigned, never read; `git grep -n "self\.mode" processing/multi_pass.py`).
 - `get_failed_paths` / `--retry-failed` (they `SELECT DISTINCT path`, so they are indifferent to the merge).
 - No new UI string, so `.claude/patterns/i18n-sync.md` (client i18n) does not apply; the docs translations in
@@ -288,8 +289,11 @@ it 820, pt 818, zh 806).
      `(None, clip_embedding, None, 'topiq')`, never a neutral 5.0 labelled `clip-mlp`. `score_photo_from_pil`
      stores `'aesthetic': None if aesthetic is None else round(aesthetic, 2)` (1516). `facet._report_dry_run`
      prints a `None` aesthetic as `n/a` (column `%6s`) and averages the aesthetic over the samples that have
-     one, printing `n/a` when none has. Error text is path-neutral: "no aesthetic head loaded: this profile
-     scores aesthetics with TOPIQ, which only the multi-pass scan runs".
+     one, printing `n/a` when none has. Error text is path-neutral and cause-neutral (reworded after the
+     independent review, which found the TOPIQ wording wrong for a `clip-mlp` profile with a non-768-dim
+     embedding): "no aesthetic head loaded: no CLIP+MLP aesthetic head is available for this profile (SigLIP
+     embeddings, a TOPIQ profile or an embedding_dim other than 768), so single-pass cannot score aesthetics;
+     run multi-pass".
      (d) `cli_args.py`: epilog line 26 becomes "Force single-pass (all models at once; legacy/8gb profiles)";
      the `--single-pass` help (82-83) says it applies to profiles scored with the CLIP+MLP head (`legacy`,
      `8gb`) and that on `16gb`/`24gb` it logs a warning and runs multi-pass. The `--dry-run` help (89-90) gains
@@ -842,13 +846,16 @@ dir or a copy in the scratchpad.
    `git status --porcelain` is not available).
 9. Disclosed test changes, to be listed verbatim in the PR: ONE inverted assertion
    (`test_licensing_gate.py::TestCommercialSingleImageAesthetic::test_default_mode_is_unchanged` ->
-   `test_default_mode_without_a_head_raises`, from `== (5.0, b'emb', None, 'clip-mlp')` to `pytest.raises(
-   RuntimeError)`, because that tuple was the fabricated score); ONE renamed and strengthened test
+   `test_default_mode_without_a_head_has_no_aesthetic`, from `== (5.0, b'emb', None, 'clip-mlp')` to
+   `== (None, b'emb', None, 'topiq')` after amendment A1 (the single-image path returns no aesthetic instead of
+   raising, because that 5.0 tuple was the fabricated score); ONE renamed and strengthened test
    (`test_scan_state.py::test_duplicate_failure_replaced_not_duplicated` -> `..._merges_into_one_row`); the helpers
    of `tests/test_iqa_flush_none.py` adapted to `last_declined` and two counter keys (no assertion changed).
-   Left undone on purpose: Q2 (primary-column fakes), Q5 (lazy scorer loading), Q7 (dormant 5.0 literals), Q13
-   (bench script), P2 (CLAUDE.md "INSERT OR REPLACE" wording), the `'load'` stage label, the orphaned
-   `cat_metrics:*` cache rows.
+   Step 8 then did the leftovers this spec first deferred: the `'load'` stage label (inference and
+   post-processing failures are now `'score'`, loader failures stay `'load'`), Q7 (`get_aesthetic_score` deleted,
+   `get_aesthetic_with_embedding` returns `None` with no head), Q13 (the bench script's `--single-pass` help), and
+   the `repair_integer_columns` docstring. Left undone on purpose: Q2 (primary-column fakes), Q5 (lazy scorer
+   loading), P2 (CLAUDE.md "INSERT OR REPLACE" wording), the orphaned `cat_metrics:*` cache rows.
 
 ## Adversarial review
 

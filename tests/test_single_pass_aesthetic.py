@@ -193,6 +193,50 @@ class TestRunScanWiring:
         assert not self._fell_back(caplog)
 
 
+class TestScanRoute:
+    """Which processor ``_run_scan`` builds after the single-pass fallback, and the ``scan_runs.mode`` label.
+
+    ``TestRunScanWiring`` stops at ``Facet(...)``, so everything after it is decided here:
+    the argument is the *resolved* ``single_pass`` exactly as ``_run_scan`` computes it
+    (requested by flag or config, then run through ``_resolve_single_pass``).
+    ``--dry-run`` exits before any processor is built and is covered by
+    ``test_dry_run_skips_the_preflight``.
+    """
+
+    @staticmethod
+    def _route(aesthetic_model, *, flag=False, config=False, name=None, policy_=None):
+        import facet
+        args = SimpleNamespace(single_pass=flag, single_pass_name=name)
+        resolved = facet._resolve_single_pass(flag or config, aesthetic_model, policy_)
+        return facet._scan_route(args, resolved)
+
+    def test_default_is_multi_pass(self):
+        assert self._route('topiq') == ('multi', 'multi-pass')
+        assert self._route('clip-mlp') == ('multi', 'multi-pass')
+
+    def test_flag_on_a_headless_topiq_profile_falls_back_to_multi_pass(self):
+        assert self._route('topiq', flag=True) == ('multi', 'multi-pass')
+
+    def test_config_mode_on_a_headless_topiq_profile_falls_back_to_multi_pass(self):
+        assert self._route('topiq', config=True) == ('multi', 'multi-pass')
+
+    def test_flag_on_a_clip_mlp_profile_runs_the_tuned_batch_processor(self):
+        assert self._route('clip-mlp', flag=True) == ('single-tuned', 'single-pass')
+
+    def test_config_mode_on_a_clip_mlp_profile_runs_the_bare_batch_processor(self):
+        assert self._route('clip-mlp', config=True) == ('single-bare', 'single-pass')
+
+    def test_commercial_mode_keeps_single_pass_on_a_topiq_profile(self):
+        commercial = _commercial_policy()
+        assert self._route('topiq', flag=True, policy_=commercial) == ('single-tuned', 'single-pass')
+        assert self._route('topiq', config=True, policy_=commercial) == ('single-bare', 'single-pass')
+
+    def test_named_pass_wins_over_every_single_pass_request(self):
+        for aesthetic_model in ('topiq', 'clip-mlp'):
+            assert self._route(aesthetic_model, flag=True, name='quality') == ('pass', 'pass:quality')
+            assert self._route(aesthetic_model, name='tags') == ('pass', 'pass:tags')
+
+
 class TestHeadlessAestheticRaises:
     """No aesthetic head outside commercial mode: the batch path refuses, the single-image path says None."""
 
@@ -216,6 +260,14 @@ class TestHeadlessAestheticRaises:
         with pytest.raises(RuntimeError) as exc:
             self._facet().get_aesthetic_and_quality_batch([object(), object()])
         assert 'multi-pass' in str(exc.value)
+
+    def test_batch_error_does_not_blame_a_single_cause(self):
+        # The guard also fires for a CLIP+MLP profile whose embedding_dim is not 768, so
+        # the text must not claim the profile "scores aesthetics with TOPIQ".
+        with pytest.raises(RuntimeError) as exc:
+            self._facet().get_aesthetic_and_quality_batch([object()])
+        assert 'embedding_dim' in str(exc.value)
+        assert 'scores aesthetics with TOPIQ' not in str(exc.value)
 
     def test_commercial_batch_uses_qrealign_without_raising(self):
         licensing.set_policy(licensing.MODE_COMMERCIAL)

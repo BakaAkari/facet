@@ -14,6 +14,7 @@ from io import BytesIO
 
 from int_affinity import storable_int
 from db.connection import apply_pragmas
+from db.stats_cache import METRIC_RANGES_KEY
 
 logger = logging.getLogger("facet.db_maintenance")
 
@@ -1234,8 +1235,7 @@ def repair_neutral_iqa(db_path='photo_scores_pro.db', verbose=True):
             cleared[col] = conn.execute(
                 f"UPDATE photos SET {col} = NULL WHERE {col} = 5.0").rowcount
         if sum(cleared.values()):
-            # Literal of api.routers.filter_options._METRIC_RANGES_KEY: db/ must not import api/.
-            conn.execute("DELETE FROM stats_cache WHERE key = 'metric_ranges'")
+            conn.execute("DELETE FROM stats_cache WHERE key = ?", (METRIC_RANGES_KEY,))
         conn.commit()
 
     if verbose:

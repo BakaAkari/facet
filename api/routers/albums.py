@@ -25,7 +25,7 @@ from api.db_helpers import (
     is_access_controlled_install, resolve_hide_defaults,
 )
 from api.models.albums import AlbumPhotosResponse, SharedAlbumResponse
-from api.top_picks import get_top_picks_score_sql
+from api.top_picks import get_top_picks_score_sql, with_top_picks_alias
 from api.types import VALID_SORT_COLS, available_sort_options, normalize_params, order_by_clause
 
 router = APIRouter(tags=["albums"])
@@ -126,20 +126,6 @@ def _album_to_dict(album):
     return result
 
 
-def _with_top_picks_alias(select_cols, sort_col):
-    """Add the ``top_picks_score`` SELECT alias when ``sort_col`` orders by it.
-
-    ``top_picks_score`` is in ``VALID_SORT_COLS`` but is a weighted expression, not
-    a ``photos`` column, so ``ORDER BY top_picks_score`` only resolves when the
-    SELECT list defines it (as the gallery's does). It is also what puts the score
-    on each returned photo. Every other sort column is a real one and passes
-    through unchanged.
-    """
-    if sort_col != 'top_picks_score':
-        return select_cols
-    return [*select_cols, f"({get_top_picks_score_sql()}) as top_picks_score"]
-
-
 async def _fetch_album_photos(conn, album_row, user_id, page, per_page, sort_col, sort_dir, filters=None, include_manual=True):
     """Fetch paginated photos for an album (smart or regular). Async.
 
@@ -182,7 +168,8 @@ async def _fetch_album_photos(conn, album_row, user_id, page, per_page, sort_col
         total = row[0] if row else 0
 
         safe_sort = sort_col if sort_col in VALID_SORT_COLS else 'aggregate'
-        select_cols = _with_top_picks_alias(select_cols, safe_sort)
+        select_cols = with_top_picks_alias(
+            select_cols, safe_sort == 'top_picks_score' or saved_filters.get('top_picks_filter') == '1')
         cur = await conn.execute(
             f"SELECT {', '.join(select_cols)} FROM {from_clause}{where_str} "
             f"ORDER BY {order_by_clause(safe_sort, sort_dir)} LIMIT ? OFFSET ?",
@@ -222,7 +209,8 @@ async def _fetch_album_photos(conn, album_row, user_id, page, per_page, sort_col
         if sort_col == 'position':
             safe_sort = 'ap.position'
 
-        select_cols = _with_top_picks_alias(select_cols, safe_sort)
+        select_cols = with_top_picks_alias(
+            select_cols, safe_sort == 'top_picks_score' or (filters or {}).get('top_picks_filter') == '1')
         cur = await conn.execute(
             f"SELECT {', '.join(select_cols)} FROM album_photos ap "
             f"JOIN {from_clause} ON photos.path = ap.photo_path "

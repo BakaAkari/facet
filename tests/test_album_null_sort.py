@@ -246,6 +246,17 @@ def test_shared_regular_album_sorts_by_top_picks_score(direction, expected, seed
     _assert_top_picks_order(resp, expected, direction)
 
 
+def test_smart_album_top_picks_filter_carries_the_score(seed_photos_prefix, make_album,
+                                                        edition_client):
+    # The gallery selects the alias for the top-picks FILTER too, not only the sort;
+    # a smart album saved with that filter must return the same field.
+    seed_photos_prefix(PREFIX, _top_picks_rows())
+    album_id = make_album(smart_filter={"path_prefix": PREFIX, "top_picks_filter": "1"})
+    resp = edition_client.get(f"/api/albums/{album_id}/photos")
+    assert _names(resp) == ["b_high.jpg"]
+    assert resp.json()["photos"][0]["top_picks_score"] is not None
+
+
 @pytest.mark.parametrize("kind", ["smart", "regular"])
 @pytest.mark.parametrize("sort_col", VALID_SORT_COLS)
 def test_every_valid_sort_column_works_on_albums(sort_col, kind, seed_photos_prefix,

@@ -16,6 +16,9 @@ from db.render_version import count_pending_render
 from db.schema import _build_create_table_sql, STATS_CACHE_COLUMNS
 
 PENDING_RENDER_KEY = 'pending_render_count'
+# The persisted gallery metric ranges. Defined here so the viewer endpoint, the
+# offline refresh and the neutral-IQA repair all name one key.
+METRIC_RANGES_KEY = 'metric_ranges'
 
 # The count only moves when a scan or a --refresh-thumbnails run writes, and the
 # banner it drives is advisory. An hour keeps the scan off every SPA startup
@@ -244,8 +247,8 @@ def refresh_stats_cache(db_path='photo_scores_pro.db', verbose=True):
         try:
             from api.routers.filter_options import compute_metric_ranges
             metric_ranges = compute_metric_ranges(conn)
-            stats['metric_ranges'] = metric_ranges
-            _cache_stat(conn, 'metric_ranges', json.dumps(metric_ranges), now)
+            stats[METRIC_RANGES_KEY] = metric_ranges
+            _cache_stat(conn, METRIC_RANGES_KEY, json.dumps(metric_ranges), now)
             if verbose:
                 logger.info("  Metric ranges: %d", len(metric_ranges))
         except sqlite3.OperationalError:

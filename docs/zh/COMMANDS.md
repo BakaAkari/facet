@@ -12,7 +12,7 @@
 |---------|-------------|
 | `python facet.py /path` | 扫描目录（多阶段模式，自动检测 VRAM） |
 | `python facet.py /path --force` | 重新扫描已处理过的文件 |
-| `python facet.py /path --single-pass` | 强制单阶段模式（一次性加载全部模型）。需要 `legacy`/`8gb` 配置档的 CLIP+MLP 评分头；在 `16gb`/`24gb` 上会给出警告并改用多阶段 |
+| `python facet.py /path --single-pass` | 强制单阶段模式（一次性加载全部模型）。需要 `legacy`/`8gb` 配置档的 CLIP+MLP 评分头；在 `16gb`/`24gb` 上（非商业模式）会给出警告并改用多阶段 |
 | `python facet.py /path --pass quality` | 仅运行 TOPIQ 画质评分阶段 |
 | `python facet.py /path --pass quality-iaa` | 仅运行 TOPIQ IAA 美学价值评分 |
 | `python facet.py /path --pass quality-face` | 仅运行 TOPIQ NR-Face 人脸画质评分 |
@@ -65,7 +65,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 
 | 命令 | 说明 |
 |---------|-------------|
-| `python facet.py /path --dry-run` | 对 10 张样本照片评分但不保存。在 `16gb`/`24gb` 上美学一列显示 `n/a`（TOPIQ 只在真实扫描中运行）；综合评分不变 |
+| `python facet.py /path --dry-run` | 对 10 张样本照片评分但不保存。在非商业模式下，`16gb`/`24gb` 上美学一列显示 `n/a`（TOPIQ 只在真实扫描中运行；商业模式下显示 Q-ReAlign 评分）；综合评分不变 |
 | `python facet.py /path --dry-run --dry-run-count 20` | 对 20 张样本照片评分 |
 | `python facet.py --export-csv` | 把全部评分导出为带时间戳的 CSV（`tags` 列只含 AI 标签，不包含[手动标签](VIEWER.md#手动标签)） |
 | `python facet.py --export-csv output.csv` | 导出到指定的 CSV 文件 |
@@ -123,7 +123,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --recompute-saliency` | `[GPU]` 从已存储的缩略图重新计算主体显著性指标（BiRefNet_dynamic）——照片库所在卷离线时也能运行。会跳过已有 `subject_bbox` 的照片（可续跑）；`--force` 则全部重做。所有档位都启用了显著性（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。某张照片的显著性失败（例如显存不足）时，会记录一条 ERROR 且不写入：从未评分的行保持 NULL，并会在下次运行时再次被选中；使用 `--force` 时，已有显著性的行会保留其已存储的值。在 CUDA 上，批大小由空闲显存推算。 |
 | `python facet.py --recompute-composition-cpu` | 用基于规则的方法重新计算构图（CPU，任意档位） |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` 用 SAMP-Net 重新计算构图 |
-| `python facet.py --recompute-iqa` | `[GPU]` 从已存储的缩略图重新计算补充 IQA 指标（TOPIQ IAA、NR-Face、LIQE）。所有档位都已启用（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。仅填充为 NULL 的列。NR-Face 会跳过未检测到人脸的照片；LIQE 会跳过已存储缩略图短边小于 224 px 的照片（在汇总中计数，不存储任何内容）；NR-Face 拒绝评分的照片会记入 `iqa_declined` 表，在该照片被重新扫描之前不再重试；其他任何失败（显存不足、意外错误）保持 NULL，并会被下次运行再次选中。已存储的值（包括旧版本写入的中性 5.0）绝不会被替换：请先用 `--repair-neutral-iqa` 清除。见[补充画质模型](#补充画质模型) |
+| `python facet.py --recompute-iqa` | `[GPU]` 从已存储的缩略图重新计算补充 IQA 指标（TOPIQ IAA、NR-Face、LIQE）。所有档位都已启用（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。仅填充为 NULL 的列。NR-Face 会跳过未检测到人脸的照片；LIQE 会跳过已存储缩略图短边小于 224 px 的照片（在汇总中计数，不存储任何内容）；NR-Face 拒绝评分的照片会记入 `iqa_declined` 表，在该照片被重新扫描之前不再重试（升级 pyiqa 或 NR-Face 权重不会清除这些记录：请用 `--force` 重新扫描，或运行 `--refresh-thumbnails`）；其他任何失败（显存不足、意外错误）保持 NULL，并会被下次运行再次选中。已存储的值（包括旧版本写入的中性 5.0）绝不会被替换：请先用 `--repair-neutral-iqa` 清除。见[补充画质模型](#补充画质模型) |
 | `python facet.py --detect-text` | 通过对已存储缩略图做 OCR，把图像中的文字（招牌、海报、文件）提取到 `ocr_text`，使其可在照片库搜索框中被检索到。会跳过已评估过的照片，因此重新运行时只读取新照片。需手动开启：要求 `scoring_config.json` 中的 `ocr.enabled` 并 `pip install easyocr`——参见 [配置 — OCR](CONFIGURATION.md#ocr) |
 | `python facet.py --recompute-text` | 对整个照片库重新运行 OCR，包括 `--detect-text` 已经评估过的照片 |
 | `python facet.py --recompute-colors` | 从缩略图提取主色调与冷暖色温（CPU，快速），写入 `dominant_hue` ／ `color_temp` |
@@ -148,7 +148,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --backfill-focal-35mm` | 为缺少等效 35mm 焦距的照片从 EXIF 回填该值 |
 | `python facet.py --backfill-clipping` | 从已存储的直方图推导各通道的溢出百分比。仅使用数据库（不解码图像）且可续跑；直方图早于 RGB 格式的照片保持未知（NULL） |
 | `python facet.py --repair-int-columns` | 修复 `photos` 表中实际存储为 REAL 的 INTEGER 列——SQLite 的类型亲和性并非约束，因此外部工具写入的小数 ISO 会原样保留为 REAL。就地对每个值取整（SQLite 无法以整数保存的值——非有限值，或超过 2^53——置为 NULL），其余一概不动。仅使用数据库（不解码图像）。API 在读取时会对未修复的行取整，因此图库无需本命令即可正常显示；但筛选和排序比较的是实际存储的值，运行本命令可避免显示为 ISO 63 的照片被 ISO 区间筛选漏掉 |
-| `python facet.py --repair-neutral-iqa` | 清除 1.20 之前的版本为模型无法评分的照片写入 `aesthetic_iaa`、`face_quality_iqa` 和 `liqe_score` 的中性 5.0：这三列中所有恰好等于 5.0 的值在同一个事务中置为 NULL，并丢弃缓存的图库取值范围。按列打印数量。不会改动 `aesthetic`、`topiq_score`、`aesthetic_v25` 或 `quality_score`（这些列里真实的 5.00 无法与假值区分，而且在 `legacy`/`8gb` 上 `aesthetic` 就是 CLIP+MLP 的列）。恰好四舍五入为 5.00 的真实值也会被清除，之后会以相同的值回填。之后运行 `--recompute-iqa` 重新填充各列，再运行 `--recompute-average`；修复本身不会改变任何综合评分，因为 NULL 按中性计算。仅使用数据库（不解码图像）；与 `--dry-run` 同用会被拒绝（退出码 2）；不在任何 `--upgrade-db` 链中 |
+| `python facet.py --repair-neutral-iqa` | 清除 1.20 之前的版本为模型无法评分的照片写入 `aesthetic_iaa`、`face_quality_iqa` 和 `liqe_score` 的中性 5.0：这三列中所有恰好等于 5.0 的值在同一个事务中置为 NULL，并丢弃缓存的图库取值范围。按列打印数量。不会改动 `aesthetic`、`topiq_score`、`aesthetic_v25` 或 `quality_score`（这些列里真实的 5.00 无法与假值区分，而且在 `legacy`/`8gb` 上 `aesthetic` 就是 CLIP+MLP 的列）。恰好四舍五入为 5.00 的真实值也会被清除，之后由 `--recompute-iqa` 根据已存储的缩略图回填，因此回填的值可能略有不同。之后运行 `--recompute-iqa` 重新填充各列，再运行 `--recompute-average`；修复本身不会改变任何综合评分，因为 NULL 按中性计算。正在运行的查看器会在修复后继续使用其内存中的指标范围，最长一小时或直到重启（只有恰好等于 5.0 的数值计数会变化）。仅使用数据库（不解码图像）；与 `--dry-run` 同用会被拒绝（退出码 2）；不在任何 `--upgrade-db` 链中 |
 | `python facet.py --compute-recommendations` | 分析数据库并显示评分摘要 |
 | `python facet.py --compute-recommendations --verbose` | 显示详细统计信息 |
 | `python facet.py --compute-recommendations --apply-recommendations` | 自动应用评分修正 |

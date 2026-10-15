@@ -34,6 +34,6 @@ copiar y pegar.
 |-------|--------|
 | ¿Qué perfil debería usar? | [Instalación › ¿Qué perfil se ajusta a mi hardware?](INSTALLATION.md#qué-perfil-se-ajusta-a-mi-hardware) |
 | "externally-managed-environment" al instalar | Usa un entorno virtual (o Docker) — consulta [Instalación](INSTALLATION.md) |
-| Procesamiento lento | Comprueba el perfil; `--single-pass` puede ayudar en los perfiles `legacy`/`8gb` con mucha VRAM (`16gb`/`24gb` siempre ejecutan multipaso) |
+| Procesamiento lento | Comprueba el perfil; `--single-pass` puede ayudar en los perfiles `legacy`/`8gb` con mucha VRAM (fuera del modo comercial, `16gb`/`24gb` siempre ejecutan multipaso) |
 | La detección de rostros no usa la GPU | Instala `onnxruntime-gpu` — consulta [Instalación](INSTALLATION.md#onnx-runtime-para-la-detección-de-rostros) |
 | Falta exiftool | Opcional — consulta [Instalación › exiftool](INSTALLATION.md#exiftool) |

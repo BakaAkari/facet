@@ -790,8 +790,9 @@ def describe_scoring_device(accelerator, vram_gb, ram_gb):
 # commercial mode. Path-neutral on purpose: BatchProcessor records it once per
 # photo of the failed batch.
 _NO_AESTHETIC_HEAD_ERROR = (
-    "no aesthetic head loaded: this profile scores aesthetics with TOPIQ, "
-    "which only the multi-pass scan runs"
+    "no aesthetic head loaded: no CLIP+MLP aesthetic head is available for this "
+    "profile (SigLIP embeddings, a TOPIQ profile or an embedding_dim other than 768), "
+    "so single-pass cannot score aesthetics; run multi-pass"
 )
 
 
