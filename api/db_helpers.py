@@ -1161,6 +1161,7 @@ _STORED_FORM_RETRY_SECONDS = 60.0
 _STORED_FORM_CACHE_MAX = 256
 _monotonic = time.monotonic              # a name of its own so tests can move the clock
 _stored_form_lock = threading.Lock()
+_warned_blank_entries: set[tuple[str, str]] = set()  # (user, entry) already warned about
 _stored_form_settled: dict[str, str] = {}    # directory -> form whose target exists
 _stored_form_provisional: dict[str, tuple[str, float]] = {}  # directory -> (form, monotonic expiry)
 
@@ -1319,11 +1320,14 @@ def get_visibility_clause(user_id, table_alias='photos'):
         if not isinstance(d, str) or not d.strip():
             # A blank entry would normalise to the prefix '/', which as a range
             # is every path in the library. Granting nothing is the only safe
-            # reading of "no directory".
-            logger.warning(
-                "Ignoring a blank directory entry (%r) for user %r: a blank "
-                "entry grants nothing, never the whole library. Remove it from "
-                "this user's directories.", d, user_id)
+            # reading of "no directory". Said once per user and entry: this runs
+            # on every request.
+            if (user_id, repr(d)) not in _warned_blank_entries:
+                _warned_blank_entries.add((user_id, repr(d)))
+                logger.warning(
+                    "Ignoring a blank directory entry (%r) for user %r: a blank "
+                    "entry grants nothing, never the whole library. Remove it from "
+                    "this user's directories.", d, user_id)
             continue
         # Match the form the scanner stored (str(Path.resolve())): backslash
         # separators for a Windows-shaped directory, forward slashes otherwise.

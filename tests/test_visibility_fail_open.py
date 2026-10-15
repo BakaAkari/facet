@@ -315,14 +315,24 @@ class TestABlankDirectoryEntryGrantsNothing:
 
     STORED = ["/a/x.jpg", "/mnt/a/y.jpg", "/b/z.jpg"]
 
+    @pytest.fixture(autouse=True)
+    def _fresh_warnings(self, monkeypatch):
+        monkeypatch.setattr(db_helpers, "_warned_blank_entries", set())
+
     @pytest.mark.parametrize("blank", ["", "   ", "\t", "\n"])
     @pytest.mark.parametrize("ci_host", [False, True])
     def test_a_blank_entry_alone_sees_nothing(self, photos_db, monkeypatch, caplog, blank, ci_host):
         monkeypatch.setattr(db_helpers, "_CASE_INSENSITIVE_HOST", ci_host)
-        assert _clause([blank]) == (db_helpers.NO_VISIBILITY_SQL, [])
         with caplog.at_level(logging.WARNING, logger="facet.api.db_helpers"):
+            assert _clause([blank]) == (db_helpers.NO_VISIBILITY_SQL, [])
             assert _visible(photos_db, [blank], self.STORED) == set()
         assert any("alice" in r.getMessage() and "blank" in r.getMessage() for r in caplog.records)
+
+    def test_the_warning_is_logged_once_not_per_request(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="facet.api.db_helpers"):
+            for _ in range(3):
+                assert _clause(["  "]) == (db_helpers.NO_VISIBILITY_SQL, [])
+        assert len([r for r in caplog.records if "blank directory entry" in r.getMessage()]) == 1
 
     @pytest.mark.parametrize("ci_host", [False, True])
     def test_a_blank_entry_does_not_widen_a_real_one(self, photos_db, monkeypatch, ci_host):
