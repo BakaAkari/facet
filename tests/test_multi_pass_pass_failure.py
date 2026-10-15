@@ -56,10 +56,12 @@ class _StubScorer:
 def _img_data():
     arr = np.zeros((64, 64, 3), dtype=np.uint8)
     return {
-        "pil": Image.fromarray(arr), "cv": arr, "height": 64, "width": 64,
+        "pil": Image.fromarray(arr), "height": 64, "width": 64,
         "phash": "0" * 16, "exif": {}, "sharpness": {}, "color": {},
         "histogram": {}, "mono": {}, "dynamic_range": {}, "noise": {},
         "contrast": {}, "form": {}, "cache": None,
+        # what _load_images now hoists into the worker for a non-restricted processor
+        "composition": {"score": 7.0, "power_point_score": 5.0, "leading_lines_score": 0},
     }
 
 

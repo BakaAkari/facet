@@ -416,6 +416,8 @@ VRAM instead of container RAM. A GPU user sizing off the CPU numbers here
 would over-provision; a CPU user sizing off the GPU figure would
 under-provision — use whichever matches how your container actually runs.
 
+The decoded chunk is now about half the size. A multi-pass chunk retains roughly 4.4 bytes per source pixel while its passes run (it was about 8.1), because the BGR array and the gray plane are rebuilt by the passes that need them instead of being held for the chunk's whole life. The container measurements in this section were taken before that change. Separately, a model is kept in RAM between chunks only while the host keeps its declared size plus `models.ram_cache_reserve_gb` (default 4 GB) available, on top of the pass-plan budget on a CPU host: a smaller value caches more, a larger one leaves more room to everything else on the host (see [Configuration](CONFIGURATION.md#models)).
+
 More generally: `MODEL_RAM_REQUIREMENTS` prices model weight cost only. Real
 peak RSS additionally carries the torch runtime, the decoded image chunk, and
 per-layer activations, none of which are in that figure — sizing a container

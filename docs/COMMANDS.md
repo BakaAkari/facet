@@ -361,6 +361,8 @@ Only cases 4 and 5 may find nothing. Cases 1 and 2 name a path, so a missing fil
 
 On a CUDA machine, a SigLIP profile (`16gb`, `24gb`) now encodes the tag vocabulary in fp16, as the single-pass scorer already did; `tag_existing.py` used to load it in fp32. `python tag_existing.py`, `python tag_existing.py --force`, `python facet.py --tag-untagged` and the tagging step at the end of a scan share that loader. Measured on 49 photos, the tag set changed for 2 of them (4%): re-run `python tag_existing.py --force` to re-tag photos tagged earlier. CPU and the CLIP ViT-L-14 profiles (`legacy`, `8gb`) are unchanged.
 
+The tagging step at the end of a scan loads that model only when it has work. It is skipped, with a log line, when `tagging.enabled` is `false` or when no photo has a stored embedding and an empty tag list; a scan that has nothing to tag no longer reloads SigLIP 2 or CLIP for it. `python tag_existing.py`, `--force` and `--tag-untagged` are not affected.
+
 ## Database Validation
 
 | Command | Description |

@@ -5,6 +5,7 @@ flush) and the aggregate reader that scores a NULL as the neutral 5.0.
 """
 
 import pytest
+from PIL import Image
 
 pytest.importorskip("imagehash")
 pytest.importorskip("cv2")
@@ -38,7 +39,7 @@ def _saliency_row(db, path):
 
 def _run_pass(proc, path, scores):
     results = {path: {}}
-    proc._pass_saliency(_Scorer(scores), {path: {'pil': object(), 'cv': object()}}, results)
+    proc._pass_saliency(_Scorer(scores), {path: {'pil': Image.new('RGB', (8, 8))}}, results)
     return results
 
 

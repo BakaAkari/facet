@@ -2025,18 +2025,26 @@ def _run_scan(args, resumed_run):
 
     # 6. Auto-tag photos using stored CLIP/SigLIP embeddings
     emit_progress('tagging', force=True)
-    from tag_existing import run_tagging, resolve_scan_tagger
+    from tag_existing import run_tagging, resolve_scan_tagger, count_untagged, tagging_enabled
 
-    # In multi-pass mode the embedding model is loaded per-pass and released,
-    # so resolve_scan_tagger reloads the profile's model to encode the tag
-    # vocabulary (building a tagger from scorer.model is None yields no tags).
-    tagger = resolve_scan_tagger(scorer)
-
-    tagged = run_tagging(scorer.db_path, tagger, scorer.config)
-    if tagged:
-        logger.info("Tagged %d photos with missing tags.", tagged)
-    elif tagged == 0:
+    # Decide BEFORE resolve_scan_tagger: it loads the profile's embedding model,
+    # which is wasted when tagging is disabled or no photo is pending. The
+    # pending count uses the exact predicate the tagging query uses.
+    if not tagging_enabled(scorer.config):
+        logger.info("Tagging is disabled; skipping the post-scan tagging step.")
+    elif count_untagged(scorer.db_path) == 0:
         logger.info("No new tags assigned (all photos already tagged, or none cleared the similarity threshold).")
+    else:
+        # In multi-pass mode the embedding model is loaded per-pass and released,
+        # so resolve_scan_tagger reloads the profile's model to encode the tag
+        # vocabulary (building a tagger from scorer.model is None yields no tags).
+        tagger = resolve_scan_tagger(scorer)
+
+        tagged = run_tagging(scorer.db_path, tagger, scorer.config)
+        if tagged:
+            logger.info("Tagged %d photos with missing tags.", tagged)
+        elif tagged == 0:
+            logger.info("No new tags assigned (all photos already tagged, or none cleared the similarity threshold).")
 
     # 7. Narrative moments — cheap (cosine over the embeddings just computed),
     # so label newly-scanned photos automatically. Reuses the scorer's

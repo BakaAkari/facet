@@ -4,12 +4,72 @@ Technical image analysis for Facet.
 Sharpness, color harmony, exposure, noise, contrast, dynamic range.
 """
 
+import math
+
 import cv2
 import numpy as np
 
+from analyzers.image_cache import laplacian_variance
 from utils.histogram import (
     CLIP_MEASURED_CHANNELS, HIGHLIGHT_CLIP_BIN, SHADOW_CLIP_BIN, pack_histogram,
 )
+
+# Immerkaer's noise kernel, float32 so ``cv2.filter2D`` can write a 16-bit signed result:
+# the response of a uint8 image is an integer in +-4080, so every step is exact.
+_NOISE_KERNEL = np.array([[1, -2, 1],
+                          [-2, 4, -2],
+                          [1, -2, 1]], dtype=np.float32)
+
+# ``cv2.calcHist`` counts in float32, which stops being exact at 2**24 pixels in one bin
+# (a 17 MP frame of a single grey level is realistic: a lens-cap shot, a clipped sky).
+# Counting row bands of at most this many pixels keeps every partial count exact.
+_HIST_BAND_PIXELS = 1 << 22
+
+
+def gray_histogram(gray):
+    """Exact 256-bin int64 histogram of a uint8 grey image (any strides)."""
+    height, width = gray.shape[:2]
+    rows = max(1, _HIST_BAND_PIXELS // max(width, 1))
+    hist = np.zeros(256, dtype=np.int64)
+    for top in range(0, height, rows):
+        band = cv2.calcHist([gray[top:top + rows]], [0], None, [256], [0, 256])
+        hist += band.ravel().astype(np.int64)
+    return hist
+
+
+def histogram_percentile(hist, q):
+    """``np.percentile(gray, q)`` (method ``linear``) from a 256-bin histogram, bit for bit.
+
+    Mirrors numpy's virtual-index / gamma / lerp arithmetic, including the switch to
+    ``b - diff * (1 - gamma)`` at ``gamma >= 0.5``; the k-th smallest pixel is the first bin
+    whose cumulative count exceeds k.
+    """
+    n = int(hist.sum())
+    cum = np.cumsum(hist)
+    quantile = np.true_divide(q, 100)
+    virtual = (n - 1) * quantile
+    previous = int(np.floor(virtual))
+    gamma = virtual - previous
+    following = min(previous + 1, n - 1)
+    low = float(np.searchsorted(cum, previous, side='right'))
+    high = float(np.searchsorted(cum, following, side='right'))
+    diff = high - low
+    value = low + diff * gamma
+    if gamma >= 0.5:
+        value = high - diff * (1 - gamma)
+    return np.float64(value)
+
+
+def histogram_std(hist):
+    """Population standard deviation of the pixel values (``np.std``) from a 256-bin histogram.
+
+    Two-pass (mean first), so a flat image gives exactly 0.0; agrees with ``np.std`` of the
+    float64 pixels to ~3e-15 relative.
+    """
+    n = float(hist.sum())
+    bins = np.arange(256, dtype=np.float64)
+    mean = float((hist * bins).sum()) / n
+    return np.float64(math.sqrt(float((hist * (bins - mean) ** 2).sum()) / n))
 
 
 def _channel_clip_percents(red, green, blue):
@@ -51,7 +111,7 @@ class TechnicalAnalyzer:
         if image_cv is None:
             return 0
         gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
-        variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+        variance = laplacian_variance(gray)
         # Normalize to a 0-10 scale
         return min(10.0, variance / 50.0)
 
@@ -70,7 +130,7 @@ class TechnicalAnalyzer:
             variance = cache.laplacian_variance
         else:
             gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
-            variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+            variance = laplacian_variance(gray)
 
         return {
             'raw_variance': variance,
@@ -288,9 +348,11 @@ class TechnicalAnalyzer:
         else:
             gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
 
-        # Use 2nd and 98th percentile to avoid outliers
-        p2 = np.percentile(gray, 2)
-        p98 = np.percentile(gray, 98)
+        # Use 2nd and 98th percentile to avoid outliers (read off the grey histogram: exact,
+        # and no sort of the whole frame)
+        hist = gray_histogram(gray)
+        p2 = histogram_percentile(hist, 2)
+        p98 = histogram_percentile(hist, 98)
 
         # Avoid division by zero
         if p2 < 1:
@@ -316,19 +378,19 @@ class TechnicalAnalyzer:
             return {'noise_sigma': 0}
 
         if cache is not None:
-            gray = cache.gray.astype(np.float64)
+            gray = cache.gray
         else:
-            gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY).astype(np.float64)
+            gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
 
         h, w = gray.shape
 
-        # Immerkaer noise estimation kernel
-        # This is a Laplacian-based method that's robust to image content
-        M = np.array([[1, -2, 1],
-                      [-2, 4, -2],
-                      [1, -2, 1]])
-
-        sigma = np.sum(np.abs(cv2.filter2D(gray, -1, M)))
+        # Immerkaer noise estimation: a Laplacian-based method that's robust to image content.
+        # The response is an exact integer, so a 16-bit filter and an integer L1 norm give the
+        # same sum as the float64 pipeline did.
+        total = cv2.norm(cv2.filter2D(gray, cv2.CV_16S, _NOISE_KERNEL), cv2.NORM_L1)
+        # Keep the tail in numpy float64: a 2-pixel-wide image divides by zero to ``inf``
+        # (with a numpy warning) rather than raising ZeroDivisionError on Python floats.
+        sigma = np.float64(total)
         sigma = sigma * np.sqrt(0.5 * np.pi) / (6 * (w - 2) * (h - 2))
 
         return {'noise_sigma': round(sigma, 2)}
@@ -347,16 +409,19 @@ class TechnicalAnalyzer:
             return {'contrast_score': 0, 'percentile_contrast': 0, 'rms_contrast': 0}
 
         if cache is not None:
-            gray = cache.gray.astype(np.float64)
+            gray = cache.gray
         else:
-            gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY).astype(np.float64)
+            gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
+
+        hist = gray_histogram(gray)
 
         # Percentile-based contrast (more robust than min/max which is skewed by outliers)
-        p5, p95 = np.percentile(gray, [5, 95])
+        p5 = histogram_percentile(hist, 5)
+        p95 = histogram_percentile(hist, 95)
         percentile_contrast = (p95 - p5) / 255.0  # Normalized 0-1
 
         # RMS contrast: standard deviation of pixel intensities
-        rms = np.std(gray) / 255.0
+        rms = histogram_std(hist) / 255.0
 
         # Combined contrast score (0-10 scale)
         # - percentile_contrast: typical range 0.4-0.85, contributes up to ~4.25 points

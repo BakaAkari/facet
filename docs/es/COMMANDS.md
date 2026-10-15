@@ -366,6 +366,8 @@ Solo los casos 4 y 5 pueden no encontrar nada. Los casos 1 y 2 nombran una ruta,
 
 En una máquina con CUDA, un perfil SigLIP (`16gb`, `24gb`) ahora codifica el vocabulario de etiquetas en fp16, como ya hacía el puntuador de un solo pase; `tag_existing.py` lo cargaba antes en fp32. `python tag_existing.py`, `python tag_existing.py --force`, `python facet.py --tag-untagged` y el paso de etiquetado al final de un escaneo comparten ese cargador. Medido en 49 fotos, el conjunto de etiquetas cambió en 2 de ellas (4 %): vuelve a ejecutar `python tag_existing.py --force` para volver a etiquetar las fotos etiquetadas antes. La CPU y los perfiles CLIP ViT-L-14 (`legacy`, `8gb`) no cambian.
 
+El paso de etiquetado al final de un escaneo carga ese modelo solo cuando tiene trabajo. Se omite, con una línea de registro, cuando `tagging.enabled` es `false` o cuando ninguna foto tiene un embedding almacenado y una lista de etiquetas vacía; un escaneo sin nada que etiquetar ya no vuelve a cargar SigLIP 2 ni CLIP para ello. `python tag_existing.py`, `--force` y `--tag-untagged` no se ven afectados.
+
 ## Validación de la base de datos
 
 | Comando | Descripción |

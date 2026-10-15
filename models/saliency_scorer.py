@@ -22,6 +22,42 @@ torch = None
 cv2 = None
 
 
+def _is_u8_plane(mask) -> bool:
+    """True for a non-empty 2-D ``uint8`` ndarray, the only mask the cv2 integer path serves.
+
+    Floats, bools, 3-D masks and empty planes keep the numpy code, whose behaviour on them is
+    whatever numpy does and is not worth re-deriving.
+    """
+    return (isinstance(mask, np.ndarray) and mask.dtype == np.uint8 and mask.ndim == 2
+            and mask.shape[0] > 0 and mask.shape[1] > 0)
+
+
+def _foreground_projections(fg):
+    """Per-column and per-row foreground pixel counts of a 0/255 ``uint8`` plane.
+
+    ``cv2.reduce`` into ``CV_32S`` sums exact integers, so the counts, their total and the centroid
+    derived from them are the same integers ``np.nonzero`` would yield, without materialising two
+    int64 index arrays of one entry per foreground pixel.
+    """
+    colsum = cv2.reduce(fg, 0, cv2.REDUCE_SUM, dtype=cv2.CV_32S).ravel().astype(np.int64) // 255
+    rowsum = cv2.reduce(fg, 1, cv2.REDUCE_SUM, dtype=cv2.CV_32S).ravel().astype(np.int64) // 255
+    return colsum, rowsum
+
+
+def _bbox_from_projections(colsum, rowsum, min_subject_pixels):
+    """The ``bbox_from_mask`` result from foreground projections (first/last non-empty column and row)."""
+    if int(colsum.sum()) < min_subject_pixels:
+        return None
+    h, w = rowsum.size, colsum.size
+    nzx = np.flatnonzero(colsum)
+    nzy = np.flatnonzero(rowsum)
+    x0 = float(nzx[0]) / w
+    y0 = float(nzy[0]) / h
+    x1 = float(nzx[-1] + 1) / w
+    y1 = float(nzy[-1] + 1) / h
+    return [round(x0, 4), round(y0, 4), round(min(x1, 1.0), 4), round(min(y1, 1.0), 4)]
+
+
 def bbox_from_mask(mask, min_subject_pixels: int = 50):
     """Extract the subject bounding box from a binary saliency mask.
 
@@ -36,6 +72,12 @@ def bbox_from_mask(mask, min_subject_pixels: int = 50):
     h, w = mask.shape[:2]
     if h == 0 or w == 0:
         return None
+    if _is_u8_plane(mask):
+        _ensure_cv2()
+        assert cv2 is not None
+        fg = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)[1]
+        colsum, rowsum = _foreground_projections(fg)
+        return _bbox_from_projections(colsum, rowsum, min_subject_pixels)
     ys, xs = np.nonzero(mask > 128)
     if xs.size < min_subject_pixels:
         return None
@@ -44,6 +86,14 @@ def bbox_from_mask(mask, min_subject_pixels: int = 50):
     x1 = float(xs.max() + 1) / w
     y1 = float(ys.max() + 1) / h
     return [round(x0, 4), round(y0, 4), round(min(x1, 1.0), 4), round(min(y1, 1.0), 4)]
+
+
+def _ensure_cv2():
+    """Import cv2 alone: ``bbox_from_mask`` is used by callers that never load torch."""
+    global cv2
+    if cv2 is None:
+        import cv2 as _cv2
+        cv2 = _cv2
 
 
 def _ensure_imports():
@@ -271,26 +321,43 @@ class SaliencyScorer:
             List aligned with ``pil_images``: binary masks (H, W) with values
             0 or 255, or ``None`` for an image that ran out of memory alone
         """
+        results = []
+        for sub_batch in self.iter_mask_batches(pil_images, batch_size):
+            results.extend(sub_batch)
+        return results
+
+    def iter_mask_batches(self, pil_images, batch_size=None):
+        """Yield the masks of ``pil_images`` one sub-batch at a time, in order.
+
+        Same forward passes, in the same order and at the same sub-batch size, as
+        :meth:`get_saliency_masks` (which is the concatenation of what this yields);
+        the difference is that a caller can score and drop each sub-batch before the
+        next forward pass, so a chunk's masks are never all alive at once. Loading the
+        model and sizing the sub-batch happen here, once, before the first yield; a
+        mask-generation error surfaces from the iterator when the failing sub-batch is
+        reached. The "batch reduced" warning is logged when the iterator is exhausted.
+        """
         if not self._loaded:
             self.load()
 
         batch_size = self._affordable_batch_size(batch_size)
         logger.debug("  Saliency batch size %d for %d image(s) on %s",
                      batch_size, len(pil_images), self.device)
+        return self._mask_batches(pil_images, batch_size)
 
+    def _mask_batches(self, pil_images, batch_size):
+        """The generator behind :meth:`iter_mask_batches` (``batch_size`` already resolved)."""
         orig_sizes = [(img.size[0], img.size[1]) for img in pil_images]
-        results = []
         reduced_to = []
 
         for start in range(0, len(pil_images), batch_size):
-            results.extend(self._masks_with_oom_retry(
+            yield self._masks_with_oom_retry(
                 pil_images[start:start + batch_size],
                 orig_sizes[start:start + batch_size],
-                reduced_to))
+                reduced_to)
 
         if reduced_to:
             logger.warning("  Saliency batch reduced to %d after out-of-memory", min(reduced_to))
-        return results
 
     def _masks_with_oom_retry(self, chunk, sizes, reduced_to):
         """Masks for one chunk, halving it on an out-of-memory error down to one image.
@@ -389,19 +456,29 @@ class SaliencyScorer:
 
         Args:
             mask: Binary mask (H, W) with values 0 or 255
-            img_cv: OpenCV BGR image array
+            img_cv: OpenCV BGR image array, or a 2-D gray plane
 
         Returns:
             dict with keys: subject_sharpness, subject_prominence,
-                          subject_placement, bg_separation
+                          subject_placement, bg_separation, subject_bbox
+
+        A 2-D ``uint8`` mask (binary or not) is scored with cv2 integer arithmetic;
+        anything else (float, bool, 3-D) takes the numpy code. Both give the same
+        dict for the same input. Both keep the thresholds the numpy code has always
+        had, and they differ: prominence and the ``min_subject_pixels`` gate count every
+        NON-ZERO mask value, while the subject/background regions, the centroid and
+        the bounding box use ``mask > 128`` (so a mask holding only values in 1..128
+        passes the gate with an empty subject region). Do not unify them: that would
+        change stored scores.
         """
         _ensure_imports()
 
         h, w = mask.shape[:2]
         total_pixels = h * w
+        fast_mask = _is_u8_plane(mask)
 
-        # Subject area ratio
-        subject_pixels = np.count_nonzero(mask)
+        # Subject area ratio: any non-zero value counts
+        subject_pixels = cv2.countNonZero(mask) if fast_mask else np.count_nonzero(mask)
         subject_prominence = subject_pixels / total_pixels if total_pixels > 0 else 0
 
         # If no subject detected, return defaults
@@ -424,19 +501,30 @@ class SaliencyScorer:
         if gray.shape[:2] != mask.shape[:2]:
             gray = cv2.resize(gray, (w, h))
 
-        # Compute Laplacian (edge/sharpness detector)
-        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        if fast_mask and gray.dtype == np.uint8:
+            fg = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)[1]   # == (mask > 128) as 0/255
+            subject_variance, bg_variance = self._region_variances(gray, fg, total_pixels)
+            colsum, rowsum = _foreground_projections(fg)
+            subject_placement = self._placement_from_projections(colsum, rowsum)
+            subject_bbox = _bbox_from_projections(colsum, rowsum, self.min_subject_pixels)
+        else:
+            # Compute Laplacian (edge/sharpness detector)
+            laplacian = cv2.Laplacian(gray, cv2.CV_64F)
 
-        # Subject sharpness: Laplacian variance on subject region
-        subject_mask_bool = mask > 128
-        bg_mask_bool = ~subject_mask_bool
+            # Subject sharpness: Laplacian variance on subject region
+            subject_mask_bool = mask > 128
+            bg_mask_bool = ~subject_mask_bool
 
-        subject_laplacian = laplacian[subject_mask_bool]
-        subject_variance = float(np.var(subject_laplacian)) if len(subject_laplacian) > 0 else 0
+            subject_laplacian = laplacian[subject_mask_bool]
+            subject_variance = float(np.var(subject_laplacian)) if len(subject_laplacian) > 0 else 0
 
-        # Background sharpness for separation metric
-        bg_laplacian = laplacian[bg_mask_bool]
-        bg_variance = float(np.var(bg_laplacian)) if len(bg_laplacian) > 0 else 0
+            # Background sharpness for separation metric
+            bg_laplacian = laplacian[bg_mask_bool]
+            bg_variance = float(np.var(bg_laplacian)) if len(bg_laplacian) > 0 else 0
+
+            # Subject placement: rule-of-thirds scoring for subject centroid
+            subject_placement = self._compute_placement_score(mask, h, w)
+            subject_bbox = bbox_from_mask(mask, self.min_subject_pixels)
 
         # Normalize subject sharpness to 0-10 (typical range 0-5000)
         subject_sharpness = min(10.0, (subject_variance ** 0.5) / 7.0)
@@ -452,9 +540,6 @@ class SaliencyScorer:
         else:
             bg_separation = 10.0  # Perfect separation (no background detail)
 
-        # Subject placement: rule-of-thirds scoring for subject centroid
-        subject_placement = self._compute_placement_score(mask, h, w)
-
         # Normalize prominence to 0-10 scale
         prominence_score = min(10.0, subject_prominence * 20.0)  # 50% coverage = 10.0
 
@@ -463,28 +548,58 @@ class SaliencyScorer:
             'subject_prominence': round(prominence_score, 2),
             'subject_placement': round(subject_placement, 2),
             'bg_separation': round(bg_separation, 2),
-            'subject_bbox': bbox_from_mask(mask, self.min_subject_pixels),
+            'subject_bbox': subject_bbox,
         }
 
-    def _compute_placement_score(self, mask, h, w):
-        """Compute rule-of-thirds placement score for subject centroid.
+    @staticmethod
+    def _masked_variance(lap, mask, n):
+        """Population variance of the CV_16S plane ``lap`` over the ``n`` pixels set in ``mask``.
 
-        Args:
-            mask: Binary mask (H, W)
-            h: Image height
-            w: Image width
-
-        Returns:
-            float: Placement score 0-10 (10 = centroid on power point)
+        ``cv2.meanStdDev`` multiplies its integer sums by ``1/n`` instead of dividing, so the
+        mean of ``n`` equal values is not that value (49 ones give 0.9999999999999999) and a
+        constant non-zero region reports a std of about 1e-8 where ``np.var`` gives exactly 0.
+        A variance that small is cancellation noise, not signal, and the caller branches on
+        ``variance > 0``, so it is recomputed from exact integer sums: ``n * sum(x^2) -
+        sum(x)^2`` is zero if and only if the region is constant, and ``sum(x^2)`` stays below
+        2**53 (the Laplacian is within +-2040) so every cv2 sum is exact. Any other region keeps
+        the fast value, which agrees with ``np.var`` to about 1e-15 relative.
         """
-        # Find subject centroid
-        ys, xs = np.nonzero(mask > 128)
-        if len(xs) == 0:
-            return 5.0
+        mean, std = cv2.meanStdDev(lap, mask=mask)
+        variance = float(std[0][0]) ** 2
+        mean = float(mean[0][0])
+        if variance > 1e-13 * (mean * mean + variance) + 1e-12:
+            return variance
+        inside = cv2.bitwise_and(lap, lap, mask=mask)
+        total = int(cv2.sumElems(inside)[0])
+        total_sq = int(cv2.sumElems(cv2.multiply(inside, inside, dtype=cv2.CV_32S))[0])
+        return (n * total_sq - total * total) / (n * n)
 
-        cx = float(np.mean(xs)) / w
-        cy = float(np.mean(ys)) / h
+    @staticmethod
+    def _region_variances(gray, fg, total_pixels):
+        """Laplacian variance over the subject (``fg``) and over everything else.
 
+        The Laplacian of a uint8 plane is an integer in [-2040, 2040], so ``CV_16S`` holds
+        exactly the values ``CV_64F`` would; only the summation order of the variance
+        differs from ``np.var`` (relative 1e-15, far below the 2-decimal rounding the
+        callers apply). A region with no pixels has variance 0, as before, and a constant
+        region gives exactly 0.0 (see ``_masked_variance``).
+        """
+        lap = cv2.Laplacian(gray, cv2.CV_16S)
+        n_subject = cv2.countNonZero(fg)
+        if n_subject > 0:
+            subject_variance = SaliencyScorer._masked_variance(lap, fg, n_subject)
+        else:
+            subject_variance = 0.0
+        if total_pixels - n_subject > 0:
+            bg_variance = SaliencyScorer._masked_variance(
+                lap, cv2.bitwise_not(fg), total_pixels - n_subject)
+        else:
+            bg_variance = 0.0
+        return subject_variance, bg_variance
+
+    @staticmethod
+    def _placement_from_centroid(cx, cy):
+        """Rule-of-thirds score for a normalised centroid (0-10, 10 = on a power point)."""
         # Rule-of-thirds power points
         thirds_x = [1/3, 2/3]
         thirds_y = [1/3, 2/3]
@@ -499,16 +614,56 @@ class SaliencyScorer:
         # Max possible distance from a power point is ~0.47 (corner to center third)
         # Score: closer to power point = higher score
         max_dist = 0.47
-        score = max(0.0, 10.0 * (1.0 - min_dist / max_dist))
+        return max(0.0, 10.0 * (1.0 - min_dist / max_dist))
 
-        return score
+    def _placement_from_projections(self, colsum, rowsum):
+        """Placement score from foreground column/row counts; 5.0 when there is no foreground.
+
+        ``sum(count * index)`` is the exact integer sum ``np.mean`` accumulates (it stays far
+        below 2**53, so the float64 sum was exact too) and the division is the same single
+        correctly-rounded one, so the centroid is bit-identical to the numpy one.
+        """
+        n = int(colsum.sum())
+        if n == 0:
+            return 5.0
+        w, h = colsum.size, rowsum.size
+        sum_x = int(np.dot(colsum, np.arange(w, dtype=np.int64)))
+        sum_y = int(np.dot(rowsum, np.arange(h, dtype=np.int64)))
+        return self._placement_from_centroid(float(sum_x / n) / w, float(sum_y / n) / h)
+
+    def _compute_placement_score(self, mask, h, w):
+        """Compute rule-of-thirds placement score for subject centroid (numpy path).
+
+        Args:
+            mask: Mask (H, W); foreground is ``mask > 128``
+            h: Image height
+            w: Image width
+
+        Returns:
+            float: Placement score 0-10 (10 = centroid on power point)
+        """
+        # Find subject centroid
+        ys, xs = np.nonzero(mask > 128)
+        if len(xs) == 0:
+            return 5.0
+
+        cx = float(np.mean(xs)) / w
+        cy = float(np.mean(ys)) / h
+        return self._placement_from_centroid(cx, cy)
 
     def score_batch(self, pil_images, cv_images):
         """Score a batch of images using batched GPU inference.
 
         Args:
             pil_images: List of PIL Images
-            cv_images: List of OpenCV BGR image arrays
+            cv_images: One entry per image: an OpenCV BGR array, a 2-D gray plane, or a
+                zero-argument callable returning either. A callable is invoked only when
+                that image has a mask, immediately before it is scored, and its result is
+                dropped right after, so a caller that rebuilds the plane from the retained
+                PIL image never holds more than one at a time.
+
+        Masks are scored as each sub-batch arrives and released before the next forward
+        pass, so at most one sub-batch of masks is alive.
 
         Returns:
             List of score dicts. A photo whose saliency could not be computed
@@ -520,29 +675,47 @@ class SaliencyScorer:
         failed = self._failed_scores()
         n = len(pil_images)
 
-        # Batch mask generation (single GPU forward pass per sub-batch)
+        results = []
         try:
-            masks = self.get_saliency_masks(pil_images)
+            batches = self.iter_mask_batches(pil_images)
+            offset = 0
+            while True:
+                # next() must run with no sub-batch of masks still referenced from here
+                sub_batch = next(batches, None)
+                if sub_batch is None:
+                    break
+                count = len(sub_batch)
+                self._score_sub_batch(sub_batch, cv_images[offset:offset + count],
+                                      results, failed, n)
+                offset += count
+                sub_batch = None
         except Exception as e:
+            # A mask-generation failure fails the whole call, including sub-batches already scored
             logger.error("  Batch saliency mask generation failed for batch size %d: %s", n, e)
             return [dict(failed) for _ in pil_images]
-
-        results = []
-        for mask, img_cv in zip(masks, cv_images):
-            if mask is None:
-                results.append(dict(failed))
-                continue
-            try:
-                results.append(self._score_from_mask(mask, img_cv))
-            except Exception as e:
-                logger.error("  Saliency scoring failed for batch size %d: %s", n, e)
-                results.append(dict(failed))
 
         lost = sum(1 for r in results if r['subject_sharpness'] is None)
         if lost:
             logger.error("  Saliency failed for %d of %d image(s) in this batch (batch size %d); "
                          "their saliency columns are left unset", lost, n, n)
         return results
+
+    def _score_sub_batch(self, masks, cv_images, results, failed, n):
+        """Score one sub-batch's masks into ``results``, emptying ``masks`` as it goes."""
+        for i, img_cv in enumerate(cv_images):
+            mask, masks[i] = masks[i], None
+            if mask is None:
+                results.append(dict(failed))
+                continue
+            try:
+                if callable(img_cv):
+                    img_cv = img_cv()
+                results.append(self._score_from_mask(mask, img_cv))
+            except Exception as e:
+                logger.error("  Saliency scoring failed for batch size %d: %s", n, e)
+                results.append(dict(failed))
+            mask = img_cv = None
+        masks.clear()
 
     @property
     def vram_gb(self) -> float:

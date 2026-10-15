@@ -697,15 +697,26 @@ class TestQRealignRouting:
 # Null-honest face results and the faces table
 # ---------------------------------------------------------------------------
 
+def _face_image():
+    """One retained photo as the face pass reads it: the PIL image and its dimensions."""
+    from PIL import Image
+    return {'pil': Image.new('RGB', (16, 12), (40, 80, 120)), 'width': 16, 'height': 12}
+
+
 class TestNullHonestFaces:
     def test_face_pass_failure_stores_unknown_not_zero(self):
         class Boom:
+            reached = False
+
             def analyze_faces(self, img):
+                Boom.reached = True
                 raise RuntimeError('detector crashed')
 
         results = {'/a': {}}
-        ChunkedMultiPassProcessor.__new__(ChunkedMultiPassProcessor)._pass_insightface(
-            Boom(), {'/a': {'cv': mock.MagicMock()}}, results)
+        proc = ChunkedMultiPassProcessor.__new__(ChunkedMultiPassProcessor)
+        proc.metrics = {'rebuild_time': 0.0}
+        proc._pass_insightface(Boom(), {'/a': _face_image()}, results)
+        assert Boom.reached  # the failure below is the analyzer's, not a missing fixture key
         r = results['/a']
         for key in ('face_quality', 'eye_sharpness', 'face_sharpness', 'is_blink',
                     'raw_eye_sharpness', 'face_confidence', 'face_details'):
@@ -721,9 +732,10 @@ class TestNullHonestFaces:
             def analyze_faces(self, img):
                 raise LicenceError('no')
 
+        proc = ChunkedMultiPassProcessor.__new__(ChunkedMultiPassProcessor)
+        proc.metrics = {'rebuild_time': 0.0}
         with pytest.raises(LicenceError):
-            ChunkedMultiPassProcessor.__new__(ChunkedMultiPassProcessor)._pass_insightface(
-                Boom(), {'/a': {'cv': mock.MagicMock()}}, {'/a': {}})
+            proc._pass_insightface(Boom(), {'/a': _face_image()}, {'/a': {}})
 
     @pytest.mark.parametrize('face_details,expect_rows', [(None, 1), ([], 0)])
     def test_save_keeps_stored_faces_only_when_unknown(self, tmp_path, face_details, expect_rows):
@@ -1260,7 +1272,7 @@ class TestMultiPassSuccessPathGoldens:
         arr = np.full((64, 64, 3), 120, dtype=np.uint8)
         path = str(tmp_path / 'a.jpg')
         images = {path: {
-            'cv': arr, 'pil': Image.fromarray(arr), 'width': 64, 'height': 64,
+            'pil': Image.fromarray(arr), 'width': 64, 'height': 64,
             'sharpness': {'normalized': 6.0, 'raw_variance': 100.0},
             'color': {'normalized': 5.5, 'raw_entropy': 3.0},
             'histogram': {'exposure_score': 7.0, 'spread': 40.0, 'bimodality': 1.0,

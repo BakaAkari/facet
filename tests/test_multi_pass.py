@@ -269,8 +269,9 @@ class TestComputeAggregatesHonorsOverride:
             proc = ChunkedMultiPassProcessor(scorer=scorer, model_manager=_FakeModelManager(), config={})
 
         # comp_score/power_point_score/leading_lines_score are pre-populated so
-        # the CompositionAnalyzer branches (which need a real cv2 image) never
-        # fire -- this test is only about the override merge.
+        # _compute_aggregates never reads the hoisted ``composition`` dict (and,
+        # no longer needing the cv array, the entry carries none) -- this test is
+        # only about the override merge.
         results = {
             photo_path: {
                 'aesthetic': 7.0, 'comp_score': 5.0, 'power_point_score': 5.0,
@@ -279,7 +280,7 @@ class TestComputeAggregatesHonorsOverride:
         }
         images = {
             photo_path: {
-                'cv': None, 'height': 100, 'width': 100,
+                'height': 100, 'width': 100,
                 'sharpness': {}, 'color': {}, 'histogram': {}, 'mono': {},
                 'noise': {}, 'contrast': {}, 'form': {}, 'exif': {},
             },
@@ -554,16 +555,24 @@ class TestInsightFacePassUsesTheModelItIsGiven:
             return ChunkedMultiPassProcessor(_ExplodingFaceScorer(), _FakeModelManager(), {})
 
     def test_the_passed_analyzer_is_the_one_that_runs(self):
+        import numpy as np
+        from PIL import Image
+        from utils.image_loading import pil_to_bgr
+
         proc = self._processor()
         analyzer = _RecordingAnalyzer('from-the-manager')
-        img = mock.MagicMock()
-        img.shape = (100, 100, 3)
-        images = {'/p.jpg': {'cv': img, 'cache': None}}
+        # The pass rebuilds the BGR array from the retained PIL image (no 'cv' is kept),
+        # so the analyzer is shown an array, not a stored object: it must equal the one
+        # the loader used to retain.
+        pil = Image.fromarray(np.arange(100 * 100 * 3, dtype=np.uint8).reshape(100, 100, 3))
+        images = {'/p.jpg': {'pil': pil, 'height': 100, 'width': 100, 'cache': None}}
         results = {'/p.jpg': {}}
 
         proc._pass_insightface(analyzer, images, results)
 
-        assert analyzer.seen == [img]
+        assert len(analyzer.seen) == 1
+        assert np.array_equal(analyzer.seen[0], pil_to_bgr(pil))
+        assert np.array_equal(analyzer.seen[0], np.array(pil)[:, :, ::-1])
         assert results['/p.jpg']['face_details'] == [{'analyzer': 'from-the-manager'}]
         assert results['/p.jpg']['face_count'] == 1
 
@@ -705,10 +714,12 @@ class TestLoadImagesFreesHsv:
         proc.scorer = scorer
         with mock.patch("exiftool.get_exif_batch", return_value={}):
             images = proc._load_images([str(path)])
-        assert images
+        assert len(images) == 1  # a silent per-photo load failure must not pass
         for entry in images.values():
             assert entry['cache'].hsv is None
-            assert entry['cache'].gray is not None
+            # Neither plane is retained for the chunk (the passes rebuild them from 'pil').
+            assert entry['cache'].gray is None
+            assert 'cv' not in entry
 
 
 class TestScanFlushesPersonCentroids:

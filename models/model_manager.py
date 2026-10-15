@@ -6,6 +6,7 @@ Supports PyIQA, Qwen2-VL, and CLIP models with automatic selection.
 """
 
 import logging
+import math
 from typing import Dict, List
 
 import licensing
@@ -116,8 +117,11 @@ class ModelManager:
         'saliency', 'insightface',
     }
 
-    # Minimum available RAM headroom (GB) required for auto caching
-    _RAM_HEADROOM_GB = 4.0
+    # Default of the optional ``models.ram_cache_reserve_gb``: the available RAM
+    # (GB) the cache must leave free beside a model it admits. The key is
+    # deliberately absent from the shipped defaults file (it would change the
+    # config version hash of every library), so this is its only default.
+    DEFAULT_RAM_CACHE_RESERVE_GB = 4.0
 
     _RAM_RESERVE_GB = 2.0
     _CGROUP_CAPACITY_CEILING_GB = 5.0
@@ -136,13 +140,21 @@ class ModelManager:
     _HOST_OS_RESERVE_GB = 1.0
     _RAM_PER_DECLARED_GB = 1.6
 
-    def __init__(self, config):
+    def __init__(self, config, memory_provider=None):
         """
         Initialize the model manager.
 
         Args:
             config: ScoringConfig instance with model settings
+            memory_provider: Zero-argument callable returning an object with
+                an ``available`` attribute in bytes (an
+                ``utils.system_memory.EffectiveMemory``). Every read of
+                available memory in the RAM-cache code goes through it, so a
+                test injects a fake instead of patching a global. ``None``
+                reads ``utils.system_memory.effective_memory`` at the moment
+                of each call.
         """
+        self._memory_provider = memory_provider
         self.config = config
         from utils.device import get_device
         self.device = get_device()
@@ -163,6 +175,50 @@ class ModelManager:
         self.profiles = model_config.get('profiles', {})
         self.model_settings = model_config
         self.keep_in_ram = model_config.get('keep_in_ram', 'auto')
+        self.ram_cache_reserve_gb = self._parse_ram_cache_reserve_gb(
+            model_config.get('ram_cache_reserve_gb', self.DEFAULT_RAM_CACHE_RESERVE_GB))
+
+    @staticmethod
+    def _parse_ram_cache_reserve_gb(value) -> float:
+        """Validate ``models.ram_cache_reserve_gb``: a finite number >= 0.
+
+        Only a JSON number is accepted. A boolean is refused although
+        ``float(True)`` works (``true`` in that key is a misplaced switch, not a
+        one-gigabyte reserve), and so is a string although ``float("4")`` works
+        (``"4"`` is a quoted number the operator did not mean to quote). An int
+        too large for a float is out of range, not an ``OverflowError``.
+        """
+        reserve = None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                reserve = float(value)
+            except OverflowError:
+                pass
+        if reserve is None or not math.isfinite(reserve) or reserve < 0:
+            raise ValueError(
+                f"models.ram_cache_reserve_gb must be a number of GB >= 0, got {value!r:.40}")
+        return reserve
+
+    def _available_bytes(self) -> int:
+        """Memory the host can hand out right now, in bytes.
+
+        The one read of available memory in the RAM-cache code. The default
+        provider is resolved on every call, not captured at construction, so
+        a reading patched in after the manager exists is honoured.
+        """
+        provider = self._memory_provider
+        if provider is None:
+            from utils.system_memory import effective_memory as provider
+        return provider().available
+
+    def is_resident_or_cached(self, model_name: str) -> bool:
+        """Whether ``model_name`` is loaded or parked in the RAM cache.
+
+        True means the next ``load_model_only`` returns without reading the
+        weights from disk (a cached model is moved back, not rebuilt). Reads
+        only: neither the hit counters nor the cache change.
+        """
+        return model_name in self.models or model_name in self._cpu_cache
 
 
     def get_active_profile(self) -> Dict[str, str]:
@@ -464,10 +520,11 @@ class ModelManager:
     def _fits_cpu_cache_budget(self, model_name: str) -> bool:
         """Whether retaining ``model_name`` keeps every planned pass affordable.
 
-        The flat ``_RAM_HEADROOM_GB`` was the only thing bounding the cache,
-        and it is a free-memory threshold, so it fails in exactly the wrong
-        direction: the roomier the budget the more it retains, and the pass
-        that has to run beside it is never consulted. Replaying the ``8gb``
+        The free-memory reserve (``ram_cache_reserve_gb``) was the only thing
+        bounding the cache, and it is a free-memory threshold, so it fails in
+        exactly the wrong direction: the roomier the budget the more it
+        retains, and the pass that has to run beside it is never consulted.
+        Replaying the ``8gb``
         profile's five-pass plan through the real unload cycle, an 8 GiB
         container retains nothing and peaks at the planned 5.0 GB, while a
         16 GiB one starts retaining at pass 3 and peaks at 13.0 GB declared
@@ -485,10 +542,13 @@ class ModelManager:
 
         On CPU-only systems, caching means keeping the model object alive
         (since _move_to_cpu is a no-op), so a retained model has to fit
-        beside the pass that runs next -- see _fits_cpu_cache_budget. The RAM
-        headroom check applies on top, and alone where no CPU plan exists,
-        which is the GPU case: there _move_to_cpu really does move tensors
-        off the device, so the cache spends a different pool than the pass.
+        beside the pass that runs next -- see _fits_cpu_cache_budget. The
+        available-memory check applies on top, and alone where no CPU plan
+        exists, which is the GPU case: there _move_to_cpu really does move
+        tensors off the device, so the cache spends a different pool than the
+        pass. A model is admitted only while the host keeps its declared RAM
+        plus ``ram_cache_reserve_gb`` available, strictly: available equal to
+        that sum is refused.
 
         ``insightface`` is cacheable only off CUDA, and that gate is explicit
         rather than left to the budget. FaceAnalyzer holds its InsightFace
@@ -530,10 +590,9 @@ class ModelManager:
         if self._cpu_plan and not self._fits_cpu_cache_budget(model_name):
             return False
 
-        from utils.system_memory import effective_memory
-        available_gb = effective_memory().available / BYTES_PER_GB
+        available_gb = self._available_bytes() / BYTES_PER_GB
         model_ram = self.MODEL_RAM_REQUIREMENTS.get(model_name, 2.0)
-        return available_gb > model_ram + self._RAM_HEADROOM_GB
+        return available_gb > model_ram + self.ram_cache_reserve_gb
 
     @staticmethod
     def _unregistered_modules(model):
@@ -676,8 +735,37 @@ class ModelManager:
             except Exception as e:
                 logger.debug("report_skips failed: %s", e)
 
-    def evict_cpu_cache(self):
-        """Evict all models from CPU cache to free RAM.
+    @staticmethod
+    def _eviction_order(names, next_use) -> list:
+        """``names`` ordered most-evictable first (Belady's rule).
+
+        The victim is the cached model whose next use is farthest away.
+        ``next_use`` lists model names in the order they will first be
+        requested; a name missing from it is never requested again and goes
+        before every listed one. The sort is stable, so cache insertion order
+        breaks ties among the unlisted names (and with no ``next_use`` the
+        order is plain insertion order).
+        """
+        if next_use is None:
+            return list(names)
+        rank: Dict[str, int] = {}
+        for position, name in enumerate(next_use):
+            rank.setdefault(name, position)
+        return sorted(names, key=lambda name: -rank.get(name, math.inf))
+
+    def evict_cpu_cache(self, needed_available_bytes=None, next_use=None) -> List[str]:
+        """Evict models from the CPU cache to free RAM; returns the names evicted.
+
+        With no ``needed_available_bytes`` every cached model is dropped (the
+        original behaviour). With a target, models are dropped one at a time,
+        in Belady order (see :meth:`_eviction_order`), and the loop stops as
+        soon as ``_available_bytes()`` reports at least the target; the memory
+        is re-read after each victim, once the garbage collector and the heap
+        trim have handed its pages back. A target the host can never reach (a
+        sibling process holds the memory) evicts every cached model once and
+        returns: the loop walks a snapshot of the names, so it cannot spin.
+        The caller tells "reached" from "emptied" by re-reading
+        ``_available_bytes()``.
 
         Called by ResourceMonitor under memory pressure, on the monitor
         thread, while ``_restore_from_cache`` pops from this same dict on the
@@ -686,28 +774,58 @@ class ModelManager:
         swallows that (``except Exception: pass``) and every model AFTER the
         missing one stays cached, at above 85% of the effective limit, which
         is exactly when the memory is needed. So each entry is removed with
-        the same forgiving ``pop`` the read side uses, and the count logged is
-        what this call really took rather than what it found a moment earlier.
+        the same forgiving ``pop`` the read side uses, a model that was
+        restored in the meantime is skipped, and the names returned and logged
+        are what this call really took rather than what it found a moment
+        earlier.
+
+        Args:
+            needed_available_bytes: Available bytes to free up to, or None to
+                evict everything.
+            next_use: Model names in the order they will first be requested
+                again (farthest is evicted first; unlisted names go first).
         """
         if not self._cpu_cache:
-            return
-
-        dropped = {}
-        for name in list(self._cpu_cache):
-            model = self._cpu_cache.pop(name, None)
-            if model is not None:
-                dropped[name] = model
-        evicted = list(dropped)
-        for model in dropped.values():
-            self._report_scorer_skips(model)
+            return []
 
         import gc
-        gc.collect()
         from utils.system_memory import release_freed_heap
-        release_freed_heap()
+
+        evicted = []
+        if needed_available_bytes is None:
+            dropped = {}
+            for name in list(self._cpu_cache):
+                model = self._cpu_cache.pop(name, None)
+                if model is not None:
+                    dropped[name] = model
+            evicted = list(dropped)
+            for model in dropped.values():
+                self._report_scorer_skips(model)
+            # Drop the last references before collecting, or the pass frees nothing
+            model = None
+            dropped.clear()
+            gc.collect()
+            release_freed_heap()
+        else:
+            order = self._eviction_order(list(self._cpu_cache), next_use)
+            logger.debug("RAM cache eviction target: %d available bytes (candidates: %s)",
+                         needed_available_bytes, ", ".join(order))
+            for name in order:
+                if self._available_bytes() >= needed_available_bytes:
+                    break
+                model = self._cpu_cache.pop(name, None)
+                if model is None:
+                    continue
+                self._report_scorer_skips(model)
+                evicted.append(name)
+                del model
+                gc.collect()
+                release_freed_heap()
+
         if evicted:
             logger.info("Evicted %d model(s) from RAM cache: %s",
                         len(evicted), ", ".join(evicted))
+        return evicted
 
     def load_model_only(self, model_name: str):
         """

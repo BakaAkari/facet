@@ -360,6 +360,8 @@ Seuls les cas 4 et 5 peuvent ne rien trouver. Les cas 1 et 2 nomment un chemin 
 
 Sur une machine CUDA, un profil SigLIP (`16gb`, `24gb`) encode désormais le vocabulaire de tags en fp16, comme le faisait déjà le scoreur monopasse ; `tag_existing.py` le chargeait auparavant en fp32. `python tag_existing.py`, `python tag_existing.py --force`, `python facet.py --tag-untagged` et l'étape d'étiquetage en fin de scan partagent ce chargeur. Mesuré sur 49 photos, l'ensemble de tags a changé pour 2 d'entre elles (4 %) : relancez `python tag_existing.py --force` pour ré-étiqueter les photos étiquetées auparavant. Le CPU et les profils CLIP ViT-L-14 (`legacy`, `8gb`) ne changent pas.
 
+L'étape d'étiquetage en fin de scan ne charge ce modèle que lorsqu'elle a du travail. Elle est ignorée, avec une ligne de journal, lorsque `tagging.enabled` vaut `false` ou lorsqu'aucune photo n'a à la fois un embedding stocké et une liste de tags vide ; un scan sans rien à étiqueter ne recharge donc plus SigLIP 2 ni CLIP pour cela. `python tag_existing.py`, `--force` et `--tag-untagged` ne sont pas concernés.
+
 ## Validation de la base de données
 
 | Commande | Description |

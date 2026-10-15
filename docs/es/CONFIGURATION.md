@@ -582,6 +582,7 @@ Selecciona qué modelos se usan por cada perfil de VRAM.
 |---------|---------|-------------|
 | `vram_profile` | `"auto"` | Perfil activo (`auto`, `legacy`, `8gb`, `16gb`, `24gb`) |
 | `keep_in_ram` | `"auto"` | Mantener los modelos en RAM entre los fragmentos multipase (`"auto"`, `"always"`, `"never"`). `auto` comprueba la RAM disponible antes de almacenar en caché. |
+| `ram_cache_reserve_gb` | `4.0` (opcional, no está en el archivo incluido) | RAM disponible (GB) que la caché de modelos debe dejar libre junto a un modelo que admite. Con `"auto"`, un modelo se mantiene en RAM solo mientras la RAM disponible supere su tamaño declarado más esta reserva (la igualdad se rechaza); `"always"` omite la comprobación y `"never"` no almacena nada en caché. Un valor menor almacena más agresivamente; uno mayor deja más margen al resto del host. Debe ser un número >= 0; cualquier otro valor (una cadena, un negativo, `true`) detiene el escaneo al inicio con un error que nombra la clave. La expulsión bajo presión de memoria no se ve afectada: el monitor de recursos sigue descartando toda la caché |
 | `profiles.*.supplementary_pyiqa` | `["topiq_iaa", "topiq_nr_face", "liqe"]` | Modelos PyIQA a ejecutar para este perfil (vacío en `legacy`) |
 | `profiles.*.saliency_enabled` | `true` (16gb/24gb) | Ejecutar la saliencia del sujeto BiRefNet para este perfil |
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | Modelo de embeddings SigLIP 2 NaFlex (16gb/24gb) |
@@ -729,7 +730,7 @@ Ajustes de procesamiento unificados para el procesamiento por lotes en GPU y el 
 
 **`gpu_batch_size`** - Cuántas imágenes se procesan juntas en la GPU en un único paso hacia delante. Limitado por la VRAM. Autoajustado: se reduce cuando la memoria de la GPU supera el límite.
 
-**`ram_chunk_size`** - Cuántas imágenes se almacenan en caché en la RAM entre los pases del modelo (solo en modo multipase). Reduce la E/S de disco cargando las imágenes una vez por fragmento. Limitado por el límite de memoria efectivo (véase `memory_limit_percent` más abajo). Autoajustado en ambos sentidos: se reduce de inmediato cuando el uso supera el límite, y solo aumenta al final de un fragmento, y únicamente si el uso *máximo* de todo ese fragmento se mantuvo por debajo del límite. Lo que importa es el máximo, porque un fragmento no es una sola lectura: cada descarga de modelo entre pases hace que el uso caiga casi hasta el suelo, y crecer sobre ese valle fue lo que llevó `ram_chunk_size` de 10 a 500 dentro de un contenedor de 8GB y provocó un OOM kill en el siguiente fragmento.
+**`ram_chunk_size`** - Cuántas imágenes se almacenan en caché en la RAM entre los pases del modelo (solo en modo multipase). Reduce la E/S de disco cargando las imágenes una vez por fragmento. Limitado por el límite de memoria efectivo (véase `memory_limit_percent` más abajo). Autoajustado en ambos sentidos: se reduce de inmediato cuando el uso supera el límite, y solo aumenta al final de un fragmento, y únicamente si el uso *máximo* de todo ese fragmento se mantuvo por debajo del límite. Lo que importa es el máximo, porque un fragmento no es una sola lectura: cada descarga de modelo entre pases hace que el uso caiga casi hasta el suelo, y crecer sobre ese valle fue lo que llevó `ram_chunk_size` de 10 a 500 dentro de un contenedor de 8GB y provocó un OOM kill en el siguiente fragmento. Un fragmento conserva solo la imagen decodificada (unos 4,4 bytes por píxel de origen mientras se ejecutan sus pases, frente a unos 8,1): los pases que necesitan una matriz BGR o un plano de grises la reconstruyen a partir de esa imagen en lugar de que el fragmento mantenga ambos durante toda su vida. Esto no cambia cómo se ajusta `ram_chunk_size`; reduce lo que usa un fragmento de un tamaño dado.
 
 ### Referencia de ajustes
 
@@ -777,7 +778,9 @@ En vez de cargar todos los modelos a la vez, el modo multipase:
 2. Para cada fragmento, ejecuta los modelos secuencialmente: cargar modelo → procesar fragmento → descargar modelo
 3. Combina los resultados en un pase de agregación final
 
-Cada imagen se carga una vez por fragmento, y los pases se agrupan para caber en la VRAM disponible, de modo que los VLM de etiquetado/composición más grandes se ejecutan incluso con VRAM limitada.
+Cada imagen se decodifica una vez por fragmento y la comparten todos los pases, y los pases se agrupan para caber en la VRAM disponible, de modo que los VLM de etiquetado/composición más grandes se ejecutan incluso con VRAM limitada.
+
+Los hilos de carga hacen, mientras decodifican, todo el trabajo de CPU que necesita el fotograma completo: EXIF, las métricas técnicas, el análisis de composición basado en reglas, el hash perceptual y la imagen de 1024 px que comparten los modelos pyiqa y Q-ReAlign (reducida una vez por foto, no una vez por modelo). Después, un fragmento conserva la imagen decodificada y descarta la matriz BGR y el plano de grises; los pases de InsightFace y de saliencia reconstruyen los suyos a partir de ella cuando se ejecutan (unos 0,09 s por foto de 20 MP, sumados como `Plane rebuilds` en el resumen del escaneo). Un error de composición hace fallar solo esa foto, registrada en `scan_failures` con la etapa `composition` (reintentar con `--retry-failed`), y el fragmento continúa.
 
 ### Comportamiento del autoajuste
 
@@ -1531,6 +1534,8 @@ Ajustes generales de etiquetado. El modelo de etiquetado se configura por perfil
 | `max_tags` | `5` | Máximo de etiquetas por foto |
 
 **Nota:** Los ajustes específicos de CLIP como `similarity_threshold_percent` están en la sección `models.clip`.
+
+Al final de un escaneo, el paso de etiquetado carga el modelo de embeddings del perfil solo cuando tiene algo que etiquetar. Se omite, con una línea de registro, cuando `enabled` es `false` o cuando ninguna foto tiene a la vez un embedding almacenado y una lista de etiquetas vacía. Un escaneo cuyas fotos pendientes el etiquetador nunca puede etiquetar (toda similitud por debajo del umbral) sigue cargando el modelo en cada ejecución. `python tag_existing.py`, `--force` y `python facet.py --tag-untagged` no se ven afectados.
 
 ### Modelos de etiquetado disponibles
 

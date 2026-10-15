@@ -4,6 +4,7 @@ Image transformation utilities for Facet.
 Thumbnail generation and face cropping.
 """
 
+import math
 from io import BytesIO
 
 from utils._lazy import ensure_cv2 as _ensure_cv2, ensure_pil as _ensure_pil_full
@@ -47,6 +48,25 @@ def thumbnail_has_signal(thumbnail_bytes):
     return peak >= DEGENERATE_THUMBNAIL_PEAK
 
 
+def _round_aspect(number, key):
+    """Pillow's `Image.thumbnail` rounding: the floor/ceil nearer the true aspect."""
+    return max(min(math.floor(number), math.ceil(number), key=key), 1)
+
+
+def _fitted_size(width, height, size):
+    """The size `Image.thumbnail((size, size))` would resize to, or None when the
+    image already fits (a port of Pillow's `preserve_aspect_ratio`)."""
+    x = y = math.floor(size)
+    if x >= width and y >= height:
+        return None
+    aspect = width / height
+    if x / y >= aspect:
+        x = _round_aspect(y * aspect, key=lambda n: abs(aspect - n / y))
+    else:
+        y = _round_aspect(x / aspect, key=lambda n: 0 if n == 0 else abs(aspect - x / n))
+    return x, y
+
+
 def generate_photo_thumbnail(pil_img, size=640, quality=80):
     """
     Generate JPEG thumbnail from PIL image.
@@ -61,8 +81,16 @@ def generate_photo_thumbnail(pil_img, size=640, quality=80):
     """
     Image = _ensure_pil()
 
-    thumb = pil_img.copy()
-    thumb.thumbnail((size, size), Image.Resampling.LANCZOS)
+    # Byte-identical to `pil_img.copy().thumbnail((size, size), LANCZOS)` without
+    # the full-resolution copy: `thumbnail()` mutates in place, so it cannot run on
+    # the original, but the final size it computes can be reproduced and `resize()`
+    # (which is what `thumbnail()` calls, with the same `reducing_gap`) returns a new
+    # image. `pil_img` itself is never modified (the scan retains it for later passes).
+    final = _fitted_size(pil_img.width, pil_img.height, size)
+    if final is None or final == pil_img.size:
+        thumb = pil_img
+    else:
+        thumb = pil_img.resize(final, Image.Resampling.LANCZOS, reducing_gap=2.0)
     buf = BytesIO()
     thumb.save(buf, format="JPEG", quality=quality)
     return buf.getvalue()

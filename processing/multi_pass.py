@@ -13,6 +13,7 @@ Key features:
 - Fallback handling: Automatic fallback to lighter models on OOM
 """
 
+import functools
 import gc
 import json
 import logging
@@ -31,6 +32,8 @@ from processing.routing import (
 )
 from processing.scorer import build_scoring_metrics
 from utils.device import clear_device_cache
+from utils.image_bounds import bound_to_inference_size
+from utils.image_loading import bgr_to_gray, pil_to_bgr
 
 logger = logging.getLogger("facet.multi_pass")
 
@@ -82,6 +85,19 @@ def _ensure_imports():
 VLM_TAGGER_KEYS = tuple(key for key, _ in TAGGING_MODELS.values())
 
 
+class _CompositionError(Exception):
+    """A load worker's composition analysis raised; carries the original exception.
+
+    A distinct type so the collecting loop can record the failure under stage
+    ``composition`` (not ``load``) and, unlike the decoder's ``RuntimeError``
+    abandonment signal, treat it as a failure of one photo rather than of the scan.
+    """
+
+    def __init__(self, original: Exception):
+        super().__init__(str(original))
+        self.original = original
+
+
 def tagging_model_to_key(tagging_model, default=None):
     """Map a profile ``tagging_model`` string to its tagger key, or ``default``."""
     entry = TAGGING_MODELS.get(tagging_model)
@@ -96,6 +112,17 @@ class ChunkedMultiPassProcessor:
     all model passes on the cached images before moving to the next chunk.
     This minimizes I/O overhead when using network storage.
     """
+
+    # Process working-set bytes per source pixel a decoded chunk holds while its passes run.
+    # The objects are the PIL image (Pillow stores RGB at 4 B/px) plus the shared bounded
+    # image (~0.15 B/px of a 20 MP photo) and small metric dicts, about 4.15 B/px; the BGR
+    # array and the gray plane are NOT retained, the passes that need them rebuild them from
+    # the PIL image (``pil_to_bgr``, ``bgr_to_gray``). The constant is the MEASURED
+    # ``bytes_per_px_retained_wset`` of ``scripts/perf/retained_bytes.py`` (4.32 on
+    # ``first:32``, 4.44-4.59 on ``mp:20-21:4``) rounded up to the next 0.25, so it includes
+    # the allocator slack of the decode workers. A memory budget multiplies it by the chunk's
+    # pixel count.
+    RETAINED_BYTES_PER_PX = 4.75
 
     # Default pass configuration
     DEFAULT_PASSES = [
@@ -162,6 +189,9 @@ class ChunkedMultiPassProcessor:
             'model_unload_time': 0,
             'inference_time': 0,
             'io_time': 0,
+            # BGR / gray planes rebuilt from the retained PIL image by the face and
+            # saliency passes (they are no longer kept for the whole chunk)
+            'rebuild_time': 0.0,
         }
 
     def reduce_chunk_size(self):
@@ -265,7 +295,8 @@ class ChunkedMultiPassProcessor:
         if len(self.pass_groups) == 1:
             logger.info("  -> Single pass (all models loaded together)")
         else:
-            logger.info("  -> %d passes (images loaded %dx per chunk)", len(self.pass_groups), len(self.pass_groups))
+            logger.info("  -> %d passes (images are decoded once per chunk and shared by all passes)",
+                        len(self.pass_groups))
 
         if ram_budgeted:
             self._apply_ram_safe_chunk_start()
@@ -575,8 +606,17 @@ class ChunkedMultiPassProcessor:
         Performs all CPU-bound work during image loading:
         - EXIF extraction
         - Technical analysis (sharpness, color, histogram, etc.)
-        - Composition analysis (power points, leading lines)
+        - Composition analysis (power points, leading lines), unless ``restricted``
         - Perceptual hash computation
+        - The shared LANCZOS-1024 image (``'bounded'``) the pyiqa models and Q-ReAlign
+          preprocess to anyway, when the pass plan contains one of them
+
+        The returned entries keep the PIL image but neither the BGR array nor the gray
+        plane (``RETAINED_BYTES_PER_PX``): the face and saliency passes rebuild them from
+        ``'pil'`` with ``pil_to_bgr`` / ``bgr_to_gray``, so no pass may mutate ``'pil'``.
+
+        A composition error fails that one photo (``on_error(path, 'composition', exc)``)
+        and the chunk carries on.
 
         Args:
             paths: List of photo paths
@@ -589,7 +629,7 @@ class ChunkedMultiPassProcessor:
         from concurrent.futures import ThreadPoolExecutor
         from pathlib import Path
         from utils import load_image_from_path
-        from analyzers import TechnicalAnalyzer, ImageCache
+        from analyzers import TechnicalAnalyzer, ImageCache, CompositionAnalyzer
         from analyzers.form_facet import compute_form_metrics, warmup
 
         # Get a TechnicalAnalyzer instance (stateless, so we can create one)
@@ -598,6 +638,8 @@ class ChunkedMultiPassProcessor:
         # Get config settings for technical analysis
         exposure_settings = self.scorer.config.get_exposure_settings()
         mono_settings = self.scorer.config.get_monochrome_settings()
+        need_bounded = self._needs_bounded_image()
+        need_composition = not self.restricted
 
         # One batched exiftool call for the whole chunk instead of one
         # subprocess round-trip per image; per-image fallback below covers
@@ -642,6 +684,40 @@ class ChunkedMultiPassProcessor:
             # use gray and laplacian_variance. Free it: ~60 MB per 20 MP image.
             cache.hsv = None
 
+            # Rule-based composition is a pure function of the pixels and the config
+            # (no face bbox exists at this point), so it runs here, in the pool, rather
+            # than serially on the main thread in _compute_aggregates.
+            composition = None
+            if need_composition:
+                try:
+                    comp_data = CompositionAnalyzer.get_placement_data(
+                        None, img_w, img_h, self.scorer.config, img_cv
+                    )
+                    leading_lines_data = CompositionAnalyzer.detect_leading_lines(img_cv, cache=cache)
+                    composition = {
+                        'score': comp_data['score'],
+                        'power_point_score': comp_data.get('power_point_score', 5.0),
+                        'leading_lines_score': leading_lines_data.get('leading_lines_score', 0),
+                    }
+                except Exception as e:
+                    raise _CompositionError(e) from e
+
+            # Composition was the last reader of the gray plane. Nothing keeps the BGR
+            # array or the gray plane for the chunk: the passes that need them rebuild
+            # them from ``pil`` (a pure function of it), the cache keeps only the
+            # Laplacian variance the face pass reads.
+            cache.gray = None
+
+            # The image the pyiqa models and Q-ReAlign would each resize to themselves.
+            # A degenerate aspect (20000x1) cannot be resized; each consumer then gets
+            # the full image and fails or succeeds exactly as before.
+            bounded = None
+            if need_bounded:
+                try:
+                    bounded = bound_to_inference_size(pil_img)
+                except Exception as e:
+                    logger.debug("Could not bound %s to the inference size: %s", path, e)
+
             # Form facet + Matsuda color harmony (CPU, fixed 512px working size)
             form_data = compute_form_metrics(pil_img)
 
@@ -650,11 +726,12 @@ class ChunkedMultiPassProcessor:
 
             return {
                 'pil': pil_img,
-                'cv': img_cv,
                 'path': path,
                 'width': img_w,
                 'height': img_h,
                 'cache': cache,
+                'bounded': bounded,
+                'composition': composition,
                 # EXIF data
                 'exif': exif_data,
                 # Technical metrics
@@ -690,6 +767,8 @@ class ChunkedMultiPassProcessor:
                             images[path] = data
                         elif self.on_error:
                             self.on_error(path, 'load', 'failed to load image')
+                    except _CompositionError as e:
+                        self._record_composition_failure(path, e)
                     except RuntimeError:
                         raise  # decode abandonment budget exhausted - fail fast
                     except Exception as e:
@@ -704,6 +783,8 @@ class ChunkedMultiPassProcessor:
                         images[path] = data
                     elif self.on_error:
                         self.on_error(path, 'load', 'failed to load image')
+                except _CompositionError as e:
+                    self._record_composition_failure(path, e)
                 except RuntimeError:
                     raise
                 except Exception as e:
@@ -713,10 +794,39 @@ class ChunkedMultiPassProcessor:
 
         return images
 
+    def _record_composition_failure(self, path: str, error: _CompositionError):
+        """One photo's composition analysis raised: skip it, record it, keep the chunk."""
+        logger.error("Composition analysis failed for %s: %s", path, error.original)
+        if self.on_error:
+            self.on_error(path, 'composition', error.original)
+
     # PyIQA models list
     PYIQA_MODELS = ['topiq', 'hyperiqa', 'dbcnn', 'musiq', 'musiq-koniq', 'clipiqa+',
                     'topiq_iaa', 'topiq_nr_face', 'liqe',
                     'aesthetic_v25', 'deqa']
+    # pyiqa-pass models that preprocess differently from the shared LANCZOS-1024 image
+    # (they need the full-resolution decode) and so must never receive it.
+    FULL_RES_IQA_MODELS = ('aesthetic_v25', 'deqa')
+    # Q-ReAlign bounds its input to the inference size itself, i.e. to the same image.
+    BOUNDED_INPUT_MODELS = ('qrealign', 'qrealign_quality')
+
+    def _needs_bounded_image(self) -> bool:
+        """Whether any pass in the plan reads the shared bounded image (None plan: yes)."""
+        if self.pass_groups is None:
+            return True
+        for group in self.pass_groups:
+            for model in group:
+                if model in self.BOUNDED_INPUT_MODELS:
+                    return True
+                if model in self.PYIQA_MODELS and model not in self.FULL_RES_IQA_MODELS:
+                    return True
+        return False
+
+    @staticmethod
+    def _bounded_or_full(img_data: Dict) -> Any:
+        """The shared bounded image, or the full-resolution one when none was stored."""
+        bounded = img_data.get('bounded')
+        return bounded if bounded is not None else img_data['pil']
 
     def _run_model_pass(self, model_name: str, model: Any,
                         images: Dict[str, Dict], results: Dict[str, Dict]):
@@ -787,9 +897,10 @@ class ChunkedMultiPassProcessor:
         paths = list(images.keys())
 
         for path in paths:
-            img_cv = images[path]['cv']
             try:
-                result = scorer.score(img_cv)
+                # SAMP-Net's preprocess takes the PIL image and builds the tensor the BGR
+                # route gave (torch.equal, tests/test_scan_retained_bytes.py).
+                result = scorer.score(images[path]['pil'])
                 results[path]['comp_score'] = result.get('comp_score', 5.0)
                 results[path]['composition_pattern'] = result.get('pattern', 'unknown')
             except Exception as e:
@@ -804,8 +915,13 @@ class ChunkedMultiPassProcessor:
         the scorer's instead kept it alive for the whole scan.
         """
         for path, img_data in images.items():
-            img_cv = img_data['cv']
             try:
+                # One BGR array at a time (6 B/px transient for ONE photo), dropped below
+                # before the next is built; a rebuild failure is a face failure like an
+                # analyzer failure.
+                rebuild_start = time.perf_counter()
+                img_cv = pil_to_bgr(img_data['pil'])
+                self.metrics['rebuild_time'] += time.perf_counter() - rebuild_start
                 face_res = face_analyzer.analyze_faces(img_cv)
 
                 # Store all face metrics in results
@@ -825,7 +941,7 @@ class ChunkedMultiPassProcessor:
                     results[path]['face_quality_iqa'] = face_res['face_quality_iqa']
 
                 # Compute face_ratio
-                img_h, img_w = img_cv.shape[:2]
+                img_h, img_w = img_data['height'], img_data['width']
                 face_area = face_res.get('face_area', 0)
                 results[path]['face_ratio'] = face_area / (img_h * img_w) if face_area > 0 else 0
 
@@ -859,6 +975,8 @@ class ChunkedMultiPassProcessor:
                 results[path]['raw_eye_sharpness'] = None
                 results[path]['isolation_bonus'] = 1.0
                 results[path]['face_details'] = None
+            finally:
+                img_cv = None
 
     def _pass_vlm_tagger(self, tagger: Any, images: Dict, results: Dict):
         """VLM pass: semantic tagging."""
@@ -879,11 +997,13 @@ class ChunkedMultiPassProcessor:
     def _pass_saliency(self, scorer: Any, images: Dict, results: Dict):
         """BiRefNet saliency pass: subject saliency detection and derived metrics."""
         pil_imgs = [img['pil'] for img in images.values()]
-        cv_imgs = [img['cv'] for img in images.values()]
+        # Zero-argument rebuilders, not arrays: the scorer calls one just before it scores
+        # that photo and drops the gray plane right after, so no chunk-wide plane exists.
+        rebuilders = [functools.partial(self._rebuild_gray, pil) for pil in pil_imgs]
         paths = list(images.keys())
 
         try:
-            scores = scorer.score_batch(pil_imgs, cv_imgs)
+            scores = scorer.score_batch(pil_imgs, rebuilders)
 
             for i, path in enumerate(paths):
                 if all(scores[i].get(key) is None for key in SALIENCY_PASS_COLUMNS - {'subject_bbox'}):
@@ -896,6 +1016,17 @@ class ChunkedMultiPassProcessor:
         except Exception as e:
             licensing.reraise_if_refused()
             logger.error("BiRefNet saliency pass failed: %s", e)
+
+    def _rebuild_gray(self, pil_img):
+        """The gray plane ``ImageCache`` used to hold, rebuilt from the retained PIL image.
+
+        ``bgr_to_gray(pil_to_bgr(pil))`` is the exact chain the load path ran; a direct
+        RGB2GRAY would round some pixels differently.
+        """
+        start = time.perf_counter()
+        gray = bgr_to_gray(pil_to_bgr(pil_img))
+        self.metrics['rebuild_time'] += time.perf_counter() - start
+        return gray
 
     # Supplementary PyIQA models store to dedicated columns
     PYIQA_COLUMN_MAP = {
@@ -924,7 +1055,7 @@ class ChunkedMultiPassProcessor:
         tasks = ('aesthetic', 'quality') if primary else ('aesthetic',)
 
         for path in paths:
-            pil = images[path]['pil']
+            pil = self._bounded_or_full(images[path])
             try:
                 if quality_only:
                     results[path]['quality_score'] = scorer.score(pil, 'quality')
@@ -958,7 +1089,10 @@ class ChunkedMultiPassProcessor:
         ``score_batch`` is chunk-wide: swallowed for a supplementary model,
         re-raised for a primary one so ``_process_chunk`` marks the chunk retryable.
         """
-        pil_imgs = [img['pil'] for img in images.values()]
+        if model_name in self.FULL_RES_IQA_MODELS:
+            pil_imgs = [img['pil'] for img in images.values()]
+        else:
+            pil_imgs = [self._bounded_or_full(img) for img in images.values()]
         paths = list(images.keys())
         supplementary = model_name in self.PYIQA_COLUMN_MAP
 
@@ -998,9 +1132,9 @@ class ChunkedMultiPassProcessor:
     def _compute_aggregates(self, results: Dict, images: Dict):
         """Compute aggregate scores from all collected metrics (CPU pass).
 
-        Also computes composition scores using rule-based analysis.
+        Rule-based composition scores come from ``images[path]['composition']``,
+        computed in :meth:`_load_images`.
         """
-        from analyzers import CompositionAnalyzer
         from utils import detect_silhouette
 
         # Sticky per-photo scoring context/override, batched once per chunk
@@ -1014,8 +1148,6 @@ class ChunkedMultiPassProcessor:
                 continue
 
             img_data = images[path]
-            img_cv = img_data['cv']
-            img_h, img_w = img_data['height'], img_data['width']
 
             # Get technical metrics from image data (computed in _load_images)
             sharpness = img_data.get('sharpness', {})
@@ -1031,36 +1163,20 @@ class ChunkedMultiPassProcessor:
             color_score = color.get('normalized', 5.0)
             exposure_score = histogram.get('exposure_score', 5.0)
 
-            # Compute composition if not already set by SAMP-Net
+            # Composition was computed in _load_images (pure function of pixels + config).
+            # Read it only where a value is missing, so a value a pass already supplied
+            # (SAMP-Net's comp_score) is never overwritten.
             if 'comp_score' not in data or data.get('comp_score') is None:
-                # Get face bbox for composition analysis
-                face_ratio = data.get('face_ratio') or 0
-                face_bbox = None
-                if face_ratio > 0 and data.get('face_details'):
-                    # Use the combined face bbox from face analysis
-                    pass  # Face bbox is computed internally by CompositionAnalyzer
-
-                comp_data = CompositionAnalyzer.get_placement_data(
-                    face_bbox, img_w, img_h, self.scorer.config, img_cv
-                )
-                data['comp_score'] = comp_data['score']
-                data['power_point_score'] = comp_data.get('power_point_score', 5.0)
-
-                # Detect leading lines
-                cache = img_data.get('cache')
-                leading_lines_data = CompositionAnalyzer.detect_leading_lines(img_cv, cache=cache)
-                data['leading_lines_score'] = leading_lines_data.get('leading_lines_score', 0)
+                composition = img_data['composition']
+                data['comp_score'] = composition['score']
+                data['power_point_score'] = composition['power_point_score']
+                data['leading_lines_score'] = composition['leading_lines_score']
             else:
-                # SAMP-Net provided comp_score, still compute power_point and leading_lines
+                # SAMP-Net provided comp_score, still need power_point and leading_lines
                 if 'power_point_score' not in data:
-                    comp_data = CompositionAnalyzer.get_placement_data(
-                        None, img_w, img_h, self.scorer.config, img_cv
-                    )
-                    data['power_point_score'] = comp_data.get('power_point_score', 5.0)
+                    data['power_point_score'] = img_data['composition']['power_point_score']
                 if 'leading_lines_score' not in data:
-                    cache = img_data.get('cache')
-                    leading_lines_data = CompositionAnalyzer.detect_leading_lines(img_cv, cache=cache)
-                    data['leading_lines_score'] = leading_lines_data.get('leading_lines_score', 0)
+                    data['leading_lines_score'] = img_data['composition']['leading_lines_score']
 
             # Detect silhouette
             is_silhouette = detect_silhouette(
@@ -1337,6 +1453,8 @@ class ChunkedMultiPassProcessor:
             logger.info("  Model load: %.1fs (%.0f%%)", m['model_load_time'], 100 * m['model_load_time'] / total)
             logger.info("  Inference: %.1fs (%.0f%%)", m['inference_time'], 100 * m['inference_time'] / total)
             logger.info("  Model unload: %.1fs (%.0f%%)", m['model_unload_time'], 100 * m['model_unload_time'] / total)
+            logger.info("  Plane rebuilds (face + saliency passes): %.1fs (%.0f%%)",
+                        m['rebuild_time'], 100 * m['rebuild_time'] / total)
 
             # Auto-tuning summary (only if adjustments occurred)
             monitor = getattr(self, '_ram_monitor', None)

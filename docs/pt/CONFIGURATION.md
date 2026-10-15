@@ -580,6 +580,7 @@ Seleciona quais modelos são usados por perfil de VRAM.
 |--------------|--------|-----------|
 | `vram_profile` | `"auto"` | Perfil ativo (`auto`, `legacy`, `8gb`, `16gb`, `24gb`) |
 | `keep_in_ram` | `"auto"` | Mantém os modelos na RAM entre os blocos de múltiplas passagens (`"auto"`, `"always"`, `"never"`). `auto` verifica a RAM disponível antes de fazer cache. |
+| `ram_cache_reserve_gb` | `4.0` (opcional, ausente do arquivo fornecido) | RAM disponível (GB) que o cache de modelos deve deixar livre ao lado de um modelo que admite. Com `"auto"`, um modelo só é mantido na RAM enquanto a RAM disponível exceder o tamanho declarado dele mais esta reserva (igualdade é recusada); `"always"` pula a verificação e `"never"` não coloca nada em cache. Um valor menor faz cache de forma mais agressiva, um maior deixa mais espaço para o resto do host. Deve ser um número >= 0; qualquer outro valor (uma string, um negativo, `true`) interrompe a varredura na inicialização com um erro que nomeia a chave. A remoção sob pressão de memória não muda: o monitor de recursos continua descartando todo o cache |
 | `profiles.*.supplementary_pyiqa` | `["topiq_iaa", "topiq_nr_face", "liqe"]` | Modelos PyIQA a executar para este perfil (vazio em `legacy`) |
 | `profiles.*.saliency_enabled` | `true` (16gb/24gb) | Executa a saliência de assunto do BiRefNet para este perfil |
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | Modelo de embedding SigLIP 2 NaFlex (16gb/24gb) |
@@ -726,7 +727,7 @@ Configurações unificadas de processamento para o processamento em lote na GPU 
 
 **`gpu_batch_size`** - Quantas imagens são processadas juntas na GPU em uma única passagem direta. Limitado pela VRAM. Ajustado automaticamente: reduzido quando a memória da GPU excede o limite.
 
-**`ram_chunk_size`** - Quantas imagens são armazenadas em cache na RAM entre as passagens dos modelos (apenas no modo de múltiplas passagens). Reduz a E/S de disco ao carregar as imagens uma vez por bloco. Limitado pelo limite de memória efetivo (veja `memory_limit_percent` abaixo). Ajustado automaticamente em ambas as direções: reduzido imediatamente quando o uso excede o limite, e aumentado apenas no fim de um bloco, e somente se o uso *máximo* de todo esse bloco permaneceu abaixo do limite. O pico é o que importa, porque um bloco não é uma única leitura — cada descarregamento de modelo entre as passagens faz o uso cair quase até o piso, e crescer sobre esse vale foi o que levou `ram_chunk_size` de 10 a 500 dentro de um contêiner de 8GB e causou um OOM kill no bloco seguinte.
+**`ram_chunk_size`** - Quantas imagens são armazenadas em cache na RAM entre as passagens dos modelos (apenas no modo de múltiplas passagens). Reduz a E/S de disco ao carregar as imagens uma vez por bloco. Limitado pelo limite de memória efetivo (veja `memory_limit_percent` abaixo). Ajustado automaticamente em ambas as direções: reduzido imediatamente quando o uso excede o limite, e aumentado apenas no fim de um bloco, e somente se o uso *máximo* de todo esse bloco permaneceu abaixo do limite. O pico é o que importa, porque um bloco não é uma única leitura — cada descarregamento de modelo entre as passagens faz o uso cair quase até o piso, e crescer sobre esse vale foi o que levou `ram_chunk_size` de 10 a 500 dentro de um contêiner de 8GB e causou um OOM kill no bloco seguinte. Um bloco mantém apenas a imagem decodificada (cerca de 4,4 bytes por pixel de origem enquanto suas passagens rodam, contra cerca de 8,1 antes): as passagens que precisam de um array BGR ou de um plano de cinza o reconstroem a partir dessa imagem, em vez de o bloco manter ambos durante toda a sua vida. Isso não muda como `ram_chunk_size` é ajustado; reduz o que um bloco de determinado tamanho usa.
 
 ### Referência de Configurações
 
@@ -774,7 +775,9 @@ Em vez de carregar todos os modelos de uma vez, as múltiplas passagens:
 2. Para cada bloco, executam os modelos sequencialmente: carregar modelo → processar bloco → descarregar modelo
 3. Combinam os resultados em uma passagem final de agregação
 
-Cada imagem é carregada uma vez por bloco, e as passagens são agrupadas para caber na VRAM disponível, de modo que os VLMs maiores de tagging/composição rodem mesmo com VRAM limitada.
+Cada imagem é decodificada uma vez por bloco e compartilhada por todas as passagens, e as passagens são agrupadas para caber na VRAM disponível, de modo que os VLMs maiores de tagging/composição rodem mesmo com VRAM limitada.
+
+As threads de carregamento fazem, enquanto decodificam, todo o trabalho de CPU que precisa do quadro completo: EXIF, as métricas técnicas, a análise de composição baseada em regras, o hash perceptual e a imagem de 1024 px que os modelos pyiqa e o Q-ReAlign compartilham (reduzida uma vez por foto, não uma vez por modelo). Depois, um bloco mantém a imagem decodificada e descarta o array BGR e o plano de cinza; as passagens do InsightFace e de saliência reconstroem os seus a partir dela quando rodam (cerca de 0,09 s por foto de 20 MP, somados como `Plane rebuilds` no resumo da varredura). Um erro de composição faz falhar apenas essa foto, registrada em `scan_failures` na etapa `composition` (tente de novo com `--retry-failed`), e o bloco continua.
 
 ### Comportamento do Ajuste Automático
 
@@ -1526,6 +1529,8 @@ Configurações gerais de tagging. O modelo de tagging é configurado por perfil
 | `max_tags` | `5` | Máximo de tags por foto |
 
 **Nota:** Configurações específicas do CLIP, como `similarity_threshold_percent`, ficam na seção `models.clip`.
+
+Ao final de uma varredura, a etapa de marcação só carrega o modelo de embeddings do perfil quando tem algo a marcar. Ela é ignorada, com uma linha de log, quando `enabled` é `false` ou quando nenhuma foto tem ao mesmo tempo um embedding armazenado e uma lista de tags vazia. Uma varredura cujas fotos pendentes o marcador nunca consegue marcar (toda similaridade abaixo do limiar) continua carregando o modelo a cada execução. `python tag_existing.py`, `--force` e `python facet.py --tag-untagged` não são afetados.
 
 ### Modelos de Tagging Disponíveis
 

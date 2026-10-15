@@ -364,6 +364,8 @@ Só os casos 4 e 5 podem não encontrar nada. Os casos 1 e 2 nomeiam um caminho,
 
 Em uma máquina com CUDA, um perfil SigLIP (`16gb`, `24gb`) agora codifica o vocabulário de tags em fp16, como o pontuador de passagem única já fazia; o `tag_existing.py` o carregava antes em fp32. `python tag_existing.py`, `python tag_existing.py --force`, `python facet.py --tag-untagged` e a etapa de marcação ao final de uma varredura compartilham esse carregador. Medido em 49 fotos, o conjunto de tags mudou em 2 delas (4 %): execute `python tag_existing.py --force` novamente para re-marcar as fotos marcadas antes. CPU e os perfis CLIP ViT-L-14 (`legacy`, `8gb`) não mudam.
 
+A etapa de marcação ao final de uma varredura só carrega esse modelo quando tem trabalho a fazer. Ela é ignorada, com uma linha de log, quando `tagging.enabled` é `false` ou quando nenhuma foto tem um embedding armazenado e uma lista de tags vazia; uma varredura sem nada a marcar não recarrega mais o SigLIP 2 nem o CLIP para isso. `python tag_existing.py`, `--force` e `--tag-untagged` não são afetados.
+
 ## Database Validation
 
 | Comando | Descrição |

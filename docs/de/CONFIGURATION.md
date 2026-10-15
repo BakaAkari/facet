@@ -586,6 +586,7 @@ Wählt aus, welche Modelle je VRAM-Profil verwendet werden.
 |---------|---------|-------------|
 | `vram_profile` | `"auto"` | Aktives Profil (`auto`, `legacy`, `8gb`, `16gb`, `24gb`) |
 | `keep_in_ram` | `"auto"` | Modelle zwischen Multi-Pass-Chunks im RAM halten (`"auto"`, `"always"`, `"never"`). `auto` prüft vor dem Caching den verfügbaren RAM. |
+| `ram_cache_reserve_gb` | `4.0` (optional, nicht in der mitgelieferten Datei) | Verfügbarer RAM (GB), den der Modell-Cache neben einem aufgenommenen Modell frei lassen muss. Unter `"auto"` bleibt ein Modell nur im RAM, solange der verfügbare RAM seine deklarierte Größe plus diese Reserve übersteigt (Gleichheit wird abgelehnt); `"always"` überspringt die Prüfung, `"never"` cacht nichts. Ein kleinerer Wert cacht aggressiver, ein größerer lässt dem Rest des Hosts mehr Platz. Muss eine Zahl >= 0 sein; jeder andere Wert (ein String, eine negative Zahl, `true`) stoppt den Scan beim Start mit einem Fehler, der den Schlüssel nennt. Das Verdrängen unter Speicherdruck ist davon nicht betroffen: Der Ressourcenmonitor verwirft weiterhin den gesamten Cache |
 | `profiles.*.supplementary_pyiqa` | `["topiq_iaa", "topiq_nr_face", "liqe"]` | PyIQA-Modelle, die für dieses Profil ausgeführt werden (leer bei `legacy`) |
 | `profiles.*.saliency_enabled` | `true` (16gb/24gb) | BiRefNet-Subjekt-Saliency für dieses Profil ausführen |
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | SigLIP 2 NaFlex Embedding-Modell (16gb/24gb) |
@@ -733,7 +734,7 @@ Vereinheitlichte Verarbeitungseinstellungen für die GPU-Batch-Verarbeitung und 
 
 **`gpu_batch_size`** - Wie viele Bilder zusammen auf der GPU in einem einzigen Forward-Pass verarbeitet werden. Durch den VRAM begrenzt. Automatisch optimiert: wird reduziert, wenn der GPU-Speicher das Limit überschreitet.
 
-**`ram_chunk_size`** - Wie viele Bilder zwischen Modelldurchläufen im RAM zwischengespeichert werden (nur Multi-Pass-Modus). Reduziert Disk-I/O, indem Bilder einmal pro Chunk geladen werden. Durch das effektive Speicherlimit begrenzt (siehe `memory_limit_percent` unten). In beide Richtungen automatisch optimiert: sofort reduziert, wenn die Auslastung das Limit überschreitet, und nur an einer Chunk-Grenze erhöht, und zwar nur, wenn die *Spitzenauslastung* des gesamten Chunks unter dem Limit geblieben ist. Die Spitze zählt, weil ein Chunk keine einzelne Messung ist — jedes Modell-Entladen zwischen den Durchläufen lässt die Auslastung fast auf den Boden fallen, und genau dieses Wachstum auf diesem Tiefpunkt hat `ram_chunk_size` in einem 8GB-Container von 10 auf 500 getrieben und den nächsten Chunk per OOM-Kill beendet.
+**`ram_chunk_size`** - Wie viele Bilder zwischen Modelldurchläufen im RAM zwischengespeichert werden (nur Multi-Pass-Modus). Reduziert Disk-I/O, indem Bilder einmal pro Chunk geladen werden. Durch das effektive Speicherlimit begrenzt (siehe `memory_limit_percent` unten). In beide Richtungen automatisch optimiert: sofort reduziert, wenn die Auslastung das Limit überschreitet, und nur an einer Chunk-Grenze erhöht, und zwar nur, wenn die *Spitzenauslastung* des gesamten Chunks unter dem Limit geblieben ist. Die Spitze zählt, weil ein Chunk keine einzelne Messung ist — jedes Modell-Entladen zwischen den Durchläufen lässt die Auslastung fast auf den Boden fallen, und genau dieses Wachstum auf diesem Tiefpunkt hat `ram_chunk_size` in einem 8GB-Container von 10 auf 500 getrieben und den nächsten Chunk per OOM-Kill beendet. Ein Chunk behält nur das dekodierte Bild (etwa 4,4 Byte pro Quellpixel, solange seine Durchläufe laufen, zuvor etwa 8,1): Die Durchläufe, die ein BGR-Array oder eine Graustufenebene brauchen, bauen sie aus diesem Bild neu auf, statt dass der Chunk beides sein ganzes Leben lang hält. Das ändert nichts daran, wie `ram_chunk_size` abgestimmt wird; es senkt, was ein Chunk gegebener Größe belegt.
 
 ### Einstellungsreferenz
 
@@ -781,7 +782,9 @@ Anstatt alle Modelle gleichzeitig zu laden, geht Multi-Pass wie folgt vor:
 2. Führt für jeden Chunk die Modelle sequenziell aus: Modell laden → Chunk verarbeiten → Modell entladen
 3. Kombiniert die Ergebnisse in einem abschließenden Aggregationsdurchlauf
 
-Jedes Bild wird einmal pro Chunk geladen, und Durchläufe werden so gruppiert, dass sie in den verfügbaren VRAM passen, sodass auch die größeren Tagger-/Kompositions-VLMs selbst bei begrenztem VRAM laufen.
+Jedes Bild wird einmal pro Chunk dekodiert und von allen Durchläufen gemeinsam genutzt, und Durchläufe werden so gruppiert, dass sie in den verfügbaren VRAM passen, sodass auch die größeren Tagger-/Kompositions-VLMs selbst bei begrenztem VRAM laufen.
+
+Die Loader-Threads erledigen beim Dekodieren die gesamte CPU-seitige Arbeit, die das vollständige Bild braucht: EXIF, die technischen Metriken, die regelbasierte Kompositionsanalyse, den Perceptual Hash und das 1024-px-Bild, das die pyiqa-Modelle und Q-ReAlign gemeinsam nutzen (einmal pro Foto verkleinert, nicht einmal pro Modell). Ein Chunk behält danach das dekodierte Bild und verwirft das BGR-Array und die Graustufenebene; die InsightFace- und Saliency-Durchläufe bauen ihre eigenen daraus neu auf, wenn sie laufen (etwa 0,09 s pro 20-MP-Foto, summiert als `Plane rebuilds` in der Scan-Zusammenfassung). Ein Kompositionsfehler lässt nur dieses eine Foto scheitern, erfasst in `scan_failures` unter der Stufe `composition` (Wiederholung mit `--retry-failed`), und der Chunk läuft weiter.
 
 ### Auto-Tuning-Verhalten
 
@@ -1535,6 +1538,8 @@ Allgemeine Verschlagwortungseinstellungen. Das Verschlagwortungsmodell wird pro 
 | `max_tags` | `5` | Maximale Anzahl Tags pro Foto |
 
 **Hinweis:** CLIP-spezifische Einstellungen wie `similarity_threshold_percent` befinden sich im Abschnitt `models.clip`.
+
+Am Ende eines Scans lädt der Verschlagwortungsschritt das Embedding-Modell des Profils nur, wenn er etwas zu verschlagworten hat. Er wird mit einer Logzeile übersprungen, wenn `enabled` auf `false` steht oder wenn kein Foto zugleich ein gespeichertes Embedding und eine leere Tag-Liste hat. Ein Scan, dessen ausstehende Fotos der Tagger nie verschlagworten kann (jede Ähnlichkeit unter dem Schwellenwert), lädt das Modell weiterhin bei jedem Lauf. `python tag_existing.py`, `--force` und `python facet.py --tag-untagged` sind nicht betroffen.
 
 ### Verfügbare Verschlagwortungsmodelle
 
