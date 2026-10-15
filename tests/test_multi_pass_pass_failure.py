@@ -60,6 +60,8 @@ def _img_data():
         "phash": "0" * 16, "exif": {}, "sharpness": {}, "color": {},
         "histogram": {}, "mono": {}, "dynamic_range": {}, "noise": {},
         "contrast": {}, "form": {}, "cache": None,
+        # what _load_images now hoists into the worker for a non-restricted processor
+        "composition": {"score": 7.0, "power_point_score": 5.0, "leading_lines_score": 0},
     }
 
 

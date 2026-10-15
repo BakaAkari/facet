@@ -14,6 +14,28 @@ from models.tagger import CLIPTagger
 from utils import tags_to_string, get_tag_params
 from db.tags import migrate_tags_to_lookup
 
+# The ONE definition of "a photo the auto-tag step would tag": it has a stored
+# embedding and no tags yet. The tagging query, the CLI's pending count and the
+# scan's pre-flight `count_untagged` all interpolate this constant, so the scan
+# can never skip a photo the query would have tagged.
+UNTAGGED_PREDICATE = "clip_embedding IS NOT NULL AND (tags IS NULL OR tags = '')"
+
+
+def count_untagged(db_path):
+    """Number of photos `tag_untagged_photos` (non-force) would consider."""
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute(
+            f"SELECT COUNT(*) FROM photos WHERE {UNTAGGED_PREDICATE}"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def tagging_enabled(config):
+    """Whether `tagging.enabled` allows the auto-tag step (default on)."""
+    return bool(config.get_tagging_settings().get('enabled', True))
+
 
 def tag_untagged_photos(db_path, tagger, threshold=0.22, max_tags=5, verbose=False, force=False):
     """
@@ -39,11 +61,10 @@ def tag_untagged_photos(db_path, tagger, threshold=0.22, max_tags=5, verbose=Fal
                 WHERE clip_embedding IS NOT NULL
             ''').fetchall()
         else:
-            rows = conn.execute('''
+            rows = conn.execute(f'''
                 SELECT path, filename, clip_embedding
                 FROM photos
-                WHERE clip_embedding IS NOT NULL
-                AND (tags IS NULL OR tags = '')
+                WHERE {UNTAGGED_PREDICATE}
             ''').fetchall()
 
         if not rows:
@@ -82,8 +103,7 @@ def run_tagging(db_path, tagger, config):
     Returns:
         Number of photos tagged, or None if disabled
     """
-    tag_settings = config.get_tagging_settings()
-    if not tag_settings.get('enabled', True):
+    if not tagging_enabled(config):
         return None
 
     threshold, max_tags = get_tag_params(config)
@@ -177,9 +197,8 @@ def main():
             SELECT COUNT(*) FROM photos WHERE clip_embedding IS NOT NULL
         ''').fetchone()[0]
     else:
-        count = conn.execute('''
-            SELECT COUNT(*) FROM photos
-            WHERE clip_embedding IS NOT NULL AND (tags IS NULL OR tags = '')
+        count = conn.execute(f'''
+            SELECT COUNT(*) FROM photos WHERE {UNTAGGED_PREDICATE}
         ''').fetchone()[0]
     conn.close()
 

@@ -269,8 +269,9 @@ class TestComputeAggregatesHonorsOverride:
             proc = ChunkedMultiPassProcessor(scorer=scorer, model_manager=_FakeModelManager(), config={})
 
         # comp_score/power_point_score/leading_lines_score are pre-populated so
-        # the CompositionAnalyzer branches (which need a real cv2 image) never
-        # fire -- this test is only about the override merge.
+        # _compute_aggregates never reads the hoisted ``composition`` dict (and,
+        # no longer needing the cv array, the entry carries none) -- this test is
+        # only about the override merge.
         results = {
             photo_path: {
                 'aesthetic': 7.0, 'comp_score': 5.0, 'power_point_score': 5.0,
@@ -279,7 +280,7 @@ class TestComputeAggregatesHonorsOverride:
         }
         images = {
             photo_path: {
-                'cv': None, 'height': 100, 'width': 100,
+                'height': 100, 'width': 100,
                 'sharpness': {}, 'color': {}, 'histogram': {}, 'mono': {},
                 'noise': {}, 'contrast': {}, 'form': {}, 'exif': {},
             },
@@ -705,7 +706,7 @@ class TestLoadImagesFreesHsv:
         proc.scorer = scorer
         with mock.patch("exiftool.get_exif_batch", return_value={}):
             images = proc._load_images([str(path)])
-        assert images
+        assert len(images) == 1  # a silent per-photo load failure must not pass
         for entry in images.values():
             assert entry['cache'].hsv is None
             assert entry['cache'].gray is not None

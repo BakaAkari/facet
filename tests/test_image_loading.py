@@ -15,7 +15,9 @@ import pytest
 from PIL import Image
 
 from utils import image_loading, system_memory
-from utils.image_loading import configure_raw_decoding, load_image_from_path
+from utils.image_loading import (
+    bgr_to_gray, configure_raw_decoding, load_image_from_path, pil_to_bgr,
+)
 from utils.system_memory import EffectiveMemory
 
 GIB = 1024 ** 3
@@ -68,6 +70,31 @@ class TestConfigureRawDecoding:
         configure_raw_decoding(concurrency=0, timeout_seconds=5)
         assert image_loading._decode_concurrency == 3
         assert image_loading._decode_timeout == 5.0
+
+
+class TestColourPlaneHelpers:
+    """``pil_to_bgr`` / ``bgr_to_gray`` are the one expression every rebuild of the planes uses."""
+
+    @pytest.mark.parametrize("size", [(1, 1), (7, 3), (48, 32), (3, 40)])
+    def test_pil_to_bgr_is_a_channel_reversal(self, size):
+        rng = np.random.default_rng(size[0] * 100 + size[1])
+        arr = rng.integers(0, 256, (size[1], size[0], 3), dtype=np.uint8)
+        bgr = pil_to_bgr(Image.fromarray(arr))
+        assert bgr.dtype == np.uint8 and bgr.shape == arr.shape
+        assert np.array_equal(bgr, arr[:, :, ::-1])
+
+    def test_bgr_to_gray_matches_opencv(self):
+        import cv2
+        rng = np.random.default_rng(5)
+        bgr = rng.integers(0, 256, (20, 30, 3), dtype=np.uint8)
+        gray = bgr_to_gray(bgr)
+        assert gray.shape == (20, 30)
+        assert np.array_equal(gray, cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
+
+    def test_load_image_from_path_returns_the_helper_result(self, tmp_path):
+        path = _make_jpegs(tmp_path, 1)[0]
+        pil_img, img_cv = load_image_from_path(path)
+        assert np.array_equal(img_cv, pil_to_bgr(pil_img))
 
 
 class TestJpegLoading:
@@ -221,6 +248,7 @@ class TestMultiPassParallelLoader:
         sequential = self._make_processor(1)._load_images(paths)
         parallel = self._make_processor(4)._load_images(paths)
 
+        assert len(sequential) == len(parallel) == len(paths)
         assert list(parallel.keys()) == list(sequential.keys()) == paths
         for path in paths:
             assert parallel[path]["phash"] == sequential[path]["phash"]
@@ -236,6 +264,7 @@ class TestMultiPassParallelLoader:
         with open(bad, "wb") as f:
             f.write(b"not an image")
         images = self._make_processor(4)._load_images(paths + [bad])
+        assert len(images) == len(paths)
         assert set(images.keys()) == set(paths)
 
     def test_load_workers_capped_at_eight(self):

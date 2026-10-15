@@ -1396,6 +1396,23 @@ def thumbnail_source(photo_path, decoded_img):
     return preview if preview is not None else decoded_img
 
 
+def pil_to_bgr(pil_img):
+    """RGB PIL image -> OpenCV BGR array.
+
+    The one expression that builds the BGR plane: ``load_image_from_path`` calls it
+    at decode time and every later rebuild from a retained PIL image must call it
+    too, so the two cannot drift apart.
+    """
+    cv2 = _ensure_cv2()
+    return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+
+def bgr_to_gray(img_cv):
+    """OpenCV BGR array -> single-channel gray (the plane ``ImageCache.gray`` holds)."""
+    cv2 = _ensure_cv2()
+    return cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+
+
 def load_image_from_path(photo_path, use_thumbnail=False):
     """
     Load image from path, handling RAW files (CR2/CR3) and JPEGs.
@@ -1419,8 +1436,6 @@ def load_image_from_path(photo_path, use_thumbnail=False):
         tuple: (pil_img, img_cv) - PIL Image and OpenCV BGR array
                Returns (None, None) on error
     """
-    cv2 = _ensure_cv2()
-
     try:
         photo = Path(photo_path)
 
@@ -1432,7 +1447,7 @@ def load_image_from_path(photo_path, use_thumbnail=False):
             pil_img = open_nonraw_image(photo)
 
         # Convert to OpenCV BGR format
-        img_cv = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        img_cv = pil_to_bgr(pil_img)
 
         return pil_img, img_cv
 
