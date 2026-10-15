@@ -522,3 +522,35 @@ class TestCategoriesOverlap:
         assert data["uncategorized"] == 1
         assert isinstance(data["overlaps"], list)
         assert isinstance(data["per_category"], list)
+
+
+# ---------------------------------------------------------------------------
+# TestCategoriesMetricsRemoved
+# ---------------------------------------------------------------------------
+
+_REMOVED_METRICS_PATH = "/api/stats/categories/metrics"
+
+
+class TestCategoriesMetricsRemoved:
+    """``GET /api/stats/categories/metrics`` had no consumer and is gone.
+
+    No 410 shim and no redirect (no backward-compatibility fallbacks): the route
+    is simply absent from the app and from the OpenAPI contract.
+    """
+
+    def test_categories_metrics_route_is_gone(self, app, edition_client):
+        assert _REMOVED_METRICS_PATH not in app.openapi()["paths"]
+        resp = edition_client.get(f"{_REMOVED_METRICS_PATH}?category=x")
+        assert resp.status_code == 404
+
+    def test_sibling_category_routes_survive(self, app):
+        """A deletion that overshoots by a decorator must fail here."""
+        paths = app.openapi()["paths"]
+        for path in (
+            "/api/stats/categories",
+            "/api/stats/categories/breakdown",
+            "/api/stats/categories/weights",
+            "/api/stats/categories/correlations",
+            "/api/stats/categories/overlap",
+        ):
+            assert path in paths, f"{path} missing from the OpenAPI paths"

@@ -135,6 +135,11 @@ _EXPECTED_SKIPS = ('No face detected', 'Short side is less than')
 _OOM_SKIP_KEY = 'out of memory'
 
 
+def _is_expected_skip(msg: str) -> bool:
+    """True for a failure text that is the model's own, deliberate answer."""
+    return any(known in msg for known in _EXPECTED_SKIPS)
+
+
 def _is_oom(e: BaseException) -> bool:
     from utils.device import is_out_of_memory_error
     return is_out_of_memory_error(e)
@@ -181,6 +186,11 @@ class PyIQAScorer:
         # nothing a single total does not. Failures are different: they are
         # reported at ERROR at the end of every score_batch call.
         self._skipped_totals: dict[str, int] = {}
+        # Positions, in the list the last score_batch() call was given, whose
+        # None is the model's own deliberate answer (an expected skip) rather
+        # than an out-of-memory error or a fault. --recompute-iqa remembers
+        # those so it stops re-attempting them; everything else it retries.
+        self.last_declined: frozenset[int] = frozenset()
         # Images per stacked forward. Starts at the ceiling and is halved by an
         # out-of-memory error; it stays halved for the rest of this load so a
         # RAM-cached scorer does not re-OOM (and flush the allocator) on every
@@ -366,12 +376,14 @@ class PyIQAScorer:
             return [float(x.item()) if hasattr(x, 'item') else float(x) for x in out]
         raise ValueError(f"unbatchable output type: {type(out)}")
 
-    def _score_one(self, image: Image.Image, skipped: dict) -> Optional[float]:
+    def _score_one(self, image: Image.Image, skipped: dict, declined: set,
+                   position: int) -> Optional[float]:
         """Score one image, or ``None`` when it fails (counted into ``skipped``).
 
         An out-of-memory failure clears the device cache AFTER the handler has
         exited: the live exception's traceback holds the failed activations, so
-        freeing from inside the ``except`` would release nothing.
+        freeing from inside the ``except`` would release nothing. An expected
+        skip (never an out-of-memory error) also adds ``position`` to ``declined``.
         """
         try:
             return float(self.score_image(image))
@@ -380,12 +392,15 @@ class PyIQAScorer:
             msg = _OOM_SKIP_KEY if oom else (str(e) or type(e).__name__)
         if oom:
             _clear_cache(self.device)
+        elif _is_expected_skip(msg):
+            declined.add(position)
         skipped[msg] = skipped.get(msg, 0) + 1
         return None
 
-    def _score_batch_serial(self, images: list[Image.Image], skipped: dict) -> list[Optional[float]]:
+    def _score_batch_serial(self, images: list[Image.Image], skipped: dict,
+                            declined: set) -> list[Optional[float]]:
         """Per-image scoring; an image that fails yields ``None`` in its slot."""
-        return [self._score_one(image, skipped) for image in images]
+        return [self._score_one(image, skipped, declined, i) for i, image in enumerate(images)]
 
     def score_batch(self, images: list[Image.Image]) -> list[Optional[float]]:
         """Score a batch of images, normalized to 0-10.
@@ -399,25 +414,34 @@ class PyIQAScorer:
         neutral number: a stored 5.0 is indistinguishable from a measurement.
         A CUDA out-of-memory error halves the forward batch (down to one image)
         before giving up on an image.
+
+        After the call, ``last_declined`` holds the positions in ``images`` whose
+        ``None`` is an expected skip (the model's own answer: no face found, short
+        side under 224 px). An out-of-memory error or any other failure is a
+        ``None`` that is NOT in it, so a caller can retry those and remember these.
         """
+        self.last_declined = frozenset()
         if not self._loaded:
             self.load()
 
         skipped: dict[str, int] = {}
         reduced_to: list[int] = []
+        declined: set[int] = set()
         if not self.supports_batching or len(images) <= 1:
-            scores = self._score_batch_serial(images, skipped)
+            scores = self._score_batch_serial(images, skipped, declined)
         else:
-            scores = self._score_batched(images, skipped, reduced_to)
+            scores = self._score_batched(images, skipped, reduced_to, declined)
 
         self._record_skips(skipped)
         self._report_failures(skipped)
         if reduced_to:
             logger.warning("  %s forward batch reduced to %d after out-of-memory",
                            self.model_name, min(reduced_to))
+        self.last_declined = frozenset(declined)
         return scores
 
-    def _score_batched(self, images, skipped: dict, reduced_to: list) -> list[Optional[float]]:
+    def _score_batched(self, images, skipped: dict, reduced_to: list,
+                       declined: set) -> list[Optional[float]]:
         from collections import defaultdict
 
         # Preprocess once; group by tensor shape so each forward is a clean stack.
@@ -431,7 +455,7 @@ class PyIQAScorer:
             # are not pinned by the traceback.
             if oom:
                 _clear_cache(self.device)
-            return self._score_batch_serial(images, skipped)
+            return self._score_batch_serial(images, skipped, declined)
 
         groups: dict = defaultdict(list)
         for idx, t in enumerate(tensors):
@@ -447,10 +471,11 @@ class PyIQAScorer:
             while pos < len(idxs):
                 sub_idxs = idxs[pos:pos + self.forward_batch]
                 pos += len(sub_idxs)
-                self._forward_group(sub_idxs, tensors, images, scores, skipped, reduced_to)
+                self._forward_group(sub_idxs, tensors, images, scores, skipped, reduced_to,
+                                    declined)
         return scores
 
-    def _forward_group(self, sub_idxs, tensors, images, scores, skipped, reduced_to):
+    def _forward_group(self, sub_idxs, tensors, images, scores, skipped, reduced_to, declined):
         """One stacked forward over ``sub_idxs``; recovers from a failure in place.
 
         Out-of-memory: halve and retry both halves (a lone image that still does
@@ -480,13 +505,15 @@ class PyIQAScorer:
             half = len(sub_idxs) // 2
             self.forward_batch = min(self.forward_batch, half)
             reduced_to.append(half)
-            self._forward_group(sub_idxs[:half], tensors, images, scores, skipped, reduced_to)
-            self._forward_group(sub_idxs[half:], tensors, images, scores, skipped, reduced_to)
+            self._forward_group(sub_idxs[:half], tensors, images, scores, skipped, reduced_to,
+                                declined)
+            self._forward_group(sub_idxs[half:], tensors, images, scores, skipped, reduced_to,
+                                declined)
             return
 
         # Per-group serial fallback keeps a single bad shape from failing all.
         for i in sub_idxs:
-            scores[i] = self._score_one(images[i], skipped)
+            scores[i] = self._score_one(images[i], skipped, declined, i)
         logger.debug("  %s batch group fell back to serial: %s", self.model_name, msg)
 
     def _record_skips(self, skipped: dict):
@@ -498,7 +525,7 @@ class PyIQAScorer:
     def _report_failures(self, skipped: dict):
         """Log every skip that is not an expected one, at ERROR, once per call."""
         for msg, count in skipped.items():
-            if not any(known in msg for known in _EXPECTED_SKIPS):
+            if not _is_expected_skip(msg):
                 logger.error("  %s failed for %d image(s) (%s)", self.model_name, count, msg)
 
     @property

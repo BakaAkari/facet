@@ -1301,7 +1301,6 @@ The client's TypeScript types are generated from that schema into `client/src/ap
 | `GET /api/stats/categories/breakdown` | Per-category photo counts and score distributions |
 | `GET /api/stats/categories/weights` | Category weights and modifiers from config |
 | `GET /api/stats/categories/correlations` | Pearson r correlation per dimension per category |
-| `GET /api/stats/categories/metrics?category=X` | Raw metric values for client-side preview |
 | `GET /api/stats/categories/overlap` | Filter overlap analysis between categories |
 | `POST /api/stats/categories/update` | Update category weights/modifiers (edition mode) |
 | `POST /api/stats/categories/recompute` | Recompute scores for a category (edition mode) |

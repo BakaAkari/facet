@@ -14,6 +14,7 @@ from io import BytesIO
 
 from int_affinity import storable_int
 from db.connection import apply_pragmas
+from db.stats_cache import METRIC_RANGES_KEY
 
 logger = logging.getLogger("facet.db_maintenance")
 
@@ -1128,10 +1129,12 @@ def repair_integer_columns(db_path='photo_scores_pro.db', verbose=True):
       `is_rejected`, `render_version`). Scanning per-column pays that cost
       once per column (22 times today); scanning once pays it once.
     - Several of these columns carry CHECK constraints (db/schema.py, e.g. on
-      `face_count`, `is_blink`, `star_rating`) and SQLite re-evaluates a row's
-      whole CHECK set on any UPDATE to that row, so one legacy row already
-      violating an unrelated CHECK would abort a bulk statement and repair
-      nothing. A per-row UPDATE isolates that failure: it is caught as
+      `star_rating`, `is_blink`, `face_count`) and the REPAIRED column itself
+      can be one of them: the rounded value may violate that column's own
+      CHECK. (SQLite skips a CHECK that references no updated column, so an
+      unrelated violation does not matter -- only the repaired columns' own
+      CHECKs do.) A bulk statement would abort on the first such row and
+      repair nothing; a per-row UPDATE isolates the failure: it is caught as
       `sqlite3.IntegrityError`, the row's path is logged, and the rest of the
       rows are still repaired.
     - `int_affinity.storable_int` is the same function the API response
@@ -1195,3 +1198,53 @@ def repair_integer_columns(db_path='photo_scores_pro.db', verbose=True):
                 logger.info("Repaired %d REAL-stored value(s) in %s", count, col)
         logger.info("Integer column repair: %d rows repaired.", rows_repaired)
     return rows_repaired
+
+
+# The supplementary IQA columns that, before 1.20, stored a neutral 5.0 for a photo
+# their model could not score. Deliberately NOT here: `topiq_score`, `aesthetic`,
+# `aesthetic_v25` and `quality_score` -- a genuine rounded 5.00 is indistinguishable
+# from the fake there, and `aesthetic` is also the CLIP-MLP column on legacy/8gb
+# where 5.0 is an ordinary value.
+NEUTRAL_IQA_COLUMNS = ('aesthetic_iaa', 'face_quality_iqa', 'liqe_score')
+
+
+def repair_neutral_iqa(db_path='photo_scores_pro.db', verbose=True):
+    """NULL the fake neutral 5.0 that pre-1.20 versions stored in the IQA columns.
+
+    One ``UPDATE ... SET col = NULL WHERE col = 5.0`` per column of
+    ``NEUTRAL_IQA_COLUMNS``, all in ONE transaction: the repair is all-or-nothing,
+    and a failure on any column leaves every column as it was. Each column is
+    indexed, so the statement is an index seek rather than a walk over the BLOBs
+    stored inline in ``photos``.
+
+    Exact equality is deliberate: the writers round to two decimals, so a stored
+    neutral value is exactly ``5.0``. A genuine value that rounds to 5.00 is cleared
+    too; ``--recompute-iqa`` refills it with the same number. A NULL metric is scored
+    as a neutral 5.0 at full weight in the aggregate, so no aggregate moves.
+
+    When anything changed, the cached gallery metric ranges are dropped in the same
+    transaction, since they are computed from these columns.
+
+    Returns ``{column: rows cleared}``.
+    """
+    from db.connection import get_connection
+
+    cleared = {}
+    with get_connection(db_path) as conn:
+        for col in NEUTRAL_IQA_COLUMNS:
+            cleared[col] = conn.execute(
+                f"UPDATE photos SET {col} = NULL WHERE {col} = 5.0").rowcount
+        if sum(cleared.values()):
+            conn.execute("DELETE FROM stats_cache WHERE key = ?", (METRIC_RANGES_KEY,))
+        conn.commit()
+
+    if verbose:
+        for col, count in cleared.items():
+            logger.info("Cleared %d neutral 5.0 value(s) in %s", count, col)
+        total = sum(cleared.values())
+        logger.info("Neutral IQA repair: %d value(s) cleared.", total)
+        if total:
+            logger.info(
+                "Run --recompute-iqa to re-score these photos, then --recompute-average. "
+                "(Aggregates are unchanged by the repair itself: a NULL still scores neutral.)")
+    return cleared

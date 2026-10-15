@@ -739,7 +739,7 @@ Vereinheitlichte Verarbeitungseinstellungen für die GPU-Batch-Verarbeitung und 
 
 | Einstellung | Standard | Beschreibung |
 |---------|---------|-------------|
-| `mode` | `"auto"` | Verarbeitungsmodus: `auto`, `multi-pass`, `single-pass` |
+| `mode` | `"auto"` | Verarbeitungsmodus: `auto`, `multi-pass`, `single-pass`. Nur `single-pass` wählt Single-Pass; `auto` läuft immer als Multi-Pass |
 | `gpu_batch_size` | `16` | Bilder pro GPU-Batch (VRAM-begrenzt) |
 | `ram_chunk_size` | `32` | Bilder pro RAM-Chunk (Multi-Pass) |
 | `num_workers` | `4` | Threads zum Laden von Bildern |
@@ -769,9 +769,9 @@ Vereinheitlichte Verarbeitungseinstellungen für die GPU-Batch-Verarbeitung und 
 
 | Modus | Beschreibung |
 |------|-------------|
-| `auto` | Wählt anhand des VRAM automatisch Multi-Pass oder Single-Pass aus |
+| `auto` | Läuft immer als Multi-Pass (Standard); nur `single-pass` wählt Single-Pass |
 | `multi-pass` | Sequenzielles Laden der Modelle (funktioniert mit begrenztem VRAM) |
-| `single-pass` | Alle Modelle gleichzeitig geladen (erfordert viel VRAM) |
+| `single-pass` | Alle Modelle gleichzeitig geladen (erfordert viel VRAM). Setzt den CLIP+MLP-Ästhetikkopf voraus und gilt daher für die Profile `legacy`/`8gb`; bei `16gb`/`24gb` (Ästhetik mit TOPIQ) protokolliert es außerhalb des kommerziellen Modus eine Warnung und läuft als Multi-Pass |
 
 ### Funktionsweise von Multi-Pass
 
@@ -821,7 +821,7 @@ Gemessen an 49 Fotos mit einer harten Grenze von 11,7 GiB für PyTorch, ONNX Run
 # Standard: automatischer Multi-Pass mit optimaler Gruppierung
 python facet.py /path/to/photos
 
-# Single-Pass erzwingen (alle Modelle gleichzeitig geladen)
+# Single-Pass erzwingen (alle Modelle gleichzeitig geladen; nur Profile legacy/8gb, bei 16gb/24gb Warnung und Multi-Pass)
 python facet.py /path --single-pass
 
 # Nur einen bestimmten Durchlauf ausführen

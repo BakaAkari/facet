@@ -1056,8 +1056,10 @@ class TestPoisonedFullPaths:
         pytest.importorskip('cv2')
         from tests.test_batch_processor_e2e import (
             FakeScorer, _FakeFaceAnalyzer, _FakeTechAnalyzer, _tiny_jpegs)
-        from processing.scorer import Facet
+        from processing.scorer import Facet, _load_image_modules
         from utils import load_image_from_path
+
+        _load_image_modules()  # ImageCache and friends are lazy module globals
 
         class Scorer(FakeScorer):
             score_photo_from_pil = Facet.score_photo_from_pil
@@ -1104,8 +1106,8 @@ class TestCommercialSingleImageAesthetic:
     def test_commercial_never_returns_the_neutral_clip_mlp_fallback(self, commercial):
         assert self._facet().get_aesthetic_and_quality(object()) == (7.5, b'emb', 6.5, 'qrealign')
 
-    def test_default_mode_is_unchanged(self):
-        assert self._facet().get_aesthetic_and_quality(object()) == (5.0, b'emb', None, 'clip-mlp')
+    def test_default_mode_without_a_head_has_no_aesthetic(self):
+        assert self._facet().get_aesthetic_and_quality(object()) == (None, b'emb', None, 'topiq')
 
     def test_batch_and_single_share_one_helper(self, commercial):
         f = self._facet()

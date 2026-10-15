@@ -34,6 +34,20 @@ def get_top_picks_score_sql():
     END"""
 
 
+def with_top_picks_alias(select_cols, needed):
+    """Return ``select_cols`` plus the ``top_picks_score`` SELECT alias when ``needed``.
+
+    ``top_picks_score`` is a weighted expression, not a ``photos`` column, so
+    ``ORDER BY top_picks_score`` only resolves when the SELECT list defines it. The
+    alias is also what puts the score on each returned photo. ``needed`` is true for
+    a top-picks sort or the top-picks filter. Returns a new list; ``select_cols`` is
+    left untouched.
+    """
+    if not needed:
+        return select_cols
+    return [*select_cols, f"({get_top_picks_score_sql()}) as top_picks_score"]
+
+
 def get_top_picks_threshold():
     """Get the minimum score threshold for top picks."""
     return VIEWER_CONFIG['photo_types'].get('top_picks_min_score', 7)

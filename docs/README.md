@@ -33,6 +33,6 @@ photo library, then serves a gallery to browse it. Start with
 |-------|--------|
 | Which profile should I use? | [Installation › Which profile fits my hardware?](INSTALLATION.md#which-profile-fits-my-hardware) |
 | "externally-managed-environment" on install | Use a virtual environment (or Docker) — see [Installation](INSTALLATION.md) |
-| Slow processing | Check the profile; `--single-pass` helps on high-VRAM GPUs |
+| Slow processing | Check the profile; `--single-pass` can help on the `legacy`/`8gb` profiles with plenty of VRAM (outside commercial mode, `16gb`/`24gb` always run multi-pass) |
 | Face detection not using the GPU | Install `onnxruntime-gpu` — see [Installation](INSTALLATION.md#onnx-runtime-for-face-detection) |
 | Missing exiftool | Optional — see [Installation › exiftool](INSTALLATION.md#exiftool) |

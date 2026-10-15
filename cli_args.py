@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog='''
 Examples:
   python facet.py /path/to/photos              # Score photos (auto multi-pass mode)
-  python facet.py /path/to/photos --single-pass  # Force single-pass (all models at once)
+  python facet.py /path/to/photos --single-pass  # Force single-pass (all models at once; legacy/8gb profiles)
   python facet.py /path/to/photos --force      # Re-scan already processed files
   python facet.py --recompute-average          # Recalculate scores with current config
 
@@ -80,14 +80,19 @@ Configuration:
     scan_group.add_argument('--force', action='store_true',
                         help='Re-scan already processed files (ignores existing DB entries)')
     scan_group.add_argument('--single-pass', action='store_true',
-                        help='Force single-pass mode (load all models at once, requires more VRAM)')
+                        help='Force single-pass mode (load all models at once, requires more VRAM). '
+                             'Applies to profiles scored with the CLIP+MLP head (legacy, 8gb); '
+                             'on 16gb/24gb it logs a warning and runs multi-pass, except in '
+                             'commercial mode (Q-ReAlign scores the aesthetic there)')
     scan_group.add_argument('--pass', type=str, dest='single_pass_name', metavar='NAME',
                         choices=['quality', 'tags', 'composition', 'faces', 'embeddings',
                                  'quality-iaa', 'quality-face', 'quality-liqe', 'saliency'],
                         help='Run specific pass only: quality, tags, composition, faces, embeddings, '
                              'quality-iaa, quality-face, quality-liqe, saliency')
     scan_group.add_argument('--dry-run', action='store_true',
-                        help='Score sample photos without saving to database (preview mode)')
+                        help='Score sample photos without saving to database (preview mode). '
+                             'Outside commercial mode, on 16gb/24gb the aesthetic column shows n/a '
+                             '(TOPIQ runs only in a real scan; commercial mode shows the Q-ReAlign score)')
     scan_group.add_argument('--dry-run-count', type=int, default=DEFAULT_DRY_RUN_COUNT,
                         help=f'Number of photos to process in dry-run mode (default: '
                              f'{DEFAULT_DRY_RUN_COUNT}, requires --dry-run)')
@@ -177,6 +182,11 @@ Configuration:
     db_group.add_argument('--repair-int-columns', action='store_true', dest='repair_int_columns',
                         help='Repair INTEGER columns whose stored value is a REAL (e.g. a '
                              'fractional EXIF ISO). Database-only, no image decode')
+    db_group.add_argument('--repair-neutral-iqa', action='store_true', dest='repair_neutral_iqa',
+                        help='Clear the neutral 5.0 that versions before 1.20 stored in '
+                             'aesthetic_iaa, face_quality_iqa and liqe_score for photos a model '
+                             'could not score, then run --recompute-iqa to refill them. Does not '
+                             'touch the primary aesthetic columns. Database-only, no dry-run')
     db_group.add_argument('--score-topiq', action='store_true',
                         help='Re-score TOPIQ quality (topiq_score) for every photo with a stored '
                              'thumbnail (requires GPU); a photo TOPIQ cannot score keeps its stored value')

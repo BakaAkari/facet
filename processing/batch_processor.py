@@ -159,7 +159,7 @@ class BatchProcessor:
             pil_img, img_cv = load_image_from_path(photo_path)
 
             if pil_img is None:
-                return {'path': str(photo_path), 'error': 'Failed to load image'}
+                return {'path': str(photo_path), 'stage': 'load', 'error': 'Failed to load image'}
 
             # Preprocess for CLIP (open_clip only; transformers uses PIL directly)
             clip_input = None
@@ -179,7 +179,7 @@ class BatchProcessor:
                 'clip_input': clip_input
             }
         except Exception as e:
-            return {'path': str(photo_path), 'error': str(e)}
+            return {'path': str(photo_path), 'stage': 'load', 'error': str(e)}
 
     def _put_with_stop(self, item):
         """Bounded put that rechecks stop_event on each timeout.
@@ -295,7 +295,8 @@ class BatchProcessor:
             licensing.reraise_if_refused()
             logger.exception("Batch inference failed for %d images", len(batch))
             for item in batch:
-                self.result_queue.put({'path': item['path'], 'error': f'batch inference failed: {e}'})
+                self.result_queue.put({'path': item['path'], 'stage': 'score',
+                                       'error': f'batch inference failed: {e}'})
             return
 
         # Process each image with other analyzers
@@ -492,7 +493,7 @@ class BatchProcessor:
 
             except Exception as e:
                 licensing.reraise_if_refused()
-                self.result_queue.put({'path': item['path'], 'error': str(e)})
+                self.result_queue.put({'path': item['path'], 'stage': 'score', 'error': str(e)})
 
     def process_files(self, photo_paths, show_metrics=True):
         """Process a list of photo paths using batch GPU inference.
@@ -553,7 +554,8 @@ class BatchProcessor:
                         if 'error' in item:
                             logger.error("Error on %s: %s", item.get('path', 'unknown'), item['error'])
                             if self.on_error:
-                                self.on_error(item.get('path', 'unknown'), 'load', item['error'])
+                                self.on_error(item.get('path', 'unknown'),
+                                              item.get('stage', 'load'), item['error'])
                         else:
                             pending_saves.append((item['result'], item['pil_img']))
 
@@ -713,7 +715,8 @@ class BatchProcessor:
                         if 'error' in item:
                             logger.error("Error on %s: %s", item.get('path', 'unknown'), item['error'])
                             if self.on_error:
-                                self.on_error(item.get('path', 'unknown'), 'load', item['error'])
+                                self.on_error(item.get('path', 'unknown'),
+                                              item.get('stage', 'load'), item['error'])
                         else:
                             pending_saves.append((item['result'], item['pil_img']))
 

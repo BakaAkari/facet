@@ -12,7 +12,7 @@
 |---------|-------------|
 | `python facet.py /path` | 扫描目录（多阶段模式，自动检测 VRAM） |
 | `python facet.py /path --force` | 重新扫描已处理过的文件 |
-| `python facet.py /path --single-pass` | 强制单阶段模式（一次性加载全部模型） |
+| `python facet.py /path --single-pass` | 强制单阶段模式（一次性加载全部模型）。需要 `legacy`/`8gb` 配置档的 CLIP+MLP 评分头；在 `16gb`/`24gb` 上（非商业模式）会给出警告并改用多阶段 |
 | `python facet.py /path --pass quality` | 仅运行 TOPIQ 画质评分阶段 |
 | `python facet.py /path --pass quality-iaa` | 仅运行 TOPIQ IAA 美学价值评分 |
 | `python facet.py /path --pass quality-face` | 仅运行 TOPIQ NR-Face 人脸画质评分 |
@@ -43,7 +43,9 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 
 **多阶段（默认）：** 检测 VRAM 并按顺序加载模型。每个阶段加载自己的模型、处理全部照片，然后卸载以释放 VRAM，因此即使 VRAM 有限也能运行高质量模型。
 
-**单阶段（`--single-pass`）：** 一次性加载全部模型。速度更快，但需要更多 VRAM。
+**单阶段（`--single-pass`）：** 一次性加载全部模型。速度更快，但需要更多 VRAM。它用 CLIP+MLP 评分头为美学评分，因此适用于 `legacy` 和 `8gb` 配置档。在 `16gb` 和 `24gb` 上，美学模型是 TOPIQ，只有多阶段扫描才会运行它；因此在非商业模式下，单阶段请求（`--single-pass` 或 `processing.mode: "single-pass"`）会记录一条警告并改为多阶段运行；`--pass NAME` 和 `--dry-run` 不做此检查。商业模式下单阶段仍可用，因为那里由原生 Q-ReAlign 为美学评分。若单阶段批次在没有美学评分头的情况下到达评分器，该批次会失败：其中的照片会被记入 `scan_failures`，且不会保存。
+
+**升级说明：** 旧版本在 `16gb`/`24gb` 上做单阶段扫描时，会为每张照片保存中性的 5.0 美学评分。可用 `SELECT path FROM photos WHERE scoring_model = 'topiq' AND aesthetic = 5.0 AND topiq_score IS NULL` 找出这些行（多阶段扫描总会写入 `topiq_score`）。没有修复命令，因为 TOPIQ 需要图像本身：请用 `--force` 以多阶段重新扫描受影响的文件夹。
 
 **指定阶段（`--pass NAME`）：** 只运行一个阶段，用于更新特定指标而无需完整重新处理。可用阶段：
 
@@ -63,7 +65,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 
 | 命令 | 说明 |
 |---------|-------------|
-| `python facet.py /path --dry-run` | 对 10 张样本照片评分但不保存 |
+| `python facet.py /path --dry-run` | 对 10 张样本照片评分但不保存。在非商业模式下，`16gb`/`24gb` 上美学一列显示 `n/a`（TOPIQ 只在真实扫描中运行；商业模式下显示 Q-ReAlign 评分）；综合评分不变 |
 | `python facet.py /path --dry-run --dry-run-count 20` | 对 20 张样本照片评分 |
 | `python facet.py --export-csv` | 把全部评分导出为带时间戳的 CSV（`tags` 列只含 AI 标签，不包含[手动标签](VIEWER.md#手动标签)） |
 | `python facet.py --export-csv output.csv` | 导出到指定的 CSV 文件 |
@@ -121,7 +123,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --recompute-saliency` | `[GPU]` 从已存储的缩略图重新计算主体显著性指标（BiRefNet_dynamic）——照片库所在卷离线时也能运行。会跳过已有 `subject_bbox` 的照片（可续跑）；`--force` 则全部重做。所有档位都启用了显著性（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。某张照片的显著性失败（例如显存不足）时，会记录一条 ERROR 且不写入：从未评分的行保持 NULL，并会在下次运行时再次被选中；使用 `--force` 时，已有显著性的行会保留其已存储的值。在 CUDA 上，批大小由空闲显存推算。 |
 | `python facet.py --recompute-composition-cpu` | 用基于规则的方法重新计算构图（CPU，任意档位） |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` 用 SAMP-Net 重新计算构图 |
-| `python facet.py --recompute-iqa` | `[GPU]` 从已存储的缩略图重新计算补充 IQA 指标（TOPIQ IAA、NR-Face、LIQE）。所有档位都已启用（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。仅填充为 NULL 的列：模型无法评分的照片保持 NULL，并会被下次运行再次选中；NR-Face 会跳过未检测到人脸的照片；已存储的值（包括旧版本写入的中性 5.0）绝不会被替换。见[补充画质模型](#补充画质模型) |
+| `python facet.py --recompute-iqa` | `[GPU]` 从已存储的缩略图重新计算补充 IQA 指标（TOPIQ IAA、NR-Face、LIQE）。所有档位都已启用（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。仅填充为 NULL 的列。NR-Face 会跳过未检测到人脸的照片；LIQE 会跳过已存储缩略图短边小于 224 px 的照片（在汇总中计数，不存储任何内容）；NR-Face 拒绝评分的照片会记入 `iqa_declined` 表，在该照片被重新扫描之前不再重试（升级 pyiqa 或 NR-Face 权重不会清除这些记录：请用 `--force` 重新扫描，或运行 `--refresh-thumbnails`）；其他任何失败（显存不足、意外错误）保持 NULL，并会被下次运行再次选中。已存储的值（包括旧版本写入的中性 5.0）绝不会被替换：请先用 `--repair-neutral-iqa` 清除。见[补充画质模型](#补充画质模型) |
 | `python facet.py --detect-text` | 通过对已存储缩略图做 OCR，把图像中的文字（招牌、海报、文件）提取到 `ocr_text`，使其可在照片库搜索框中被检索到。会跳过已评估过的照片，因此重新运行时只读取新照片。需手动开启：要求 `scoring_config.json` 中的 `ocr.enabled` 并 `pip install easyocr`——参见 [配置 — OCR](CONFIGURATION.md#ocr) |
 | `python facet.py --recompute-text` | 对整个照片库重新运行 OCR，包括 `--detect-text` 已经评估过的照片 |
 | `python facet.py --recompute-colors` | 从缩略图提取主色调与冷暖色温（CPU，快速），写入 `dominant_hue` ／ `color_temp` |
@@ -146,6 +148,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --backfill-focal-35mm` | 为缺少等效 35mm 焦距的照片从 EXIF 回填该值 |
 | `python facet.py --backfill-clipping` | 从已存储的直方图推导各通道的溢出百分比。仅使用数据库（不解码图像）且可续跑；直方图早于 RGB 格式的照片保持未知（NULL） |
 | `python facet.py --repair-int-columns` | 修复 `photos` 表中实际存储为 REAL 的 INTEGER 列——SQLite 的类型亲和性并非约束，因此外部工具写入的小数 ISO 会原样保留为 REAL。就地对每个值取整（SQLite 无法以整数保存的值——非有限值，或超过 2^53——置为 NULL），其余一概不动。仅使用数据库（不解码图像）。API 在读取时会对未修复的行取整，因此图库无需本命令即可正常显示；但筛选和排序比较的是实际存储的值，运行本命令可避免显示为 ISO 63 的照片被 ISO 区间筛选漏掉 |
+| `python facet.py --repair-neutral-iqa` | 清除 1.20 之前的版本为模型无法评分的照片写入 `aesthetic_iaa`、`face_quality_iqa` 和 `liqe_score` 的中性 5.0：这三列中所有恰好等于 5.0 的值在同一个事务中置为 NULL，并丢弃缓存的图库取值范围。按列打印数量。不会改动 `aesthetic`、`topiq_score`、`aesthetic_v25` 或 `quality_score`（这些列里真实的 5.00 无法与假值区分，而且在 `legacy`/`8gb` 上 `aesthetic` 就是 CLIP+MLP 的列）。恰好四舍五入为 5.00 的真实值也会被清除，之后由 `--recompute-iqa` 根据已存储的缩略图回填，因此回填的值可能略有不同。之后运行 `--recompute-iqa` 重新填充各列，再运行 `--recompute-average`；修复本身不会改变任何综合评分，因为 NULL 按中性计算。正在运行的查看器会在修复后继续使用其内存中的指标范围，最长一小时或直到重启（只有恰好等于 5.0 的数值计数会变化）。仅使用数据库（不解码图像）；与 `--dry-run` 同用会被拒绝（退出码 2）；不在任何 `--upgrade-db` 链中 |
 | `python facet.py --compute-recommendations` | 分析数据库并显示评分摘要 |
 | `python facet.py --compute-recommendations --verbose` | 显示详细统计信息 |
 | `python facet.py --compute-recommendations --apply-recommendations` | 自动应用评分修正 |
@@ -159,7 +162,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 - **TOPIQ NR-Face**（`--pass quality-face`）：人脸区域的画质评估。存储为 `face_quality_iqa`。
 - **LIQE**（`--pass quality-liqe`）：画质评分外加失真类型诊断（例如运动模糊、过曝、噪点）。存储为 `liqe_score`。
 
-模型无法评分的照片（NR-Face 为其检测器找不到人脸，LIQE 为短边小于 224 px）会在该列存入 NULL，而不是中性的 5.0；在此之前，GPU 显存不足错误会先以一半的批大小重试，直至一张图片。`--recompute-iqa` 每次运行都会再次选中这类照片，因为它只填充为 NULL 的列（并对 `face_count` 为 0 的照片跳过 NR-Face）；每次重试的代价是把缩略图送入模型前向一次。它绝不会替换已存储的值，包括旧版本写入的中性 5.0：只有重写照片的重新扫描（例如 `--force`）才会。使用 `--pass quality`、`quality-iaa`、`quality-face` 和 `quality-liqe` 时，模型失败的照片保留其已存储的值。完整扫描会把主 TOPIQ 模型失败的照片记入 `scan_failures`（用 `--retry-failed` 重试）；`--pass quality` 不记录任何内容。见[补充 IQA 维度](SCORING.md#补充-iqa-维度)。
+模型无法评分的照片（NR-Face 为其检测器找不到人脸，LIQE 为短边小于 224 px）会在该列存入 NULL，而不是中性的 5.0；在此之前，GPU 显存不足错误会先以一半的批大小重试，直至一张图片。`--recompute-iqa` 只填充为 NULL 的列，对 `face_count` 为 0 的照片跳过 NR-Face，并且不会在每次运行时重试这两种预期情形：短边小于 224 px 的缩略图（在长边限制为 1024 px 之后，于解码前从图像头读取）会被 LIQE 跳过并在汇总中计数，不存储任何内容；NR-Face 拒绝评分的照片（缩略图中“No face detected”）会记入 `iqa_declined` 表，直到重写该照片的重新扫描（例如 `--force`）、`--refresh-thumbnails` 或 `--fix-thumbnail-rotation` 使该记录失效之前不再重试。其他任何失败（GPU 显存不足、意外错误）不会被存储到任何地方，该照片会被下次运行再次选中。它绝不会替换已存储的值，包括旧版本写入的中性 5.0：请用 `--repair-neutral-iqa` 清除这些值，再运行 `--recompute-iqa` 和 `--recompute-average`，或重新扫描该照片（例如 `--force`）。使用 `--pass quality`、`quality-iaa`、`quality-face` 和 `quality-liqe` 时，模型失败的照片保留其已存储的值。完整扫描会把主 TOPIQ 模型失败的照片记入 `scan_failures`（用 `--retry-failed` 重试）；`--pass quality` 不记录任何内容。见[补充 IQA 维度](SCORING.md#补充-iqa-维度)。
 
 ### 基准测试与补充评分
 

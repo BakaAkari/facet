@@ -6,7 +6,7 @@ second hand-rolled copy of the profile that drifts from it.
 """
 
 import logging
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 import licensing
 
@@ -36,6 +36,20 @@ def commercial_primary_quality(selected_quality: str, policy_=None) -> str:
     if selected_quality == 'clip_aesthetic' and licensing.loader_allowed('clip_aesthetic', policy_):
         return 'clip_aesthetic'
     return 'qrealign'
+
+
+def single_pass_unsupported_reason(aesthetic_model: str, policy_=None) -> Optional[str]:
+    """Why single-pass cannot score this profile's aesthetics, or None when it can.
+
+    A TOPIQ profile (the SigLIP ones) loads no CLIP+MLP aesthetic head and only
+    the multi-pass scan runs TOPIQ, so a single-pass scan has nothing to score
+    the aesthetic with. Commercial mode is the exception: native Q-ReAlign
+    serves the head-less branch there.
+    """
+    if aesthetic_model == 'topiq' and not licensing.is_commercial(policy_):
+        return ("this profile scores aesthetics with TOPIQ, which only the multi-pass "
+                "scan runs (single-pass needs the CLIP+MLP head of the legacy/8gb profiles)")
+    return None
 
 
 def resolve_selected_quality(config: dict, profile: dict, policy_=None) -> str:
@@ -128,6 +142,8 @@ def route_models(config: dict, profile: dict, extended: Dict[str, bool],
     # `processing.mode: "single-pass"` only. Say so instead of silently
     # leaving composition to the rule-based fallback, which is what made the
     # 24gb profile ship without any composition model on the default path.
+    # On a profile single-pass cannot serve, the scan falls back to multi-pass,
+    # so that advice would lead straight back here and is left out.
     composition_model = profile.get('composition_model', 'rule-based')
     if composition_model == 'samp-net' and commercial and not licensing.loader_allowed('samp_net', policy_):
         logger.info("Commercial mode: SAMP-Net is not permitted; composition uses the "
@@ -135,10 +151,13 @@ def route_models(config: dict, profile: dict, extended: Dict[str, bool],
     elif composition_model == 'samp-net':
         models.append('samp_net')
     elif composition_model not in ('rule-based', 'none'):
+        single_pass_hint = ""
+        if single_pass_unsupported_reason(profile.get('aesthetic_model', 'clip-mlp'), policy_) is None:
+            single_pass_hint = ", or processing.mode to 'single-pass'"
         logger.warning(
             "Composition model '%s' has no multi-pass pass; composition falls back to the "
-            "rule-based analyzer. Set composition_model to 'samp-net', or "
-            "processing.mode to 'single-pass'.", composition_model)
+            "rule-based analyzer. Set composition_model to 'samp-net'%s.",
+            composition_model, single_pass_hint)
 
     # Face analysis. Commercial mode swaps InsightFace for the permissive stack.
     models.append(face_pass_name(policy_))

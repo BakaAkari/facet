@@ -723,7 +723,7 @@ Unified processing settings for GPU batch processing and multi-pass mode.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mode` | `"auto"` | Processing mode: `auto`, `multi-pass`, `single-pass` |
+| `mode` | `"auto"` | Processing mode: `auto`, `multi-pass`, `single-pass`. Only `single-pass` selects single-pass; `auto` always runs multi-pass |
 | `gpu_batch_size` | `16` | Images per GPU batch (VRAM-limited) |
 | `ram_chunk_size` | `32` | Images per RAM chunk (multi-pass) |
 | `num_workers` | `4` | Image loader threads |
@@ -753,9 +753,9 @@ Unified processing settings for GPU batch processing and multi-pass mode.
 
 | Mode | Description |
 |------|-------------|
-| `auto` | Automatically selects multi-pass or single-pass based on VRAM |
+| `auto` | Always runs multi-pass (the default); only `single-pass` selects single-pass |
 | `multi-pass` | Sequential model loading (works with limited VRAM) |
-| `single-pass` | All models loaded at once (requires high VRAM) |
+| `single-pass` | All models loaded at once (requires high VRAM). Needs the CLIP+MLP aesthetic head, so it applies to the `legacy`/`8gb` profiles; on `16gb`/`24gb` (TOPIQ aesthetic), outside commercial mode, it logs a warning and runs multi-pass |
 
 ### How Multi-Pass Works
 
@@ -805,7 +805,7 @@ Measured on a 49-photo run under a hard 11.7 GiB cap on PyTorch, ONNX Runtime an
 # Default: auto multi-pass with optimal grouping
 python facet.py /path/to/photos
 
-# Force single-pass (all models loaded at once)
+# Force single-pass (all models loaded at once; legacy/8gb profiles only, 16gb/24gb warn and run multi-pass)
 python facet.py /path --single-pass
 
 # Run specific pass only

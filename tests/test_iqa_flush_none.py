@@ -55,6 +55,10 @@ def _column(db_path, column):
 class _FakeScorer:
     """Returns the queued scores batch by batch; records every batch size."""
 
+    # PyIQAScorer.last_declined: positions of the last batch the model refused on
+    # purpose. None of these tests declines, so it stays empty.
+    last_declined = frozenset()
+
     def __init__(self, *batches):
         self.batches = list(batches)
         self.sizes = []
@@ -71,6 +75,8 @@ class _FakeScorer:
 
 
 class _MustNotScore:
+    last_declined = frozenset()
+
     def score_batch(self, images):
         raise AssertionError("scored a photo that should have been skipped")
 
@@ -138,7 +144,7 @@ def _facet(db_path, scorer=None):
 
 
 def _counters():
-    return {'updated': {'face_quality_iqa': 0}, 'errors': 0}
+    return {'updated': {'face_quality_iqa': 0}, 'errors': 0, 'declined': 0, 'liqe_too_small': 0}
 
 
 def _face_rows():

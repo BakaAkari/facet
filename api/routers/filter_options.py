@@ -24,6 +24,7 @@ from api.models.media import (
     MediaLocationNameResponse,
 )
 from db import person_not_hidden_clause
+from db.stats_cache import METRIC_RANGES_KEY
 
 router = APIRouter(prefix="/api/filter_options", tags=["filter_options"])
 logger = logging.getLogger(__name__)
@@ -505,10 +506,9 @@ def location_name(
 
 # Sparkline resolution for the metric histograms in the filter sidebar.
 _METRIC_RANGE_BINS = 20
-# Key and freshness of the persisted result. Matches the in-process stats TTL
+# Freshness of the persisted result (its key is db.stats_cache.METRIC_RANGES_KEY). Matches the in-process stats TTL
 # and the scenes cache (api/routers/scenes.py), so the DB row only exists to
 # carry the work across a restart.
-_METRIC_RANGES_KEY = 'metric_ranges'
 _METRIC_RANGES_TTL_SECONDS = 3600
 
 
@@ -603,7 +603,7 @@ def _compute_metric_ranges():
     with get_db() as conn:
         cached = conn.execute(
             "SELECT value, updated_at FROM stats_cache WHERE key = ?",
-            (_METRIC_RANGES_KEY,),
+            (METRIC_RANGES_KEY,),
         ).fetchone()
         if cached and (time.time() - cached[1]) < _METRIC_RANGES_TTL_SECONDS:
             try:
@@ -617,7 +617,7 @@ def _compute_metric_ranges():
         if ranges:
             conn.execute(
                 "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-                (_METRIC_RANGES_KEY, json.dumps(ranges), time.time()),
+                (METRIC_RANGES_KEY, json.dumps(ranges), time.time()),
             )
             conn.commit()
         return ranges
@@ -627,4 +627,4 @@ def _compute_metric_ranges():
 def metric_ranges(user: CurrentUser = Depends(require_authenticated)):
     """Per-metric observed range and distribution for slider clamping + histograms."""
     from api.config import _get_stats_cached
-    return {'ranges': _get_stats_cached(_METRIC_RANGES_KEY, _compute_metric_ranges)}
+    return {'ranges': _get_stats_cached(METRIC_RANGES_KEY, _compute_metric_ranges)}

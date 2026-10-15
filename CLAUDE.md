@@ -226,7 +226,7 @@ Column and table definitions live in `db/schema.py` (`PHOTOS_COLUMNS`, the `*_CO
 lists and `init_database`), which is the only source that cannot drift. Read it rather
 than a copy. The semantics you cannot read off a column name:
 
-- **`photos` is rewritten wholesale on rescan** (`INSERT OR REPLACE`), so anything the user
+- **`photos` is rewritten on rescan** (an UPSERT that overwrites every column the scorer saves), so anything the user
   set by hand belongs in a side table — see the invariant list under Viewer API Routes.
 - **Sentinels are meaningful:** `junk_kind='not_junk'` and `narrative_moment='other'` mean
   *evaluated and clean*, NULL means *never evaluated*. The detect passes scope on that
@@ -298,7 +298,7 @@ Lookup and side tables: `photo_tags`, `faces`, `persons`, `albums`, `album_photo
 `album_client_picks`, `photo_scoring_overrides`, `photo_sequence_overrides`,
 `photo_manual_tags`, `location_names`, `comparisons`, `learned_scores`, `weight_optimization_runs`,
 `weight_config_snapshots`, `recommendation_history`, `user_preferences`, `scan_runs`,
-`scan_failures`, `stats_cache`, plus the virtual tables `photos_fts` (FTS5) and
+`scan_failures`, `iqa_declined`, `stats_cache`, plus the virtual tables `photos_fts` (FTS5) and
 `photos_vec` (sqlite-vec).
 
 ### Performance Optimizations
@@ -366,10 +366,18 @@ only what reading those two will NOT tell you.
   been applied.** Never drive a "pending" badge off the first — an override row persists for as
   long as the correction applies.
 - **Sticky per-photo state goes in a side table, never a new column on `photos`.**
-  `save_photo` / `save_photos_batch` write with `INSERT OR REPLACE`, so a new column is silently
-  wiped on the next rescan. This is why `photo_scoring_overrides`, `photo_sequence_overrides` and
+  `save_photo` / `save_photos_batch` write through `_photos_upsert` (`processing/scorer.py`), whose
+  `DO UPDATE SET` covers every column in the save's INSERT list, so a hand-set value in such a
+  column is silently overwritten on the next rescan. This is why `photo_scoring_overrides`, `photo_sequence_overrides` and
   `photo_manual_tags` (user-typed tags, kept apart from the tagger-owned `photos.tags`) exist. For the same reason `POST /api/comparison/override_category` records an override rather
   than writing `photos.category`, which `--recompute-average` would discard.
+- **`iqa_declined` rows are valid only while `scan_fingerprint` equals the photo's current
+  `scanned_at || '|' || length(thumbnail)`.** The full-row save is an UPSERT, which never cascades, so
+  a decline row survives a rescan; the rescan rewrites both fingerprint inputs and so silently
+  invalidates every decline for that photo. `--refresh-thumbnails` and `--fix-thumbnail-rotation`
+  rewrite the thumbnail but not `scanned_at`, so they delete the photo's rows explicitly. Only
+  TOPIQ NR-Face's "No face detected" is recorded; an out-of-memory or unexpected failure is never
+  stored and is retried.
 - **A scoring context is a *delta* over the global priority order**, never a standalone
   ordering — so a category added later cannot go missing from six separate lists. `PUT` requires
   both `promote` and `excluded`; a partial body 422s rather than silently clearing one.

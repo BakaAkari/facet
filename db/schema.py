@@ -553,6 +553,28 @@ SCAN_RUNS_INDEXES = [
     ('idx_scan_failures_run', 'scan_failures', 'scan_run_id'),
 ]
 
+# Photos a supplementary IQA model answered "no" to on purpose, so --recompute-iqa
+# stops re-attempting them on every run (TOPIQ NR-Face: "No face detected" by
+# pyiqa's own detector on the thumbnail, though InsightFace found a face on the
+# full image). A side table, not a photos column, because a full-row save rewrites
+# photos wholesale. For the opposite reason it cannot simply be trusted: the save
+# is an UPSERT, which never cascades, so a row here SURVIVES a rescan. It is
+# therefore valid only while scan_fingerprint still equals the photo's current
+# IQA_SCAN_FINGERPRINT_SQL; a rescan rewrites scanned_at and the thumbnail and so
+# invalidates every decline for that photo without anyone deleting a row. The
+# fingerprint is nullable on purpose: NULL never equals anything, so a photo with
+# no scanned_at is never "declined" (fails open, it is simply retried).
+IQA_DECLINED_COLUMNS = [
+    ('photo_path', 'TEXT NOT NULL REFERENCES photos(path) ON DELETE CASCADE'),
+    ('model', 'TEXT NOT NULL'),
+    ('scan_fingerprint', 'TEXT'),
+]
+
+# What identifies "this scan of this photo" for IQA_DECLINED_COLUMNS. length() of a
+# BLOB reads the record header, not the BLOB. Qualified with ``photos.`` so it works
+# both in a correlated subquery and in an INSERT ... SELECT FROM photos.
+IQA_SCAN_FINGERPRINT_SQL = "photos.scanned_at || '|' || length(photos.thumbnail)"
+
 # Stats cache table for precomputed aggregations (performance optimization)
 STATS_CACHE_COLUMNS = [
     ('key', 'TEXT PRIMARY KEY'),
@@ -870,6 +892,7 @@ _MIGRATED_TABLES = [
     ('face_reextract_snapshot', FACE_REEXTRACT_SNAPSHOT_COLUMNS),
     ('scan_runs', SCAN_RUNS_COLUMNS),
     ('scan_failures', SCAN_FAILURES_COLUMNS),
+    ('iqa_declined', IQA_DECLINED_COLUMNS),
 ]
 
 
@@ -1117,6 +1140,10 @@ def init_database(db_path='photo_scores_pro.db'):
         conn.execute(_build_create_table_sql(
             'scan_failures', SCAN_FAILURES_COLUMNS,
             constraints=['PRIMARY KEY (scan_run_id, path)']
+        ))
+        conn.execute(_build_create_table_sql(
+            'iqa_declined', IQA_DECLINED_COLUMNS,
+            constraints=['PRIMARY KEY (photo_path, model)']
         ))
 
         # Non-additive rebuild before the additive sweep and index creation:

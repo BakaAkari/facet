@@ -31,7 +31,6 @@ class ScanRun:
         self._lock = threading.Lock()
         self._pending_failures = []
         self._processed = 0
-        self._failed = 0
         self._last_flush = 0.0
 
     @classmethod
@@ -52,7 +51,6 @@ class ScanRun:
         """Buffer a per-file failure; flushed with the next progress write."""
         with self._lock:
             self._pending_failures.append((self.run_id, str(path), stage, str(error)[:500]))
-            self._failed += 1
         self._maybe_flush()
 
     def update_progress(self, processed):
@@ -69,19 +67,30 @@ class ScanRun:
             self._last_flush = now
             failures = self._pending_failures
             self._pending_failures = []
-            processed, failed = self._processed, self._failed
+            processed = self._processed
         try:
             with get_connection(self.db_path, row_factory=False) as conn:
                 if failures:
+                    # A path can fail more than once in a run (a retry, or
+                    # several passes). The row is keyed (scan_run_id, path):
+                    # keep the first stage and timestamp, append the new error.
                     conn.executemany(
-                        "INSERT OR REPLACE INTO scan_failures "
-                        "(scan_run_id, path, stage, error) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO scan_failures (scan_run_id, path, stage, error) "
+                        "VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(scan_run_id, path) DO UPDATE SET "
+                        "error = substr(COALESCE(scan_failures.error || ' | ', '') "
+                        "|| excluded.error, 1, 2000)",
                         failures,
                     )
+                # Count the table, not the calls: the same connection sees the
+                # uncommitted upsert above, and the PRIMARY KEY makes the count
+                # one per distinct path whatever the flush timing.
                 conn.execute(
-                    "UPDATE scan_runs SET processed_files = ?, failed_files = ?, "
+                    "UPDATE scan_runs SET processed_files = ?, "
+                    "failed_files = (SELECT COUNT(*) FROM scan_failures "
+                    "WHERE scan_run_id = ?), "
                     "heartbeat_at = datetime('now') WHERE id = ?",
-                    (processed, failed, self.run_id),
+                    (processed, self.run_id, self.run_id),
                 )
                 conn.commit()
         except Exception as e:

@@ -323,6 +323,120 @@ class TestFailureLogging:
         assert s._skipped_totals == {}
 
 
+# --------------------------------------------------------------- last_declined
+
+
+class TestLastDeclined:
+    """``last_declined``: positions whose ``None`` is the model's own, deliberate answer.
+
+    ``--recompute-iqa`` remembers those and retries everything else, so an OOM or
+    an unexpected error must never land in the set.
+    """
+
+    def test_it_starts_empty(self):
+        assert _scorer('topiq_nr_face').last_declined == frozenset()
+
+    def test_no_face_detected_positions_are_exactly_the_declined_ones(self):
+        def fail(ids):
+            return AssertionError(_NO_FACE) if {1, 3} & set(ids) else None
+
+        s = _scorer('topiq_nr_face', fail)
+        scores = s.score_batch([_img(i) for i in range(4)])
+
+        assert scores[1] is None and scores[3] is None
+        assert s.last_declined == frozenset({1, 3})
+        assert isinstance(s.last_declined, frozenset)
+
+    def test_liqe_short_side_is_declined(self):
+        s = _scorer('liqe', lambda ids: RuntimeError(_SHORT_SIDE) if 1 in ids else None)
+        s.score_batch([_img(i) for i in range(3)])
+        assert s.last_declined == frozenset({1})
+
+    def test_an_oom_is_none_but_not_declined(self):
+        s = _scorer('liqe', lambda ids: RuntimeError(_OOM) if 1 in ids else None)
+        scores = s.score_batch([_img(i) for i in range(3)])
+
+        assert scores[1] is None
+        assert s.last_declined == frozenset()
+
+    def test_an_unexpected_error_is_none_but_not_declined(self):
+        s = _scorer('topiq_nr_face', lambda ids: RuntimeError('boom') if 1 in ids else None)
+        scores = s.score_batch([_img(i) for i in range(3)])
+
+        assert scores[1] is None
+        assert s.last_declined == frozenset()
+
+    def test_a_mixed_batch_yields_only_the_expected_positions(self):
+        def fail(ids):
+            if 0 in ids:
+                return AssertionError(_NO_FACE)
+            if 1 in ids:
+                return RuntimeError(_OOM)
+            if 2 in ids:
+                return RuntimeError('boom')
+            if 3 in ids:
+                return RuntimeError(_SHORT_SIDE)
+
+        s = _scorer('liqe', fail)
+        scores = s.score_batch([_img(i) for i in range(5)])
+
+        assert [i for i, v in enumerate(scores) if v is None] == [0, 1, 2, 3]
+        assert s.last_declined == frozenset({0, 3})
+
+    def test_it_is_reset_on_every_call(self):
+        s = _scorer('topiq_nr_face', lambda ids: AssertionError(_NO_FACE) if 0 in ids else None)
+        s.score_batch([_img(0), _img(1)])
+        assert s.last_declined == frozenset({0})
+
+        s.score_batch([_img(1), _img(2)])           # a clean second call
+        assert s.last_declined == frozenset()
+
+    def test_it_is_reset_even_for_an_empty_batch(self):
+        s = _scorer('topiq_nr_face', lambda ids: AssertionError(_NO_FACE) if 0 in ids else None)
+        s.score_batch([_img(0)])
+        assert s.last_declined == frozenset({0})
+        s.score_batch([])
+        assert s.last_declined == frozenset()
+
+    def test_a_batched_model_keeps_the_original_positions_through_the_fallback(self):
+        """A stacked forward that fails falls back to per-image scoring; the position
+        recorded is the image's place in the caller's list, not in a sub-group."""
+        def fail(ids):
+            return AssertionError(_NO_FACE) if 2 in ids else None
+
+        s = _scorer('topiq', fail)
+        scores = s.score_batch([_img(i) for i in range(4)])
+
+        assert scores[2] is None
+        assert [scores[i] for i in (0, 1, 3)] == pytest.approx(
+            [_expected(i) for i in (0, 1, 3)], abs=1e-3)
+        assert s.last_declined == frozenset({2})
+
+    def test_a_batched_model_oom_is_not_declined(self):
+        s = _scorer('topiq', lambda ids: RuntimeError(_OOM))
+        assert s.score_batch([_img(i) for i in range(4)]) == [None] * 4
+        assert s.last_declined == frozenset()
+
+    def test_a_preprocess_failure_falls_back_and_keeps_the_positions(self, monkeypatch):
+        s = _scorer('topiq', lambda ids: AssertionError(_NO_FACE) if 3 in ids else None)
+        original = s._preprocess_image
+
+        def flaky(image):
+            if image.getpixel((0, 0))[0] == 2 * 20:       # _img(1)
+                raise ValueError("bad image")
+            return original(image)
+
+        monkeypatch.setattr(s, '_preprocess_image', flaky)
+        scores = s.score_batch([_img(i) for i in range(4)])
+
+        assert scores[1] is None and scores[3] is None
+        assert s.last_declined == frozenset({3})
+
+    def test_the_native_qrealign_scorer_declares_the_attribute(self):
+        from models.qrealign_native import QReAlignNativeScorer
+        assert QReAlignNativeScorer.last_declined == frozenset()
+
+
 # ----------------------------------------------------------------- aesthetic_v25
 
 

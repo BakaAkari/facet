@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from unittest import mock
 
 from db.schema import init_database
+from db.stats_cache import METRIC_RANGES_KEY
 from api.routers import filter_options
 from api.routers.gallery import SCORE_RANGE_COLUMNS, EXIF_RANGE_COLUMNS
 
@@ -135,7 +136,7 @@ def test_result_is_persisted_and_reused(tmp_path):
     conn = sqlite3.connect(db_path)
     row = conn.execute(
         "SELECT value, updated_at FROM stats_cache WHERE key = ?",
-        (filter_options._METRIC_RANGES_KEY,),
+        (METRIC_RANGES_KEY,),
     ).fetchone()
     conn.close()
     assert row is not None
@@ -157,7 +158,7 @@ def test_stale_persisted_row_is_recomputed(tmp_path):
     conn = sqlite3.connect(db_path)
     conn.execute(
         "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-        (filter_options._METRIC_RANGES_KEY, json.dumps({"min_score": {"min": -1.0, "max": -1.0, "buckets": []}}),
+        (METRIC_RANGES_KEY, json.dumps({"min_score": {"min": -1.0, "max": -1.0, "buckets": []}}),
          time.time() - filter_options._METRIC_RANGES_TTL_SECONDS - 1),
     )
     conn.commit()
@@ -197,7 +198,7 @@ def test_empty_db_returns_empty_and_is_not_persisted(tmp_path):
     conn = sqlite3.connect(db_path)
     row = conn.execute(
         "SELECT value FROM stats_cache WHERE key = ?",
-        (filter_options._METRIC_RANGES_KEY,),
+        (METRIC_RANGES_KEY,),
     ).fetchone()
     conn.close()
     assert row is None   # an unscanned library must not pin a blank sidebar
@@ -216,7 +217,7 @@ def test_refresh_stats_cache_precomputes_ranges(tmp_path):
     conn = sqlite3.connect(db_path)
     row = conn.execute(
         "SELECT value FROM stats_cache WHERE key = ?",
-        (filter_options._METRIC_RANGES_KEY,),
+        (METRIC_RANGES_KEY,),
     ).fetchone()
     conn.close()
     assert json.loads(row[0])["min_score"]["max"] == 10.0
