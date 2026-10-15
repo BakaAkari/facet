@@ -19,6 +19,7 @@ from fastapi import HTTPException
 import config_resolve
 
 from api import config as api_config
+from api import config_writes
 from api.auth import _is_hashed, upgrade_legacy_password
 from api.config import CONFIG_WRITE_LOCK, write_user_config
 from api.config_writes import (
@@ -30,6 +31,7 @@ from api.config_writes import (
     write_owner_only_backup,
 )
 from config.scoring_config import ScoringConfig
+from tests.conftest import symlink_or_skip
 
 REPO_CONFIG_PATH = Path(config_resolve.defaults_path())
 
@@ -91,14 +93,16 @@ class TestOwnerOnlyBackupPrimitive:
 
     def test_the_destination_is_created_owner_only(self, tmp_path):
         """Created at 0600, not created-then-chmodded: an ``os.open`` mode
-        argument leaves no window, a following ``chmod`` does."""
+        argument leaves no window, a following ``chmod`` does. The file that is
+        created is the staging file beside the backup name, which is then
+        replaced over it."""
         source = self._sensitive_source(tmp_path)
         backup_path = tmp_path / "scoring_config.json.backup"
         creations = []
         real_open = os.open
 
         def _recording_open(path, flags, mode=0o777, **kwargs):
-            if str(path) == str(backup_path):
+            if os.path.dirname(str(path)) == str(tmp_path) and flags & os.O_CREAT:
                 creations.append(mode)
             return real_open(path, flags, mode, **kwargs)
 
@@ -112,9 +116,10 @@ class TestOwnerOnlyBackupPrimitive:
 
         Every install that ran an older Facet has exactly that: a
         ``scoring_config.json.backup`` sitting at 0664. The bytes must not land
-        in it at that mode and be tightened afterwards, so the mode is asserted
-        at the moment the first byte is written — the window a plain ``chmod``
-        after the copy leaves open.
+        in it at that mode and be tightened afterwards. They never land in it at
+        all: they go into a fresh 0600 staging file that replaces the name, so
+        the mode is asserted on the file being written at the moment the first
+        byte goes in — the window a plain ``chmod`` after the copy leaves open.
         """
         source = self._sensitive_source(tmp_path)
         backup_path = tmp_path / "scoring_config.json.backup"
@@ -124,7 +129,7 @@ class TestOwnerOnlyBackupPrimitive:
         real_copyfileobj = shutil.copyfileobj
 
         def _recording_copyfileobj(source_file, destination_file, *args, **kwargs):
-            modes_while_writing.append(_mode_of(backup_path))
+            modes_while_writing.append(stat.S_IMODE(os.fstat(destination_file.fileno()).st_mode))
             return real_copyfileobj(source_file, destination_file, *args, **kwargs)
 
         with mock.patch("api.config_writes.shutil.copyfileobj", _recording_copyfileobj):
@@ -553,13 +558,14 @@ class TestAtomicConfigWrite:
             return real_fsync(fd)
 
         def _record_replace(src, dst):
-            calls.append("replace")
+            calls.append("replace config" if Path(dst) == config_copy else "replace backup")
             return real_replace(src, dst)
 
         with mock.patch("os.fsync", _record_fsync), mock.patch("os.replace", _record_replace):
             update_scoring_context(config_copy, self.CONTEXT, ["wildlife"], [])
 
-        assert calls == ["fsync", "replace", "fsync"]
+        # The backup is staged and renamed first, flushed the same way.
+        assert calls == ["fsync", "replace backup", "fsync", "replace config", "fsync"]
 
     def test_two_writes_in_one_second_keep_distinct_backups(self, config_copy):
         """A second-granular stamp made the second save overwrite the first
@@ -1014,19 +1020,17 @@ class TestConfigMigrationSuppression:
             assert not list(config_copy.parent.glob("*.backup"))
 
 
-class TestTheBackupWriterRefusesASymlink:
+class TestTheBackupWriterNeverWritesIntoAnExistingFile:
     """`scoring_config.json.backup` is a FIXED name beside a guessable one.
 
-    Anyone able to create a name in the config directory plants a symlink
-    there, and the next password upgrade or weights save opened it with
-    O_TRUNC and wrote the complete config through it -- every
+    Anyone able to create a name in the config directory plants something there
+    -- a symlink, a hard link, or a plain file of their own -- and a writer that
+    opened the name wrote the complete config into it: every
     users.*.password_hash, viewer.password, upload.password, frame.token and
-    immich.api_key -- into whatever it pointed at. The `chmod` that follows
-    goes by NAME, so it re-moded the target too.
-
-    api/config.py's boot sweep already lstats files matching this same prefix
-    for exactly this reason. The two writers of that one path must not
-    disagree, which is what O_NOFOLLOW fixes here.
+    immich.api_key. A hard link is the file it points at, so no lstat/fstat
+    comparison catches it, and NTFS creates one without any privilege. The writer
+    therefore stages a fresh O_EXCL file and replaces the NAME with it; whatever
+    sat at the name is swapped out, never written into.
     """
 
     def _config(self, tmp_path):
@@ -1041,12 +1045,14 @@ class TestTheBackupWriterRefusesASymlink:
         victim = tmp_path / "victim.txt"
         victim.write_text("ORIGINAL\n")
         backup = tmp_path / "scoring_config.json.backup"
-        backup.symlink_to(victim)
+        symlink_or_skip(backup, victim)
 
-        assert write_owner_only_backup(str(source), str(backup)) is None
+        assert write_owner_only_backup(str(source), str(backup)) == str(backup)
         assert victim.read_text() == "ORIGINAL\n"
-        assert backup.is_symlink()
+        assert not backup.is_symlink()
+        assert backup.read_text() == source.read_text()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
     def test_it_does_not_re_mode_the_target(self, tmp_path):
         """The chmod goes by name, so following the link would tighten -- or on
         another path loosen -- a file the attacker chose."""
@@ -1057,25 +1063,107 @@ class TestTheBackupWriterRefusesASymlink:
         victim.write_text("ORIGINAL\n")
         victim.chmod(0o644)
         backup = tmp_path / "scoring_config.json.backup"
-        backup.symlink_to(victim)
+        symlink_or_skip(backup, victim)
 
         write_owner_only_backup(str(source), str(backup))
 
         assert stat.S_IMODE(victim.stat().st_mode) == 0o644
 
-    def test_it_says_why_rather_than_failing_silently(self, tmp_path, caplog):
-        from api.config_writes import write_owner_only_backup
-
+    def test_a_hard_link_at_the_backup_name_is_replaced_not_written_into(self, tmp_path):
+        """A hard link IS the file it points at, so no lstat/fstat comparison
+        can tell it from a backup. NTFS creates one with no privilege."""
         source = self._config(tmp_path)
         victim = tmp_path / "victim.txt"
         victim.write_text("ORIGINAL\n")
         backup = tmp_path / "scoring_config.json.backup"
-        backup.symlink_to(victim)
+        os.link(victim, backup)
+        assert os.stat(backup).st_nlink == 2
 
+        assert write_owner_only_backup(str(source), str(backup)) == str(backup)
+
+        assert victim.read_text() == "ORIGINAL\n"
+        assert backup.read_text() == source.read_text()
+        assert os.stat(backup).st_nlink == 1
+
+    def test_a_pre_planted_regular_file_is_replaced_not_written_into(self, tmp_path):
+        source = self._config(tmp_path)
+        backup = tmp_path / "scoring_config.json.backup"
+        backup.write_text("PLANTED BY SOMEONE ELSE " * 50)
+        planted = os.stat(backup)
+
+        assert write_owner_only_backup(str(source), str(backup)) == str(backup)
+
+        assert backup.read_text() == source.read_text()
+        # A new inode where the planted one was: nothing was written into it.
+        # (A filesystem that reports no inode numbers cannot show this.)
+        replaced = os.stat(backup)
+        if planted.st_ino:
+            assert (replaced.st_ino, replaced.st_dev) != (planted.st_ino, planted.st_dev)
+
+    def test_the_old_inode_keeps_its_content_when_the_name_is_replaced(self, tmp_path):
+        """Hold the old file open across the call and read it afterwards: the
+        name was replaced, the planted inode was never written."""
+        source = self._config(tmp_path)
+        backup = tmp_path / "scoring_config.json.backup"
+        backup.write_text("OLD BACKUP\n")
+
+        with open(backup, "rb") as old:
+            try:
+                result = write_owner_only_backup(str(source), str(backup))
+            except PermissionError:
+                pytest.skip("this platform will not replace a name held open")
+            if result is None:
+                pytest.skip("this platform will not replace a name held open")
+            assert result == str(backup)
+            assert old.read() == b"OLD BACKUP\n"
+        assert backup.read_text() == source.read_text()
+
+    def test_a_failed_write_leaves_no_staging_file_and_says_so(self, tmp_path, monkeypatch, caplog):
+        source = self._config(tmp_path)
+        backup = tmp_path / "scoring_config.json.backup"
+        backup.write_text("PREVIOUS BACKUP\n")
+
+        def _boom(src, dst):
+            raise PermissionError(errno.EACCES, "denied")
+
+        monkeypatch.setattr(config_writes.os, "replace", _boom)
         with caplog.at_level(logging.ERROR, logger="api.config_writes"):
-            write_owner_only_backup(str(source), str(backup))
+            assert write_owner_only_backup(str(source), str(backup)) is None
 
-        assert any("symlink" in r.getMessage() for r in caplog.records)
+        assert backup.read_text() == "PREVIOUS BACKUP\n"
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            "scoring_config.json", "scoring_config.json.backup"]
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Could not write the config backup" in m for m in messages)
+        assert not any("symlink" in m for m in messages)
+
+    def test_a_successful_write_leaves_no_staging_file(self, tmp_path):
+        source = self._config(tmp_path)
+        backup = tmp_path / "scoring_config.json.backup"
+
+        assert write_owner_only_backup(str(source), str(backup)) == str(backup)
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            "scoring_config.json", "scoring_config.json.backup"]
+
+    def test_a_staging_file_is_invisible_to_the_backup_sweeps(self, tmp_path):
+        """It must not match the `<config>.backup` prefix that
+        ``_prune_config_backups`` and the boot sweep both select on."""
+        seen = []
+        real_replace = os.replace
+
+        def _spy(src, dst):
+            seen.append(os.path.basename(src))
+            return real_replace(src, dst)
+
+        source = self._config(tmp_path)
+        with mock.patch("api.config_writes.os.replace", _spy):
+            write_owner_only_backup(str(source), str(tmp_path / "scoring_config.json.backup"))
+
+        assert len(seen) == 1
+        assert seen[0].startswith(".")
+        assert not seen[0].startswith("scoring_config.json.backup")
+        assert not (seen[0].startswith(".scoring_config.tmp") and seen[0].endswith(".json"))
 
     def test_an_ordinary_backup_is_unaffected(self, tmp_path):
         from api.config_writes import write_owner_only_backup
@@ -1085,7 +1173,45 @@ class TestTheBackupWriterRefusesASymlink:
 
         assert write_owner_only_backup(str(source), str(backup)) == str(backup)
         assert backup.read_text() == '{"viewer": {"password": "topsecret"}}'
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
+    def test_an_ordinary_backup_is_owner_only(self, tmp_path):
+        from api.config_writes import write_owner_only_backup
+
+        source = self._config(tmp_path)
+        backup = tmp_path / "scoring_config.json.backup"
+
+        assert write_owner_only_backup(str(source), str(backup)) == str(backup)
         assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+    def test_a_directory_at_the_backup_name_is_reported_and_left_alone(self, tmp_path, caplog):
+        """A file cannot replace a directory: reported, not raised, and the
+        staging file does not stay behind."""
+        source = self._config(tmp_path)
+        backup = tmp_path / "scoring_config.json.backup"
+        backup.mkdir()
+
+        with caplog.at_level(logging.ERROR, logger="api.config_writes"):
+            assert write_owner_only_backup(str(source), str(backup)) is None
+
+        assert backup.is_dir()
+        assert list(backup.iterdir()) == []
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            "scoring_config.json", "scoring_config.json.backup"]
+        assert any("Could not write the config backup" in r.getMessage() for r in caplog.records)
+
+    def test_a_shorter_backup_leaves_no_stale_tail_and_no_crlf(self, tmp_path):
+        source = tmp_path / "scoring_config.json"
+        backup = tmp_path / "scoring_config.json.backup"
+        backup.write_bytes(b"x" * 500)
+        source.write_bytes(b'{\n  "a": 1\n}\n')
+
+        assert write_owner_only_backup(str(source), str(backup)) == str(backup)
+        assert backup.read_bytes() == b'{\n  "a": 1\n}\n'
+
+        fresh = tmp_path / "scoring_config.json.backup.2"
+        assert write_owner_only_backup(str(source), str(fresh)) == str(fresh)
+        assert fresh.read_bytes() == b'{\n  "a": 1\n}\n'
 
     def test_an_absent_source_still_returns_none_without_writing(self, tmp_path):
         """The zero-config first write: an install that overrides nothing has no

@@ -89,6 +89,8 @@ Para cenários de NAS familiar onde cada membro tem diretórios de fotos privado
 }
 ```
 
+As entradas de `directories` e `shared_directories` são comparadas com os caminhos armazenados como o scanner os escreveu: a diferença entre maiúsculas e minúsculas ASCII é ignorada no Windows, no macOS e em entradas UNC ou com letra de unidade em qualquer lugar, mas nos demais hosts (por exemplo, no Linux) a comparação diferencia maiúsculas de minúsculas (case-sensitive); escreva cada entrada como o scanner a armazenou (limites conhecidos: diferenças de maiúsculas fora do ASCII e uma unidade mapeada em um host que não consegue resolvê-la).
+
 Os usuários são criados apenas via CLI (sem interface de registro):
 
 ```bash

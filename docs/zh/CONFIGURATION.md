@@ -148,11 +148,11 @@ python database.py --compact-config
 | `password_hash` | string | PBKDF2-HMAC-SHA256 哈希（`salt_hex:dk_hex`）。由 `--add-user` 命令行生成。 |
 | `display_name` | string | 显示在界面顶栏 |
 | `role` | string | `user`、`admin` 或 `superadmin` |
-| `directories` | array | 该用户的私有照片目录 |
+| `directories` | array | 该用户的私有照片目录；条目按扫描器写入时的样子与已存储路径比较：在 Windows 和 macOS 上以及任何系统上的 UNC 或盘符条目，忽略 ASCII 大小写，而在其他主机（例如 Linux）上比较区分大小写（case-sensitive），因此请按扫描器存储的写法填写每个条目（已知限制：非 ASCII 的大小写差异，以及在无法解析映射驱动器的主机上使用映射驱动器） |
 
 ### 共享目录
 
-`shared_directories` 键（与用户对象同级）列出对所有用户可见的目录。
+`shared_directories` 键（与用户对象同级）列出对所有用户可见的目录。 `directories` 与 `shared_directories` 中的条目按扫描器写入时的样子与已存储路径比较：在 Windows 和 macOS 上以及任何系统上的 UNC 或盘符条目，忽略 ASCII 大小写，而在其他主机（例如 Linux）上比较区分大小写（case-sensitive），因此请按扫描器存储的写法填写每个条目（已知限制：非 ASCII 的大小写差异，以及在无法解析映射驱动器的主机上使用映射驱动器）。
 
 ### 角色
 

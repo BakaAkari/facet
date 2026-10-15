@@ -285,7 +285,7 @@ class TestShippedDefaults:
         The repository root is not a package and setuptools' package-data rule
         covers ``config/*.json``; left at the root they would not be installed.
         """
-        assert defaults_path().endswith("config/scoring_config.default.json")
+        assert Path(defaults_path()).parts[-2:] == ("config", "scoring_config.default.json")
 
     def test_they_are_a_valid_v4_config_on_their_own(self):
         """An install with no config file at all must still score."""
@@ -388,6 +388,16 @@ class TestCompactConfig:
 
         backups = list(tmp_path.glob("scoring_config.json.backup.*"))
         assert len(backups) == 1
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
+    def test_it_leaves_an_owner_only_backup_mode(self, tmp_path):
+        config_path = tmp_path / "scoring_config.json"
+        config_path.write_text(json.dumps(load_defaults(), indent=2))
+
+        assert self._run(config_path).returncode == 0
+
+        backups = list(tmp_path.glob("scoring_config.json.backup.*"))
+        assert len(backups) == 1
         assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
 
 
@@ -456,6 +466,7 @@ class TestInPlaceCommitStillWritesTheDelta:
     than the 3700-line resolved tree.
     """
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership has no Windows analogue")
     def test_a_denied_chown_still_persists_only_the_override(self, tmp_path, monkeypatch):
         config_path = tmp_path / "scoring_config.json"
         config_path.write_text("{}")

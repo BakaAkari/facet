@@ -9,6 +9,7 @@ spec's Step 1 verify calls for.
 """
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -176,22 +177,22 @@ class TestPendingCorrectionsCount:
         lib_a = str(tmp_path / 'lib_a')
         self._seed_overrides(db_path, [
             # 3-row pending group under /lib_a -- should count as 1.
-            (f"{lib_a}/g1.jpg", 'bracket', 'g1'),
-            (f"{lib_a}/g2.jpg", 'bracket', 'g1'),
-            (f"{lib_a}/g3.jpg", 'bracket', 'g1'),
+            (os.path.join(lib_a, "g1.jpg"), 'bracket', 'g1'),
+            (os.path.join(lib_a, "g2.jpg"), 'bracket', 'g1'),
+            (os.path.join(lib_a, "g3.jpg"), 'bracket', 'g1'),
         ])
         conn = sqlite3.connect(db_path)
         conn.execute(
             "INSERT INTO photo_sequence_overrides "
             "(photo_path, sequence_kind, override_group_key, source, applied_at) "
             "VALUES (?, 'bracket', 'g2', 'user', '2026-01-01T00:00:00Z')",
-            (f"{lib_a}/applied1.jpg",),
+            (os.path.join(lib_a, "applied1.jpg"),),
         )
         conn.execute(
             "INSERT INTO photo_sequence_overrides "
             "(photo_path, sequence_kind, override_group_key, source, applied_at) "
             "VALUES (?, 'bracket', 'g2', 'user', '2026-01-01T00:00:00Z')",
-            (f"{lib_a}/applied2.jpg",),
+            (os.path.join(lib_a, "applied2.jpg"),),
         )
         conn.commit()
         conn.close()

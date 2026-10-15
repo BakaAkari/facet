@@ -158,11 +158,11 @@ Modo multiusuario opcional. Cuando la clave `users` está presente (con al menos
 | `password_hash` | string | Hash PBKDF2-HMAC-SHA256 (`salt_hex:dk_hex`). Generado por la CLI `--add-user`. |
 | `display_name` | string | Mostrado en la cabecera de la UI |
 | `role` | string | `user`, `admin` o `superadmin` |
-| `directories` | array | Directorios de fotos privados de este usuario |
+| `directories` | array | Directorios de fotos privados de este usuario. Las entradas se comparan con las rutas almacenadas tal como las escribió el escáner: se ignoran las mayúsculas ASCII en Windows, en macOS y en las entradas UNC o de letra de unidad en cualquier sistema, pero en los demás hosts (por ejemplo Linux) la comparación distingue mayúsculas y minúsculas (case-sensitive); escriba cada entrada tal como la almacenó el escáner (límites conocidos: diferencias de mayúsculas fuera de ASCII y una unidad asignada en un host que no puede resolverla) |
 
 ### Directorios compartidos
 
-La clave `shared_directories` (hermana de los objetos de usuario) enumera los directorios visibles para todos los usuarios.
+La clave `shared_directories` (hermana de los objetos de usuario) enumera los directorios visibles para todos los usuarios. Las entradas de `directories` y `shared_directories` se comparan con las rutas almacenadas tal como las escribió el escáner: se ignoran las mayúsculas ASCII en Windows, en macOS y en las entradas UNC o de letra de unidad en cualquier sistema, pero en los demás hosts (por ejemplo Linux) la comparación distingue mayúsculas y minúsculas (case-sensitive); escriba cada entrada tal como la almacenó el escáner (límites conocidos: diferencias de mayúsculas fuera de ASCII y una unidad asignada en un host que no puede resolverla).
 
 ### Roles
 

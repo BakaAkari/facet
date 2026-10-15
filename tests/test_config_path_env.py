@@ -649,15 +649,33 @@ class TestAnUnreadableConfigStillStartsTheServer:
         env = dict(os.environ)
         env["PYTHONPATH"] = _repo_root()
         env[_ENV_VAR] = str(config)
-        return subprocess.run(
-            [sys.executable, "-c",
-             "import json, api.config as c, api.auth as a; from api import create_app; "
-             "create_app(); "
-             "print(json.dumps({'load_failed': c.config_load_failed(), "
-             "'open_viewer': a._is_open_install(a.VIEWER_PASSWORD_KEY), "
-             "'any_feature_on': any(c.VIEWER_CONFIG.get('features', {}).values())}))"],
-            cwd=tmp_path, capture_output=True, text=True, env=env,
-        )
+        # chmod(0o000) makes a file unreadable on POSIX only. NTFS has no such
+        # bits, but it does support an unreadable file: an ACL that denies read
+        # to Everyone (*S-1-1-0 is that SID, so this is locale-independent).
+        # Deny READ DATA only, never the broader (R): that also denies
+        # READ_CONTROL, after which not even the owner can read the ACL, so
+        # `icacls /remove` below fails and the file can no longer be deleted.
+        denied = mode == 0 and sys.platform == "win32"
+        if denied:
+            subprocess.run(["icacls", str(config), "/deny", "*S-1-1-0:(RD)"],
+                           check=True, capture_output=True)
+        try:
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "import json, api.config as c, api.auth as a; from api import create_app; "
+                 "create_app(); "
+                 "print(json.dumps({'load_failed': c.config_load_failed(), "
+                 "'open_viewer': a._is_open_install(a.VIEWER_PASSWORD_KEY), "
+                 "'any_feature_on': any(c.VIEWER_CONFIG.get('features', {}).values())}))"],
+                cwd=tmp_path, capture_output=True, text=True, env=env,
+            )
+        finally:
+            if denied:
+                # Always undone, so a failed assertion cannot leave a file
+                # pytest is then unable to delete along with tmp_path.
+                subprocess.run(["icacls", str(config), "/remove:d", "*S-1-1-0"],
+                               check=True, capture_output=True)
+                config.chmod(0o600)
 
     def test_a_config_it_cannot_open_boots_locked_rather_than_crashing(self, tmp_path):
         probe = self._start(tmp_path, '{"viewer": {"password": "PW"}}', mode=0o000)
@@ -710,12 +728,14 @@ class TestALooseConfigModeIsReported:
         assert probe.returncode == 0, probe.stderr
         return probe.stderr, config
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
     def test_a_world_readable_config_is_reported(self, tmp_path):
         stderr, _ = self._probe(tmp_path, 0o644)
 
         assert "readable beyond its owner" in stderr
         assert "scoring_config.json" in stderr
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
     def test_the_mode_is_left_exactly_as_the_operator_set_it(self, tmp_path):
         _, config = self._probe(tmp_path, 0o644)
 
@@ -726,6 +746,7 @@ class TestALooseConfigModeIsReported:
 
         assert "readable beyond its owner" not in stderr
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
     def test_a_symlinked_config_is_reported_through_the_link(self, tmp_path):
         """The gap the Docker entrypoint deliberately leaves.
 

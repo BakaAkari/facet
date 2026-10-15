@@ -848,13 +848,15 @@ class TestPasswordUpgradeBackupIsOwnerOnly:
         real_copyfileobj = shutil.copyfileobj
 
         def _recording_copyfileobj(source_file, destination_file, *args, **kwargs):
-            modes_while_writing.append(stat.S_IMODE(os.stat(backup_path).st_mode))
+            # The file being written: the backup NAME is only replaced afterwards.
+            modes_while_writing.append(stat.S_IMODE(os.fstat(destination_file.fileno()).st_mode))
             return real_copyfileobj(source_file, destination_file, *args, **kwargs)
 
         with mock.patch("api.config_writes.shutil.copyfileobj", _recording_copyfileobj):
             self._upgrade(config_path)
 
         assert modes_while_writing == [_BACKUP_OWNER_ONLY_MODE]
+        assert stat.S_IMODE(os.stat(backup_path).st_mode) == _BACKUP_OWNER_ONLY_MODE
         assert _PLAINTEXT_PASSWORD in backup_path.read_text()
 
 

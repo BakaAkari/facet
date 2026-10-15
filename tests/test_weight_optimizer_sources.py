@@ -386,8 +386,16 @@ class TestApplyPreservesConfigPermissions:
             {"aesthetic": 0.5, "liqe": 0.5}, category="portrait", backup=False
         )
         assert json.loads(cfg.read_text())["viewer"]["password"] == "plaintext-secret"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
+    def test_apply_preserves_owner_only_mode_bits(self, tmp_path):
+        cfg = self._config(tmp_path, 0o600)
+        WeightOptimizer("unused.db", str(cfg)).apply_optimized_weights(
+            {"aesthetic": 0.5, "liqe": 0.5}, category="portrait", backup=False
+        )
         assert stat.S_IMODE(os.stat(cfg).st_mode) == 0o600
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
     def test_apply_preserves_a_group_readable_mode(self, tmp_path):
         # The mode is copied, not forced to 0600: a co-deployed CLI reading the
         # config through its group must not lose access on an optimizer run.
