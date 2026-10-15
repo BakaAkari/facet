@@ -13,6 +13,7 @@ Key features:
 - Fallback handling: Automatic fallback to lighter models on OOM
 """
 
+import functools
 import gc
 import json
 import logging
@@ -32,6 +33,7 @@ from processing.routing import (
 from processing.scorer import build_scoring_metrics
 from utils.device import clear_device_cache
 from utils.image_bounds import bound_to_inference_size
+from utils.image_loading import bgr_to_gray, pil_to_bgr
 
 logger = logging.getLogger("facet.multi_pass")
 
@@ -111,6 +113,17 @@ class ChunkedMultiPassProcessor:
     This minimizes I/O overhead when using network storage.
     """
 
+    # Process working-set bytes per source pixel a decoded chunk holds while its passes run.
+    # The objects are the PIL image (Pillow stores RGB at 4 B/px) plus the shared bounded
+    # image (~0.15 B/px of a 20 MP photo) and small metric dicts, about 4.15 B/px; the BGR
+    # array and the gray plane are NOT retained, the passes that need them rebuild them from
+    # the PIL image (``pil_to_bgr``, ``bgr_to_gray``). The constant is the MEASURED
+    # ``bytes_per_px_retained_wset`` of ``scripts/perf/retained_bytes.py`` (4.32 on
+    # ``first:32``, 4.44-4.59 on ``mp:20-21:4``) rounded up to the next 0.25, so it includes
+    # the allocator slack of the decode workers. A memory budget multiplies it by the chunk's
+    # pixel count.
+    RETAINED_BYTES_PER_PX = 4.75
+
     # Default pass configuration
     DEFAULT_PASSES = [
         ('clip', 'extract_embeddings'),
@@ -176,6 +189,9 @@ class ChunkedMultiPassProcessor:
             'model_unload_time': 0,
             'inference_time': 0,
             'io_time': 0,
+            # BGR / gray planes rebuilt from the retained PIL image by the face and
+            # saliency passes (they are no longer kept for the whole chunk)
+            'rebuild_time': 0.0,
         }
 
     def reduce_chunk_size(self):
@@ -595,6 +611,10 @@ class ChunkedMultiPassProcessor:
         - The shared LANCZOS-1024 image (``'bounded'``) the pyiqa models and Q-ReAlign
           preprocess to anyway, when the pass plan contains one of them
 
+        The returned entries keep the PIL image but neither the BGR array nor the gray
+        plane (``RETAINED_BYTES_PER_PX``): the face and saliency passes rebuild them from
+        ``'pil'`` with ``pil_to_bgr`` / ``bgr_to_gray``, so no pass may mutate ``'pil'``.
+
         A composition error fails that one photo (``on_error(path, 'composition', exc)``)
         and the chunk carries on.
 
@@ -682,6 +702,12 @@ class ChunkedMultiPassProcessor:
                 except Exception as e:
                     raise _CompositionError(e) from e
 
+            # Composition was the last reader of the gray plane. Nothing keeps the BGR
+            # array or the gray plane for the chunk: the passes that need them rebuild
+            # them from ``pil`` (a pure function of it), the cache keeps only the
+            # Laplacian variance the face pass reads.
+            cache.gray = None
+
             # The image the pyiqa models and Q-ReAlign would each resize to themselves.
             # A degenerate aspect (20000x1) cannot be resized; each consumer then gets
             # the full image and fails or succeeds exactly as before.
@@ -700,7 +726,6 @@ class ChunkedMultiPassProcessor:
 
             return {
                 'pil': pil_img,
-                'cv': img_cv,
                 'path': path,
                 'width': img_w,
                 'height': img_h,
@@ -872,9 +897,10 @@ class ChunkedMultiPassProcessor:
         paths = list(images.keys())
 
         for path in paths:
-            img_cv = images[path]['cv']
             try:
-                result = scorer.score(img_cv)
+                # SAMP-Net's preprocess takes the PIL image and builds the tensor the BGR
+                # route gave (torch.equal, tests/test_scan_retained_bytes.py).
+                result = scorer.score(images[path]['pil'])
                 results[path]['comp_score'] = result.get('comp_score', 5.0)
                 results[path]['composition_pattern'] = result.get('pattern', 'unknown')
             except Exception as e:
@@ -889,8 +915,13 @@ class ChunkedMultiPassProcessor:
         the scorer's instead kept it alive for the whole scan.
         """
         for path, img_data in images.items():
-            img_cv = img_data['cv']
             try:
+                # One BGR array at a time (6 B/px transient for ONE photo), dropped below
+                # before the next is built; a rebuild failure is a face failure like an
+                # analyzer failure.
+                rebuild_start = time.perf_counter()
+                img_cv = pil_to_bgr(img_data['pil'])
+                self.metrics['rebuild_time'] += time.perf_counter() - rebuild_start
                 face_res = face_analyzer.analyze_faces(img_cv)
 
                 # Store all face metrics in results
@@ -910,7 +941,7 @@ class ChunkedMultiPassProcessor:
                     results[path]['face_quality_iqa'] = face_res['face_quality_iqa']
 
                 # Compute face_ratio
-                img_h, img_w = img_cv.shape[:2]
+                img_h, img_w = img_data['height'], img_data['width']
                 face_area = face_res.get('face_area', 0)
                 results[path]['face_ratio'] = face_area / (img_h * img_w) if face_area > 0 else 0
 
@@ -944,6 +975,8 @@ class ChunkedMultiPassProcessor:
                 results[path]['raw_eye_sharpness'] = None
                 results[path]['isolation_bonus'] = 1.0
                 results[path]['face_details'] = None
+            finally:
+                img_cv = None
 
     def _pass_vlm_tagger(self, tagger: Any, images: Dict, results: Dict):
         """VLM pass: semantic tagging."""
@@ -964,11 +997,13 @@ class ChunkedMultiPassProcessor:
     def _pass_saliency(self, scorer: Any, images: Dict, results: Dict):
         """BiRefNet saliency pass: subject saliency detection and derived metrics."""
         pil_imgs = [img['pil'] for img in images.values()]
-        cv_imgs = [img['cv'] for img in images.values()]
+        # Zero-argument rebuilders, not arrays: the scorer calls one just before it scores
+        # that photo and drops the gray plane right after, so no chunk-wide plane exists.
+        rebuilders = [functools.partial(self._rebuild_gray, pil) for pil in pil_imgs]
         paths = list(images.keys())
 
         try:
-            scores = scorer.score_batch(pil_imgs, cv_imgs)
+            scores = scorer.score_batch(pil_imgs, rebuilders)
 
             for i, path in enumerate(paths):
                 if all(scores[i].get(key) is None for key in SALIENCY_PASS_COLUMNS - {'subject_bbox'}):
@@ -981,6 +1016,17 @@ class ChunkedMultiPassProcessor:
         except Exception as e:
             licensing.reraise_if_refused()
             logger.error("BiRefNet saliency pass failed: %s", e)
+
+    def _rebuild_gray(self, pil_img):
+        """The gray plane ``ImageCache`` used to hold, rebuilt from the retained PIL image.
+
+        ``bgr_to_gray(pil_to_bgr(pil))`` is the exact chain the load path ran; a direct
+        RGB2GRAY would round some pixels differently.
+        """
+        start = time.perf_counter()
+        gray = bgr_to_gray(pil_to_bgr(pil_img))
+        self.metrics['rebuild_time'] += time.perf_counter() - start
+        return gray
 
     # Supplementary PyIQA models store to dedicated columns
     PYIQA_COLUMN_MAP = {
@@ -1407,6 +1453,8 @@ class ChunkedMultiPassProcessor:
             logger.info("  Model load: %.1fs (%.0f%%)", m['model_load_time'], 100 * m['model_load_time'] / total)
             logger.info("  Inference: %.1fs (%.0f%%)", m['inference_time'], 100 * m['inference_time'] / total)
             logger.info("  Model unload: %.1fs (%.0f%%)", m['model_unload_time'], 100 * m['model_unload_time'] / total)
+            logger.info("  Plane rebuilds (face + saliency passes): %.1fs (%.0f%%)",
+                        m['rebuild_time'], 100 * m['rebuild_time'] / total)
 
             # Auto-tuning summary (only if adjustments occurred)
             monitor = getattr(self, '_ram_monitor', None)

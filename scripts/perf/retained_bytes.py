@@ -191,6 +191,7 @@ def measure(label, workers, selector, opts):
     p.scorer = _Scorer(real_config())
     p.load_workers = workers
     p.restricted = False
+    p.pass_groups = None   # the default plan: every consumer of the shared bounded image counts
     errors = []
     p.on_error = lambda *a: errors.append(a) or print('ON_ERROR', a)
 
@@ -326,9 +327,10 @@ def live_masks(label, n, opts):
         arr = rng.integers(0, 256, (240, 320, 3), dtype=np.uint8)
         pil = Image.fromarray(arr, 'RGB')
         path = 'synthetic_%03d.jpg' % i
-        images[path] = {'pil': pil, 'cv': arr[:, :, ::-1].copy(), 'path': path}
+        images[path] = {'pil': pil, 'path': path}
         results[path] = {}
     p = mp.ChunkedMultiPassProcessor.__new__(mp.ChunkedMultiPassProcessor)
+    p.metrics = {'rebuild_time': 0.0}   # _pass_saliency accounts its gray-plane rebuilds
     p._pass_saliency(scorer, images, results)
     gc.collect()
     failed = [k for k, v in results.items() if mp.SALIENCY_FAILED_KEY in v]

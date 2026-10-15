@@ -56,7 +56,7 @@ class _StubScorer:
 def _img_data():
     arr = np.zeros((64, 64, 3), dtype=np.uint8)
     return {
-        "pil": Image.fromarray(arr), "cv": arr, "height": 64, "width": 64,
+        "pil": Image.fromarray(arr), "height": 64, "width": 64,
         "phash": "0" * 16, "exif": {}, "sharpness": {}, "color": {},
         "histogram": {}, "mono": {}, "dynamic_range": {}, "noise": {},
         "contrast": {}, "form": {}, "cache": None,

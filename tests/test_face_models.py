@@ -668,6 +668,7 @@ class TestCommercialFacesPopulated:
         return ScoringConfig(defaults_path(), validate=False)
 
     def test_multi_pass_faces_permissive_pass(self, poisoned, stubbed):
+        from PIL import Image
         from models.model_manager import ModelManager
         from processing.multi_pass import ChunkedMultiPassProcessor
         manager = ModelManager.__new__(ModelManager)
@@ -681,7 +682,9 @@ class TestCommercialFacesPopulated:
         assert isinstance(analyzer, face_permissive.PermissiveFaceAnalyzer)
 
         proc = ChunkedMultiPassProcessor.__new__(ChunkedMultiPassProcessor)
-        images = {'p.jpg': {'cv': np.full((64, 64, 3), 128, dtype=np.uint8), 'cache': None}}
+        proc.metrics = {'rebuild_time': 0.0}
+        images = {'p.jpg': {'pil': Image.fromarray(np.full((64, 64, 3), 128, dtype=np.uint8)),
+                            'height': 64, 'width': 64, 'cache': None}}
         results = {'p.jpg': {}}
         proc._run_model_pass('faces_permissive', analyzer, images, results)
         res = results['p.jpg']

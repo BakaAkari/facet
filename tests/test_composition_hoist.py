@@ -23,8 +23,9 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from analyzers import CompositionAnalyzer  # noqa: E402
+from analyzers import CompositionAnalyzer, ImageCache  # noqa: E402
 from processing.multi_pass import ChunkedMultiPassProcessor  # noqa: E402
+from utils.image_loading import pil_to_bgr  # noqa: E402
 
 
 class _FakeModelManager:
@@ -101,15 +102,19 @@ def _load(proc, paths):
 
 
 def _reference_inline(img_data, data, config):
-    """Verbatim copy of the pre-hoist logic in ``_compute_aggregates``."""
-    img_cv = img_data["cv"]
+    """Verbatim copy of the pre-hoist logic in ``_compute_aggregates``.
+
+    The BGR array and the gray plane are no longer retained, so they are rebuilt from the
+    retained PIL image: the same arrays the load path used to keep (see test_scan_retained_bytes).
+    """
+    img_cv = pil_to_bgr(img_data["pil"])
     img_h, img_w = img_data["height"], img_data["width"]
     if "comp_score" not in data or data.get("comp_score") is None:
         face_bbox = None
         comp_data = CompositionAnalyzer.get_placement_data(face_bbox, img_w, img_h, config, img_cv)
         data["comp_score"] = comp_data["score"]
         data["power_point_score"] = comp_data.get("power_point_score", 5.0)
-        cache = img_data.get("cache")
+        cache = ImageCache(img_cv)
         leading_lines_data = CompositionAnalyzer.detect_leading_lines(img_cv, cache=cache)
         data["leading_lines_score"] = leading_lines_data.get("leading_lines_score", 0)
     else:
@@ -117,7 +122,7 @@ def _reference_inline(img_data, data, config):
             comp_data = CompositionAnalyzer.get_placement_data(None, img_w, img_h, config, img_cv)
             data["power_point_score"] = comp_data.get("power_point_score", 5.0)
         if "leading_lines_score" not in data:
-            cache = img_data.get("cache")
+            cache = ImageCache(img_cv)
             leading_lines_data = CompositionAnalyzer.detect_leading_lines(img_cv, cache=cache)
             data["leading_lines_score"] = leading_lines_data.get("leading_lines_score", 0)
 

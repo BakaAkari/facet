@@ -20,7 +20,7 @@ from analyzers.face_permissive import PermissiveFaceAnalyzer
 from db.embedding_space import ARCFACE_MODEL, SFACE_MODEL
 from db.schema import init_database
 from processing.multi_pass import (
-    ChunkedMultiPassProcessor, SCAN_FAILED_KEY, run_single_pass,
+    ChunkedMultiPassProcessor, FACE_FAILED_KEY, SCAN_FAILED_KEY, run_single_pass,
 )
 
 
@@ -94,13 +94,17 @@ class TestFaceWeightsLoadFailure:
             assert res[key] is None, key
 
     def test_multi_pass_face_pass_stores_null_for_unknown_faces(self):
+        from PIL import Image
         analyzer = PermissiveFaceAnalyzer()
         analyzer.available = False
         proc = ChunkedMultiPassProcessor.__new__(ChunkedMultiPassProcessor)
-        images = {'p.jpg': {'cv': np.full((8, 8, 3), 9, dtype=np.uint8), 'cache': None}}
+        proc.metrics = {'rebuild_time': 0.0}
+        images = {'p.jpg': {'pil': Image.fromarray(np.full((8, 8, 3), 9, dtype=np.uint8)),
+                            'height': 8, 'width': 8, 'cache': None}}
         results = {'p.jpg': {}}
         proc._run_model_pass('faces_permissive', analyzer, images, results)
         res = results['p.jpg']
+        assert FACE_FAILED_KEY not in res  # the pass reached the analyzer: not a rebuild failure
         assert res['face_details'] is None
         assert res['face_quality'] is None and res['is_blink'] is None
         assert res['eye_sharpness'] is None and res['face_sharpness'] is None
