@@ -179,6 +179,23 @@ def _flush_pending_rating_syncs():
         )
 
 
+def _final_wal_checkpoint():
+    """Truncate the WAL on a read-write connection, which is then the last closer.
+
+    Best-effort: a failure is logged and never raised, so it cannot block shutdown.
+    """
+    try:
+        from api.database import get_db_connection
+        conn = get_db_connection()
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("Final WAL checkpoint on shutdown failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan — startup/shutdown hooks."""
@@ -188,12 +205,13 @@ async def lifespan(app: FastAPI):
     # photo_scores_pro.db missing newer columns (similarity_reviewed,
     # burst_group_id, gps_*, caption, ...) causes runtime 500s on the
     # culling, capsules, and similar-photos endpoints.
+    # It runs under facet.LibraryLock: the gallery covering indexes are minutes of
+    # write-locked work on a large library, so a library job holding the lock makes
+    # this start migrate tables and columns only and leave the indexes to the next
+    # start (or `python database.py`). Failures are logged inside the helper.
     from api.database import DEFAULT_DB_PATH
-    from db.schema import init_database
-    try:
-        init_database(DEFAULT_DB_PATH)
-    except Exception:
-        logger.warning("Schema migration on startup failed", exc_info=True)
+    from api.schema_startup import init_schema_at_startup
+    init_schema_at_startup(DEFAULT_DB_PATH)
 
     # init_database may have ALTERed columns onto the photos table — clear the
     # cache before warming it so the new column set is reflected. Without this,
@@ -295,6 +313,12 @@ async def lifespan(app: FastAPI):
     # competing for the write lock) and before the final checkpoint, so the rows
     # it commits are checkpointed into the main DB file.
     _flush_pending_rating_syncs()
+    # Close the change-token sentinels (read-only connections kept open for the life
+    # of the process) before the final checkpoint: a reader that is still open when
+    # the last read-write connection closes would leave the -wal behind, holding
+    # commits the .db file alone does not have.
+    from api.change_token import close_change_token_sentinels
+    close_change_token_sentinels()
     # Disarm any ranker retrain waiting out its idle window: starting a
     # multi-minute train as the process goes away helps nobody, and the pending
     # counter is persisted, so the comparisons survive to trigger the next one.
@@ -303,19 +327,10 @@ async def lifespan(app: FastAPI):
     if cancelled_retrains:
         logger.info("Cancelled %d armed ranker retrain(s) on shutdown", cancelled_retrains)
     # One-time WAL checkpoint on clean shutdown so the next start doesn't
-    # inherit a bloated -wal file. Best-effort: a failure here is logged but
-    # never blocks shutdown.
-    if wal_minutes > 0:
-        try:
-            from api.database import get_db_connection
-            conn = get_db_connection()
-            try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning("Final WAL checkpoint on shutdown failed", exc_info=True)
+    # inherit a bloated -wal file. Always runs: wal_checkpoint_minutes governs only
+    # the periodic thread above. Best-effort: a failure here is logged but never
+    # blocks shutdown.
+    _final_wal_checkpoint()
     # Shutdown: clean up plugin thread pool
     from plugins import get_plugin_manager
     _plugin_mgr = get_plugin_manager()

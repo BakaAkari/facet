@@ -8,6 +8,7 @@ from typing import Any, Callable
 import logging
 import re
 import sqlite3
+from contextlib import closing
 
 from db.connection import apply_pragmas, HAS_SQLITE_VEC
 from db.embedding_space import ARCFACE_MODEL
@@ -1073,7 +1074,8 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
             library lock, so it never builds under a running scan; the next start,
             or ``python database.py``, builds them.
     """
-    with sqlite3.connect(db_path) as conn:
+    # closing() closes the connection; the inner `conn` block keeps the commit on success.
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         apply_pragmas(conn)
 
         # Detect a brand-new DB before any CREATE runs, so the version ladder

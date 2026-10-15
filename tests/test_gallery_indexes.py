@@ -724,3 +724,22 @@ def test_build_photo_indexes_false_does_not_analyze(sparse_db):
     statements = _traced_init(sparse_db, build_photo_indexes=False)
     assert not any(s.startswith("ANALYZE") for s in statements)
     assert not (set(EXPECTED_REGISTRY) & _index_names(sparse_db))
+
+
+def test_init_database_closes_its_connection(tmp_path):
+    # `with sqlite3.connect(...)` only commits; a connection left open keeps the -wal file
+    # alive in the viewer process until the cyclic GC happens to run.
+    opened = []
+    real_connect = sqlite3.connect
+
+    def recording_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    with mock.patch.object(schema.sqlite3, "connect", recording_connect):
+        init_database(str(tmp_path / "closed.db"))
+    assert opened
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
