@@ -162,11 +162,11 @@ Optionaler Mehrbenutzermodus. Wenn der Schlüssel `users` vorhanden ist (mit min
 | `password_hash` | string | PBKDF2-HMAC-SHA256-Hash (`salt_hex:dk_hex`). Erzeugt durch das CLI `--add-user`. |
 | `display_name` | string | Wird in der UI-Kopfzeile angezeigt |
 | `role` | string | `user`, `admin` oder `superadmin` |
-| `directories` | array | Private Fotoverzeichnisse für diesen Benutzer |
+| `directories` | array | Private Fotoverzeichnisse für diesen Benutzer. Einträge werden mit den gespeicherten Pfaden verglichen, so wie der Scanner sie geschrieben hat: unter Windows und bei UNC- oder Laufwerksbuchstaben-Einträgen überall wird die ASCII-Groß-/Kleinschreibung ignoriert, unter Linux unterscheidet der Vergleich dagegen zwischen Groß- und Kleinschreibung (case-sensitive); jeden Eintrag so schreiben, wie der Scanner ihn gespeichert hat (bekannte Grenzen: Groß-/Kleinschreibung außerhalb von ASCII und ein zugeordnetes Laufwerk auf einem Host, der es nicht auflösen kann) |
 
 ### Geteilte Verzeichnisse
 
-Der Schlüssel `shared_directories` (Geschwisterelement der Benutzerobjekte) listet Verzeichnisse auf, die für alle Benutzer sichtbar sind.
+Der Schlüssel `shared_directories` (Geschwisterelement der Benutzerobjekte) listet Verzeichnisse auf, die für alle Benutzer sichtbar sind. Einträge in `directories` und `shared_directories` werden mit den gespeicherten Pfaden verglichen, so wie der Scanner sie geschrieben hat: unter Windows und bei UNC- oder Laufwerksbuchstaben-Einträgen überall wird die ASCII-Groß-/Kleinschreibung ignoriert, unter Linux unterscheidet der Vergleich dagegen zwischen Groß- und Kleinschreibung (case-sensitive); jeden Eintrag so schreiben, wie der Scanner ihn gespeichert hat (bekannte Grenzen: Groß-/Kleinschreibung außerhalb von ASCII und ein zugeordnetes Laufwerk auf einem Host, der es nicht auflösen kann).
 
 ### Rollen
 

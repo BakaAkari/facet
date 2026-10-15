@@ -89,6 +89,8 @@ Per scenari di NAS familiari in cui ogni membro ha directory di foto private. Si
 }
 ```
 
+Le voci di `directories` e `shared_directories` vengono confrontate con i percorsi memorizzati così come li ha scritti lo scanner: la distinzione tra maiuscole e minuscole ASCII è ignorata su Windows e per le voci UNC o con lettera di unità ovunque, ma su Linux il confronto distingue maiuscole e minuscole (case-sensitive); scrivi ogni voce come l'ha memorizzata lo scanner (limiti noti: differenze di maiuscole non ASCII e un'unità mappata su un host che non può risolverla).
+
 Gli utenti vengono creati solo tramite CLI (nessuna interfaccia di registrazione):
 
 ```bash

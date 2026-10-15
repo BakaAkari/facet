@@ -159,11 +159,11 @@ Mode multi-utilisateur optionnel. Lorsque la clé `users` est présente (avec au
 | `password_hash` | chaîne | Empreinte PBKDF2-HMAC-SHA256 (`salt_hex:dk_hex`). Générée par la commande `--add-user`. |
 | `display_name` | chaîne | Affiché dans l'en-tête de l'interface |
 | `role` | chaîne | `user`, `admin` ou `superadmin` |
-| `directories` | tableau | Répertoires photo privés de cet utilisateur |
+| `directories` | tableau | Répertoires photo privés de cet utilisateur. Les entrées sont comparées aux chemins stockés tels que le scanner les a écrits : la casse ASCII est ignorée sous Windows et pour les entrées UNC ou à lettre de lecteur partout, mais la comparaison est sensible à la casse (case-sensitive) sous Linux ; écrivez chaque entrée comme le scanner l'a stockée (limites connues : différences de casse hors ASCII et lecteur réseau mappé sur un hôte qui ne peut pas le résoudre) |
 
 ### Répertoires partagés
 
-La clé `shared_directories` (au même niveau que les objets utilisateur) liste les répertoires visibles par tous les utilisateurs.
+La clé `shared_directories` (au même niveau que les objets utilisateur) liste les répertoires visibles par tous les utilisateurs. Les entrées de `directories` et `shared_directories` sont comparées aux chemins stockés tels que le scanner les a écrits : la casse ASCII est ignorée sous Windows et pour les entrées UNC ou à lettre de lecteur partout, mais la comparaison est sensible à la casse (case-sensitive) sous Linux ; écrivez chaque entrée comme le scanner l'a stockée (limites connues : différences de casse hors ASCII et lecteur réseau mappé sur un hôte qui ne peut pas le résoudre).
 
 ### Rôles
 

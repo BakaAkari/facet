@@ -89,6 +89,8 @@ Pour les scénarios de NAS familial où chaque membre dispose de répertoires ph
 }
 ```
 
+Les entrées de `directories` et `shared_directories` sont comparées aux chemins stockés tels que le scanner les a écrits : la casse ASCII est ignorée sous Windows et pour les entrées UNC ou à lettre de lecteur partout, mais la comparaison est sensible à la casse (case-sensitive) sous Linux ; écrivez chaque entrée comme le scanner l'a stockée (limites connues : différences de casse hors ASCII et lecteur réseau mappé sur un hôte qui ne peut pas le résoudre).
+
 Les utilisateurs sont créés uniquement via la CLI (pas d'interface d'inscription) :
 
 ```bash

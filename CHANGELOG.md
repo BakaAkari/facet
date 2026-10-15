@@ -32,6 +32,12 @@ All notable changes to Facet are documented in this file.
 
 - **Docker images now include `jsonschema`, so config schema validation runs.** It was declared in `requirements.txt` and `pyproject.toml` but absent from both lock files, which are all the image installs, and `ScoringConfig.validate_schema` returns no errors when the import fails. Both locks now pin `jsonschema` 4.26.0 with `jsonschema-specifications`, `referencing` and `rpds-py`.
 
+- **Multi-user directory visibility on Windows.** A user's `directories` / `shared_directories` entries were matched with a forward-slash prefix against the backslash paths Windows stores, so a multi-user Windows install showed every user an empty library. Entries are now normalised to the form the scanner stores (separators, mapped drive to UNC, a `\\?\` prefix, a bare `D:`), and matched case-insensitively. Known limits: non-ASCII case differences (SQLite `LIKE` folds ASCII only) and a mapped-drive entry on a host that cannot resolve it.
+
+- **The config backup writer refuses a symlinked or swapped backup name on Windows too.** `O_NOFOLLOW` does not exist there, so a link planted at `scoring_config.json.backup` was followed and the complete config (password hashes, tokens, API keys) written through it. The writer now checks the destination's identity before and after the open, and no longer truncates before the check.
+
+- **Multi-user directory matching is case-sensitive on case-sensitive hosts.** `LIKE` folded ASCII case, so a user scoped to `/mnt/photos` also saw `/mnt/Photos/...`, another user's photos. On Linux a user whose configured directory differs in case from the stored paths therefore **loses those photos, and that is correct**: fix the configured spelling. Windows and macOS keep case-insensitive matching.
+
 ### Removed
 
 - **`GET /api/stats/categories/metrics`.** It had no consumer (the Weights tab uses `/correlations`, the Priority tab `/overlap`). A client that called it must compute from `/api/photos`; the sibling `/api/stats/categories/*` routes are unchanged, and the generated client types lose the route.

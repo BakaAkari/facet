@@ -157,11 +157,11 @@ Modalità multiutente opzionale. Quando la chiave `users` è presente (con almen
 | `password_hash` | string | Hash PBKDF2-HMAC-SHA256 (`salt_hex:dk_hex`). Generato dalla CLI `--add-user`. |
 | `display_name` | string | Mostrato nell'intestazione dell'interfaccia |
 | `role` | string | `user`, `admin` o `superadmin` |
-| `directories` | array | Directory di foto private per questo utente |
+| `directories` | array | Directory di foto private per questo utente. Le voci vengono confrontate con i percorsi memorizzati così come li ha scritti lo scanner: la distinzione tra maiuscole e minuscole ASCII è ignorata su Windows e per le voci UNC o con lettera di unità ovunque, ma su Linux il confronto distingue maiuscole e minuscole (case-sensitive); scrivi ogni voce come l'ha memorizzata lo scanner (limiti noti: differenze di maiuscole non ASCII e un'unità mappata su un host che non può risolverla) |
 
 ### Directory condivise
 
-La chiave `shared_directories` (allo stesso livello degli oggetti utente) elenca le directory visibili a tutti gli utenti.
+La chiave `shared_directories` (allo stesso livello degli oggetti utente) elenca le directory visibili a tutti gli utenti. Le voci di `directories` e `shared_directories` vengono confrontate con i percorsi memorizzati così come li ha scritti lo scanner: la distinzione tra maiuscole e minuscole ASCII è ignorata su Windows e per le voci UNC o con lettera di unità ovunque, ma su Linux il confronto distingue maiuscole e minuscole (case-sensitive); scrivi ogni voce come l'ha memorizzata lo scanner (limiti noti: differenze di maiuscole non ASCII e un'unità mappata su un host che non può risolverla).
 
 ### Ruoli
 
