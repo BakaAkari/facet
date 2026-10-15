@@ -732,7 +732,7 @@ Configurações unificadas de processamento para o processamento em lote na GPU 
 
 | Configuração | Padrão | Descrição |
 |--------------|--------|-----------|
-| `mode` | `"auto"` | Modo de processamento: `auto`, `multi-pass`, `single-pass` |
+| `mode` | `"auto"` | Modo de processamento: `auto`, `multi-pass`, `single-pass`. Somente `single-pass` seleciona a passagem única; `auto` sempre executa múltiplas passagens |
 | `gpu_batch_size` | `16` | Imagens por lote de GPU (limitado pela VRAM) |
 | `ram_chunk_size` | `32` | Imagens por bloco de RAM (múltiplas passagens) |
 | `num_workers` | `4` | Threads de carregamento de imagens |
@@ -762,9 +762,9 @@ Configurações unificadas de processamento para o processamento em lote na GPU 
 
 | Modo | Descrição |
 |------|-----------|
-| `auto` | Seleciona automaticamente múltiplas passagens ou passagem única com base na VRAM |
+| `auto` | Sempre executa múltiplas passagens (o padrão); somente `single-pass` seleciona a passagem única |
 | `multi-pass` | Carregamento sequencial de modelos (funciona com VRAM limitada) |
-| `single-pass` | Todos os modelos carregados de uma vez (requer VRAM alta) |
+| `single-pass` | Todos os modelos carregados de uma vez (requer VRAM alta). Precisa da cabeça de estética CLIP+MLP, portanto se aplica aos perfis `legacy`/`8gb`; em `16gb`/`24gb` (estética com TOPIQ), fora do modo comercial, registra um aviso e executa múltiplas passagens |
 
 ### Como Funcionam as Múltiplas Passagens
 
@@ -814,7 +814,7 @@ Medido em 49 fotos com um limite rígido de 11,7 GiB no PyTorch, no ONNX Runtime
 # Padrão: múltiplas passagens automáticas com agrupamento ideal
 python facet.py /path/to/photos
 
-# Força passagem única (todos os modelos carregados de uma vez)
+# Força passagem única (todos os modelos carregados de uma vez; somente perfis legacy/8gb, em 16gb/24gb avisa e executa múltiplas passagens)
 python facet.py /path --single-pass
 
 # Executa apenas uma passagem específica

@@ -34,6 +34,6 @@ Copy-and-paste-Blöcken ab.
 |-------|--------|
 | Welches Profil soll ich verwenden? | [Installation › Welches Profil passt zu meiner Hardware?](INSTALLATION.md#welches-profil-passt-zu-meiner-hardware) |
 | "externally-managed-environment" bei der Installation | Eine virtuelle Umgebung verwenden (oder Docker) — siehe [Installation](INSTALLATION.md) |
-| Langsame Verarbeitung | Das Profil prüfen; `--single-pass` hilft bei GPUs mit viel VRAM |
+| Langsame Verarbeitung | Das Profil prüfen; `--single-pass` kann bei den Profilen `legacy`/`8gb` mit viel VRAM helfen (`16gb`/`24gb` laufen immer als Multi-Pass) |
 | Gesichtserkennung nutzt die GPU nicht | `onnxruntime-gpu` installieren — siehe [Installation › ONNX Runtime für die Gesichtserkennung](INSTALLATION.md#onnx-runtime-für-die-gesichtserkennung) |
 | Fehlendes exiftool | Optional — siehe [Installation › exiftool](INSTALLATION.md#exiftool) |

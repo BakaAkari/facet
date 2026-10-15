@@ -735,7 +735,7 @@ Ajustes de procesamiento unificados para el procesamiento por lotes en GPU y el 
 
 | Ajuste | Por defecto | Descripción |
 |---------|---------|-------------|
-| `mode` | `"auto"` | Modo de procesamiento: `auto`, `multi-pass`, `single-pass` |
+| `mode` | `"auto"` | Modo de procesamiento: `auto`, `multi-pass`, `single-pass`. Solo `single-pass` selecciona el modo de un solo paso; `auto` siempre ejecuta multipaso |
 | `gpu_batch_size` | `16` | Imágenes por lote de GPU (limitado por la VRAM) |
 | `ram_chunk_size` | `32` | Imágenes por fragmento de RAM (multipase) |
 | `num_workers` | `4` | Hilos de carga de imágenes |
@@ -765,9 +765,9 @@ Ajustes de procesamiento unificados para el procesamiento por lotes en GPU y el 
 
 | Modo | Descripción |
 |------|-------------|
-| `auto` | Selecciona automáticamente multipase o monopase según la VRAM |
+| `auto` | Siempre ejecuta multipaso (el valor por defecto); solo `single-pass` selecciona un solo paso |
 | `multi-pass` | Carga secuencial de modelos (funciona con VRAM limitada) |
-| `single-pass` | Todos los modelos cargados a la vez (requiere mucha VRAM) |
+| `single-pass` | Todos los modelos cargados a la vez (requiere mucha VRAM). Necesita el cabezal de estética CLIP+MLP, así que se aplica a los perfiles `legacy`/`8gb`; en `16gb`/`24gb` (estética con TOPIQ), fuera del modo comercial, registra una advertencia y ejecuta multipaso |
 
 ### Cómo funciona el modo multipase
 
@@ -817,7 +817,7 @@ Medido en una ejecución de 49 fotos con un límite estricto de 11,7 GiB en PyTo
 # Por defecto: multipase automático con agrupación óptima
 python facet.py /path/to/photos
 
-# Forzar monopase (todos los modelos cargados a la vez)
+# Forzar monopase (todos los modelos cargados a la vez; solo perfiles legacy/8gb, en 16gb/24gb avisa y ejecuta multipaso)
 python facet.py /path --single-pass
 
 # Ejecutar solo un pase concreto

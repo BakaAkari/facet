@@ -567,7 +567,7 @@ caches and the Hugging Face API.
 | SigLIP 2 NaFlex SO400M (embeddings) | 4.581 GB | `16gb`/`24gb` |
 | Qwen3.5-2B (VLM tagging) | 4.571 GB | `16gb` |
 | Qwen3.5-4B (VLM tagging) | 9.343 GB | `24gb` |
-| Qwen2-VL-2B (composition) | 4.430 GB | none by default — only if you manually set `composition_model: "qwen2-vl-2b"` **and** `processing.mode: "single-pass"` |
+| Qwen2-VL-2B (composition) | 4.430 GB | none by default — only if you manually set `composition_model: "qwen2-vl-2b"` **and** `processing.mode: "single-pass"` (outside commercial mode the combination works only on `legacy`/`8gb`: on `16gb`/`24gb` single-pass falls back to multi-pass, which has no Qwen2-VL pass) |
 | InsightFace buffalo_l (faces) | 289 MB download / 630 MB on disk (the zip is kept alongside the extracted `.onnx` files) | all |
 | SAMP-Net weights (composition) | 183 MB | all |
 | U2-Net-P (SAMP-Net's saliency sub-model) | 4.7 MB | same as SAMP-Net |
@@ -582,7 +582,7 @@ caches and the Hugging Face API.
 Totals per profile (download): `legacy` 4.69 GB · `8gb` 6.93 GB · `16gb` 14.55 GB ·
 `24gb` 19.32 GB · `24gb` with `composition_model: "qwen2-vl-2b"` and
 `processing.mode: "single-pass"` 23.56 GB (the manual override replaces SAMP-Net/U2-Net-P
-rather than adding to them).
+rather than adding to them; outside commercial mode single-pass falls back to multi-pass on `24gb`, where Qwen2-VL has no pass, so this total is no longer reachable there).
 
 For reference, the Docker image itself (before any model downloads) is `latest` at
 3.34 GB unpacked, `latest-cuda` at 13.1 GB and `latest-cuda-legacy` at 13.8 GB — see

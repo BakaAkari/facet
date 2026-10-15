@@ -4,6 +4,36 @@ All notable changes to Facet are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`python facet.py --repair-neutral-iqa`.** Versions before 1.20 stored a neutral 5.0 in `aesthetic_iaa`, `face_quality_iqa` and `liqe_score` for a photo a model could not score. The flag sets every value exactly equal to 5.0 in those three columns to NULL in one transaction (all or nothing), drops the cached gallery metric ranges, and prints the count per column; then run `--recompute-iqa` to refill them and `--recompute-average`. Aggregates do not move from the repair itself, because the aggregate scores a NULL as neutral. It touches no other column: `aesthetic`, `topiq_score`, `aesthetic_v25` and `quality_score` keep their values, because a genuine 5.00 cannot be told from the fake there and `aesthetic` is also the CLIP+MLP column on `legacy`/`8gb`, so a pre-1.20 fake 5.0 in `topiq_score` or `aesthetic` is not repaired by this flag. A genuine score that rounds to exactly 5.00 is cleared too and comes back with the same value. Database-only (no image decode), refused with `--dry-run` (exit code 2), and in no `--upgrade-db` chain. See [docs/COMMANDS.md](docs/COMMANDS.md).
+
+- **An `iqa_declined` side table.** It remembers that TOPIQ NR-Face declined a photo ("No face detected" in the thumbnail, although InsightFace found a face in the full image), so `--recompute-iqa` stops re-attempting it. A row is valid only while its `scan_fingerprint` equals the photo's current `scanned_at || '|' || length(thumbnail)`: a rescan that rewrites the photo invalidates it, and `--refresh-thumbnails` and `--fix-thumbnail-rotation` delete it. The table is created by `init_database`; no migration step is needed.
+
+### Changed
+
+- **`--single-pass` on a `16gb` or `24gb` profile now runs multi-pass.** Those profiles score aesthetics with TOPIQ, which only the multi-pass scan runs, so a single-pass request (`--single-pass`, or `processing.mode: "single-pass"` in the config) outside commercial mode logs a WARNING and falls back to multi-pass instead of refusing, so a shared config cannot brick a scan on a 16 GB card. `--pass NAME` and `--dry-run` skip that check, commercial mode keeps single-pass (native Q-ReAlign scores the aesthetic there), and `scan_runs.mode` now records `single-pass` for a config-driven single-pass scan instead of `multi-pass`. The combination of `composition_model: "qwen2-vl-2b"` with `processing.mode: "single-pass"` therefore works outside commercial mode only on `legacy`/`8gb`, and the composition warning no longer suggests it on `16gb`/`24gb`. See [docs/COMMANDS.md](docs/COMMANDS.md) and [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+- **`--dry-run` prints the aesthetic as `n/a` on `16gb` and `24gb`.** The single-image scorer has no TOPIQ there, so it returns no aesthetic instead of a neutral 5.0 labelled `clip-mlp`; the aggregate is unchanged (a NULL scores neutral, the value the old code fabricated).
+
+- **`--recompute-iqa` stops re-attempting photos a model cannot score.** A thumbnail whose short side is under 224 px after the 1024 px long-edge bound is skipped for LIQE before any decode (read from the image header) and counted in the summary; nothing is stored. A photo TOPIQ NR-Face declined is recorded in `iqa_declined` and not retried until the photo is rescanned. An out-of-memory or unexpected failure is still retried by the next run, and `--recompute-iqa` still never replaces a stored value. See [docs/COMMANDS.md](docs/COMMANDS.md#supplementary-quality-models) and [docs/SCORING.md](docs/SCORING.md#supplementary-iqa-dimensions).
+
+### Fixed
+
+- **A single-pass scan on a `16gb` or `24gb` profile no longer stores a neutral 5.0 aesthetic for every photo.** With no CLIP+MLP head loaded and single-pass never running TOPIQ, every photo used to be saved with `aesthetic = 5.0` and `scoring_model = 'topiq'`. Besides the fallback above, the batch scorer now raises when no aesthetic head is loaded outside commercial mode, so the photos of the batch are recorded in `scan_failures` and not saved. **Upgrade note:** to find rows an earlier version already stored, run `SELECT path FROM photos WHERE scoring_model = 'topiq' AND aesthetic = 5.0 AND topiq_score IS NULL` (a multi-pass scan always writes `topiq_score`). There is no repair command, because TOPIQ needs the image: re-scan the affected folders with `--force` in multi-pass.
+
+- **`GET /api/albums/{id}/photos?sort=top_picks_score` and the shared-album route no longer answer 500.** The sort selects the computed `top_picks_score` alias for smart and regular albums alike, and each returned photo carries `top_picks_score`, as in the gallery.
+
+- **`scan_runs.failed_files` counted a repeated failure twice.** A path that fails more than once in one run now keeps one `scan_failures` row (first stage kept, the errors joined with ` | `, bounded to 2000 characters), and `failed_files` equals the number of distinct failed paths however the failures straddle a flush.
+
+- **`scan_failures.stage` was `load` for every single-pass failure.** A batch inference failure or a post-processing failure is now recorded with stage `score`; a loader failure stays `load`. The multi-pass processor is unchanged.
+
+- **The configuration reference said `processing.mode: "auto"` selects multi-pass or single-pass by VRAM.** `auto` always runs multi-pass; only `single-pass` selects single-pass. [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and its translations now say so.
+
+### Removed
+
+- **`GET /api/stats/categories/metrics`.** It had no consumer (the Weights tab uses `/correlations`, the Priority tab `/overlap`). A client that called it must compute from `/api/photos`; the sibling `/api/stats/categories/*` routes are unchanged, and the generated client types lose the route.
+
 ## [1.20.0] "Épreuve" — 2026-10-15
 
 ### Added

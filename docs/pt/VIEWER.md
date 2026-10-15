@@ -1228,7 +1228,6 @@ Os tipos TypeScript do cliente são gerados a partir desse esquema em `client/sr
 | `GET /api/stats/categories/breakdown` | Contagens de fotos por categoria e distribuições de pontuação |
 | `GET /api/stats/categories/weights` | Pesos e modificadores de categoria da configuração |
 | `GET /api/stats/categories/correlations` | Correlação r de Pearson por dimensão por categoria |
-| `GET /api/stats/categories/metrics?category=X` | Valores brutos de métricas para prévia no cliente |
 | `GET /api/stats/categories/overlap` | Análise de sobreposição de filtros entre categorias |
 | `POST /api/stats/categories/update` | Atualiza pesos/modificadores de categoria (modo de edição) |
 | `POST /api/stats/categories/recompute` | Recalcula as pontuações de uma categoria (modo de edição) |

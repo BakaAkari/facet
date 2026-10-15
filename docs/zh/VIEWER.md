@@ -1292,7 +1292,6 @@ python database.py --stats-info
 | `GET /api/stats/categories/breakdown` | 每个类别的照片数量与评分分布 |
 | `GET /api/stats/categories/weights` | 来自配置的类别权重与修正项 |
 | `GET /api/stats/categories/correlations` | 每个类别中每个维度的皮尔逊相关系数 |
-| `GET /api/stats/categories/metrics?category=X` | 供客户端预览用的原始指标数值 |
 | `GET /api/stats/categories/overlap` | 类别之间的筛选条件重叠分析 |
 | `POST /api/stats/categories/update` | 更新类别权重／修正项（编辑模式） |
 | `POST /api/stats/categories/recompute` | 为某个类别重新计算评分（编辑模式） |

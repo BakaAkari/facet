@@ -735,7 +735,7 @@ Réglages de traitement unifiés pour le traitement par lots GPU et le mode mult
 
 | Réglage | Défaut | Description |
 |---------|--------|-------------|
-| `mode` | `"auto"` | Mode de traitement : `auto`, `multi-pass`, `single-pass` |
+| `mode` | `"auto"` | Mode de traitement : `auto`, `multi-pass`, `single-pass`. Seul `single-pass` sélectionne le single-pass ; `auto` exécute toujours le multi-pass |
 | `gpu_batch_size` | `16` | Images par lot GPU (limité par la VRAM) |
 | `ram_chunk_size` | `32` | Images par bloc RAM (multi-pass) |
 | `num_workers` | `4` | Threads de chargement d'images |
@@ -765,9 +765,9 @@ Réglages de traitement unifiés pour le traitement par lots GPU et le mode mult
 
 | Mode | Description |
 |------|-------------|
-| `auto` | Sélectionne automatiquement multi-pass ou single-pass selon la VRAM |
+| `auto` | Exécute toujours le multi-pass (valeur par défaut) ; seul `single-pass` sélectionne le single-pass |
 | `multi-pass` | Chargement séquentiel des modèles (fonctionne avec une VRAM limitée) |
-| `single-pass` | Tous les modèles chargés en même temps (nécessite une VRAM élevée) |
+| `single-pass` | Tous les modèles chargés en même temps (nécessite une VRAM élevée). Nécessite la tête d'esthétique CLIP+MLP, il s'applique donc aux profils `legacy`/`8gb` ; sur `16gb`/`24gb` (esthétique TOPIQ), hors mode commercial, il journalise un avertissement et exécute le multi-pass |
 
 ### Fonctionnement du multi-pass
 
@@ -817,7 +817,7 @@ Mesuré sur 49 photos avec un plafond strict de 11,7 GiB sur PyTorch, ONNX Runti
 # Par défaut : multi-pass automatique avec regroupement optimal
 python facet.py /path/to/photos
 
-# Forcer le single-pass (tous les modèles chargés en même temps)
+# Forcer le single-pass (tous les modèles chargés en même temps ; profils legacy/8gb seulement, avertissement et multi-pass sur 16gb/24gb)
 python facet.py /path --single-pass
 
 # Exécuter une passe spécifique uniquement

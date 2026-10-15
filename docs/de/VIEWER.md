@@ -1227,7 +1227,6 @@ Die TypeScript-Typen des Clients werden mit `cd client && npm run gen:api` aus d
 | `GET /api/stats/categories/breakdown` | Fotoanzahlen pro Kategorie und Wertungsverteilungen |
 | `GET /api/stats/categories/weights` | Kategoriegewichte und -modifikatoren aus der Konfiguration |
 | `GET /api/stats/categories/correlations` | Pearson-r-Korrelation pro Dimension pro Kategorie |
-| `GET /api/stats/categories/metrics?category=X` | Rohe Metrikwerte für die clientseitige Vorschau |
 | `GET /api/stats/categories/overlap` | Filterüberschneidungsanalyse zwischen Kategorien |
 | `POST /api/stats/categories/update` | Kategoriegewichte/-modifikatoren aktualisieren (Bearbeitungsmodus) |
 | `POST /api/stats/categories/recompute` | Wertungen für eine Kategorie neu berechnen (Bearbeitungsmodus) |

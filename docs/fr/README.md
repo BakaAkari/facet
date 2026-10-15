@@ -34,6 +34,6 @@ copier-coller.
 |-------|--------|
 | Quel profil dois-je utiliser ? | [Installation › Quel profil correspond à mon matériel ?](INSTALLATION.md#quel-profil-correspond-à-mon-matériel) |
 | « externally-managed-environment » à l'installation | Utilisez un environnement virtuel (ou Docker) — voir [Installation](INSTALLATION.md) |
-| Traitement lent | Vérifiez le profil ; `--single-pass` aide sur les GPU à forte VRAM |
+| Traitement lent | Vérifiez le profil ; `--single-pass` peut aider sur les profils `legacy`/`8gb` avec beaucoup de VRAM (`16gb`/`24gb` exécutent toujours le multi-pass) |
 | La détection de visages n'utilise pas le GPU | Installez `onnxruntime-gpu` — voir [Installation](INSTALLATION.md#onnx-runtime-pour-la-détection-de-visages) |
 | exiftool manquant | Optionnel — voir [Installation › exiftool](INSTALLATION.md#exiftool) |

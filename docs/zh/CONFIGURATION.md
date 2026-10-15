@@ -720,7 +720,7 @@ SRCC = 在 KonIQ-10k 基准上的斯皮尔曼等级相关系数（1.0 = 完美�
 
 | 设置 | 默认值 | 说明 |
 |---------|---------|-------------|
-| `mode` | `"auto"` | 处理模式：`auto`、`multi-pass`、`single-pass` |
+| `mode` | `"auto"` | 处理模式：`auto`、`multi-pass`、`single-pass`。只有 `single-pass` 会选择单遍；`auto` 始终以多遍运行 |
 | `gpu_batch_size` | `16` | 每个 GPU 批次的图片数（受显存限制） |
 | `ram_chunk_size` | `32` | 每个内存分块的图片数（多遍模式） |
 | `num_workers` | `4` | 图片加载线程数 |
@@ -750,9 +750,9 @@ SRCC = 在 KonIQ-10k 基准上的斯皮尔曼等级相关系数（1.0 = 完美�
 
 | 模式 | 说明 |
 |------|-------------|
-| `auto` | 依据显存自动选择多遍或单遍 |
+| `auto` | 始终以多遍运行（默认）；只有 `single-pass` 会选择单遍 |
 | `multi-pass` | 顺序加载模型（显存有限时可用） |
-| `single-pass` | 一次加载全部模型（需要大显存） |
+| `single-pass` | 一次加载全部模型（需要大显存）。需要 CLIP+MLP 美学评分头，因此适用于 `legacy`/`8gb` 配置档；在 `16gb`/`24gb`（美学使用 TOPIQ）上，非商业模式下会记录警告并以多遍运行 |
 
 ### 多遍处理的工作方式
 
@@ -802,7 +802,7 @@ SRCC = 在 KonIQ-10k 基准上的斯皮尔曼等级相关系数（1.0 = 完美�
 # 默认：自动多遍，并采用最优分组
 python facet.py /path/to/photos
 
-# 强制单遍（一次加载全部模型）
+# 强制单遍（一次加载全部模型；仅限 legacy/8gb 配置档，16gb/24gb 会警告并以多遍运行）
 python facet.py /path --single-pass
 
 # 只运行指定的遍次
