@@ -87,6 +87,30 @@ def available_sort_options():
 # alternate sort; NULL when the ranker hasn't been trained).
 VALID_SORT_COLS = [opt[0] for opt in SORT_OPTIONS] + ['top_picks_score', 'learned_score']
 
+# Sort columns that can be NULL: learned_score / narrative_moment_confidence when
+# untrained / unlabelled, and the supplementary IQA scores, where a photo the model
+# could not score stores NULL, never 5.0.
+NULLABLE_SORT_COLS = ('learned_score', 'narrative_moment_confidence', 'aesthetic_iaa',
+                      'liqe_score', 'face_quality_iqa', 'aesthetic_v25')
+
+
+def order_by_clause(sort_col: str, sort_dir: str, tiebreak: str = '') -> str:
+    """Build an ORDER BY body for ``sort_col`` / ``sort_dir`` that sinks NULLs.
+
+    ``sort_col`` and ``sort_dir`` ('ASC' or 'DESC') must already be validated by the
+    caller; ``tiebreak`` is appended verbatim (e.g. ``'path ASC'``).
+
+    In DESC, SQLite already orders NULLs last, so the ``(col IS NULL)`` guard is
+    omitted -- that lets a ``(... col DESC, path)`` index satisfy the sort with no
+    temp B-tree (the default, common direction). In ASC the explicit guard stays,
+    since NULLs would otherwise sort first. A column outside ``NULLABLE_SORT_COLS``
+    (including a computed expression such as the top-picks score) is never guarded.
+    """
+    tail = f", {tiebreak}" if tiebreak else ""
+    if sort_col in NULLABLE_SORT_COLS and sort_dir == 'ASC':
+        return f"({sort_col} IS NULL) ASC, {sort_col} ASC{tail}"
+    return f"{sort_col} {sort_dir}{tail}"
+
 
 # --- SEMANTIC FILTER MAPPINGS ---
 def _build_quality_levels():

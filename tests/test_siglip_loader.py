@@ -69,8 +69,11 @@ SIGLIP_DIRECT_LOAD_ALLOW_LIST = [
 
 
 def test_all_siglip_sites_use_helper():
-    """No file in the repo loads a transformers model directly, bar the allow-list.
+    """No file in the repo calls the literal ``AutoModel.from_pretrained``, bar the allow-list.
 
+    The grep matches only that exact string: it does not see other loader classes
+    (``AutoModelForX``, ``Qwen2VLForConditionalGeneration``, aliases), which is
+    enough for its purpose, keeping SigLIP on ``utils.siglip.load_siglip_model``.
     ``tests/`` is excluded (this file and ``test_tagging.py`` contain the
     string); ``conda/`` is excluded because it is untracked and ``--untracked``
     would otherwise scan the whole local environment.

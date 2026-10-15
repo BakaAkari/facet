@@ -153,7 +153,7 @@ python database.py --migrate-user-preferences --user alice
 | **Contenuto** | Tag, interruttore monocromatico |
 | **Momenti** | Confidenza del momento narrativo (cursore di intervallo 0–1: `min_moment_confidence` / `max_moment_confidence`) |
 
-I filtri di intervallo su Estetica IAA, Qualità volto IQA, LIQE e Aesthetic V2.5 includono solo le foto che hanno un punteggio. Una foto che un modello non ha potuto valutare viene memorizzata come NULL (prima portava un 5,0 neutro), quindi anche un filtro che parte da 0 la esclude, e un ordinamento crescente per Estetica (IAA), Qualità volto (IQA) o LIQE la mette in fondo. Vedi [Dimensioni IQA supplementari](SCORING.md#dimensioni-iqa-supplementari).
+I filtri di intervallo su Estetica IAA, Qualità volto IQA, LIQE e Aesthetic V2.5 includono solo le foto che hanno un punteggio. Una foto che un modello non ha potuto valutare viene memorizzata come NULL (prima portava un 5,0 neutro), quindi anche un filtro che parte da 0 la esclude, e un ordinamento crescente per Estetica (IAA), Qualità volto (IQA) o LIQE la mette in fondo, nella galleria e negli album (smart e condivisi compresi). Vedi [Dimensioni IQA supplementari](SCORING.md#dimensioni-iqa-supplementari).
 
 ### Modelli compositivi
 

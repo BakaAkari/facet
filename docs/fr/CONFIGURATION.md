@@ -809,7 +809,7 @@ Les lignes 8 Go, 12 Go, 16 Go et 24 Go sont la sortie du planificateur de passes
 
 \* La ligne 12 Go est le plan pour une carte annonçant 11,7 GiB. Une carte de 12 Go qui annonce 11,8 GiB ou plus (par exemple 11,99 GiB) planifie à la place trois passes : tagger Qwen3.5 + Q-ReAlign ; SigLIP + saillance + TOPIQ ; TOPIQ IAA + TOPIQ NR-Face + LIQE + SAMP-Net + InsightFace.
 
-Mesuré sur 49 photos avec un plafond strict de 11,7 Gio sur PyTorch, ONNX Runtime et la lecture de la VRAM libre (RTX 4070 Ti SUPER) : le plan en quatre passes s'est terminé sans aucune erreur de mémoire insuffisante, avec un pic de VRAM de 9,74 Gio pour toute la carte, bureau compris (passe la plus lourde : SigLIP + saillance + TOPIQ IAA), une taille de lot de saillance de 2 et 246 s de durée ; les tags, les embeddings de 1152 dimensions, les cadres du sujet (44/44) et les visages sont identiques à ceux d'une exécution sans plafond.
+Mesuré sur 49 photos avec un plafond strict de 11,7 GiB sur PyTorch, ONNX Runtime et la lecture de la VRAM libre (RTX 4070 Ti SUPER) : le plan en quatre passes s'est terminé sans aucune erreur de mémoire insuffisante, avec un pic de VRAM de 9,74 GiB pour toute la carte, bureau compris (passe la plus lourde : SigLIP + saillance + TOPIQ IAA), une taille de lot de saillance de 2 et 246 s de durée ; les tags, les embeddings de 1152 dimensions, les cadres du sujet (44/44) et les visages sont identiques à ceux d'une exécution sans plafond.
 
 ### Options en ligne de commande
 

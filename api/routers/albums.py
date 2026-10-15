@@ -25,7 +25,7 @@ from api.db_helpers import (
     is_access_controlled_install, resolve_hide_defaults,
 )
 from api.models.albums import AlbumPhotosResponse, SharedAlbumResponse
-from api.types import VALID_SORT_COLS, available_sort_options, normalize_params
+from api.types import VALID_SORT_COLS, available_sort_options, normalize_params, order_by_clause
 
 router = APIRouter(tags=["albums"])
 logger = logging.getLogger(__name__)
@@ -169,7 +169,7 @@ async def _fetch_album_photos(conn, album_row, user_id, page, per_page, sort_col
         safe_sort = sort_col if sort_col in VALID_SORT_COLS else 'aggregate'
         cur = await conn.execute(
             f"SELECT {', '.join(select_cols)} FROM {from_clause}{where_str} "
-            f"ORDER BY {safe_sort} {sort_dir} LIMIT ? OFFSET ?",
+            f"ORDER BY {order_by_clause(safe_sort, sort_dir)} LIMIT ? OFFSET ?",
             all_params + [per_page, (page - 1) * per_page]
         )
         rows = await cur.fetchall()
@@ -210,7 +210,7 @@ async def _fetch_album_photos(conn, album_row, user_id, page, per_page, sort_col
             f"SELECT {', '.join(select_cols)} FROM album_photos ap "
             f"JOIN {from_clause} ON photos.path = ap.photo_path "
             f"WHERE {where_str} "
-            f"ORDER BY {safe_sort} {sort_dir} LIMIT ? OFFSET ?",
+            f"ORDER BY {order_by_clause(safe_sort, sort_dir)} LIMIT ? OFFSET ?",
             from_params + base_params + [per_page, (page - 1) * per_page]
         )
         rows = await cur.fetchall()
@@ -386,7 +386,7 @@ def _compute_smart_album_cover(conn, album_row, user_id=None):
             sort_col = f"({get_top_picks_score_sql()})"
         sort_dir = 'ASC' if saved_filters.get('sort_direction') == 'ASC' else 'DESC'
         row = conn.execute(
-            f"SELECT path FROM {from_clause}{where_str} ORDER BY {sort_col} {sort_dir}, path ASC LIMIT 1",
+            f"SELECT path FROM {from_clause}{where_str} ORDER BY {order_by_clause(sort_col, sort_dir, 'path ASC')} LIMIT 1",
             all_params
         ).fetchone()
         return row['path'] if row else None

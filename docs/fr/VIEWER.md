@@ -153,7 +153,7 @@ python database.py --migrate-user-preferences --user alice
 | **Contenu** | Tags, bascule monochrome |
 | **Moments** | Confiance du moment narratif (curseur de plage 0–1 : `min_moment_confidence` / `max_moment_confidence`) |
 
-Les filtres de plage sur Esthétique IAA, Qualité du visage IQA, LIQE et Aesthetic V2.5 ne retiennent que les photos qui ont un score. Une photo qu'un modèle n'a pas pu noter est stockée comme NULL (elle portait auparavant un 5,0 neutre) : même un filtre qui commence à 0 l'exclut, et un tri croissant sur Esthétique (IAA), Qualité du visage (IQA) ou LIQE la place en dernier. Voir [Dimensions IQA supplémentaires](SCORING.md#dimensions-iqa-supplémentaires).
+Les filtres de plage sur Esthétique IAA, Qualité du visage IQA, LIQE et Aesthetic V2.5 ne retiennent que les photos qui ont un score. Une photo qu'un modèle n'a pas pu noter est stockée comme NULL (elle portait auparavant un 5,0 neutre) : même un filtre qui commence à 0 l'exclut, et un tri croissant sur Esthétique (IAA), Qualité du visage (IQA) ou LIQE la place en dernier, dans la galerie comme dans les albums (intelligents et partagés compris). Voir [Dimensions IQA supplémentaires](SCORING.md#dimensions-iqa-supplémentaires).
 
 ### Motifs de composition
 

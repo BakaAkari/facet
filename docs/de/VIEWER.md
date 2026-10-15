@@ -153,7 +153,7 @@ python database.py --migrate-user-preferences --user alice
 | **Inhalt** | Tags, Monochrom-Umschalter |
 | **Momente** | Narrative-Moment-Konfidenz (0–1-Bereichsregler: `min_moment_confidence` / `max_moment_confidence`) |
 
-Bereichsfilter auf Ästhetik IAA, Gesichtsqualität IQA, LIQE und Aesthetic V2.5 treffen nur auf Fotos mit einem Wert zu. Ein Foto, das ein Modell nicht bewerten konnte, wird als NULL gespeichert (früher trug es eine neutrale 5,0) und daher selbst von einem Filter, der bei 0 beginnt, ausgeschlossen; eine aufsteigende Sortierung nach Ästhetik (IAA), Gesichtsqualität (IQA) oder LIQE stellt es ans Ende. Siehe [Ergänzende IQA-Dimensionen](SCORING.md#ergänzende-iqa-dimensionen).
+Bereichsfilter auf Ästhetik IAA, Gesichtsqualität IQA, LIQE und Aesthetic V2.5 treffen nur auf Fotos mit einem Wert zu. Ein Foto, das ein Modell nicht bewerten konnte, wird als NULL gespeichert (früher trug es eine neutrale 5,0) und daher selbst von einem Filter, der bei 0 beginnt, ausgeschlossen; eine aufsteigende Sortierung nach Ästhetik (IAA), Gesichtsqualität (IQA) oder LIQE stellt es in der Galerie und in Alben (auch intelligenten und geteilten) ans Ende. Siehe [Ergänzende IQA-Dimensionen](SCORING.md#ergänzende-iqa-dimensionen).
 
 ### Kompositionsmuster
 
