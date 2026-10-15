@@ -610,6 +610,12 @@ class TestAgainstThisHost:
         assert system_memory.effective_memory().total == psutil.virtual_memory().total
 
 
+_NEEDS_SYSCONF = pytest.mark.skipif(
+    not hasattr(os, 'sysconf'),
+    reason='os.sysconf is POSIX-only; psutil is the reader on Windows',
+)
+
+
 class TestSysconfTotalBytesItself:
     """The sysconf reader's own behaviour, not a stand-in for it.
 
@@ -620,12 +626,14 @@ class TestSysconfTotalBytesItself:
     would have gone unnoticed.
     """
 
+    @_NEEDS_SYSCONF
     def test_it_reports_this_machines_real_physical_ram(self):
         total = system_memory._sysconf_total_bytes()
 
         assert total is not None
         assert total == os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
 
+    @_NEEDS_SYSCONF
     def test_it_agrees_with_psutil_to_within_a_page(self):
         psutil = pytest.importorskip('psutil')
 
@@ -641,14 +649,14 @@ class TestSysconfTotalBytesItself:
         def raising(_name):
             raise failure
 
-        monkeypatch.setattr(system_memory.os, 'sysconf', raising)
+        monkeypatch.setattr(system_memory.os, 'sysconf', raising, raising=False)
 
         assert system_memory._sysconf_total_bytes() is None
 
     @pytest.mark.parametrize('page_size,page_count', [(0, 100), (4096, 0), (-1, 100), (4096, -1)])
     def test_a_nonsense_reading_is_no_reading(self, monkeypatch, page_size, page_count):
         sizes = {'SC_PAGE_SIZE': page_size, 'SC_PHYS_PAGES': page_count}
-        monkeypatch.setattr(system_memory.os, 'sysconf', lambda name: sizes[name])
+        monkeypatch.setattr(system_memory.os, 'sysconf', lambda name: sizes[name], raising=False)
 
         assert system_memory._sysconf_total_bytes() is None
 

@@ -123,7 +123,10 @@ class TestPathScope:
     @pytest.fixture()
     def dirs(self, tmp_path):
         for name in ('shoot', 'shoot2', 'sh_ot', 'shxot', '100%', '1000', 'Shoot'):
-            (tmp_path / name).mkdir()
+            # On a case-insensitive filesystem (NTFS, APFS) `Shoot` IS `shoot`;
+            # the second mkdir must not fail, and the case-collapse test below
+            # states what that means for the scope.
+            (tmp_path / name).mkdir(exist_ok=True)
         return tmp_path
 
     def test_a_directory_prefix_stops_at_the_separator(self, dirs):
@@ -160,6 +163,16 @@ class TestPathScope:
     def test_a_denormalised_path_equals_the_clean_one(self, dirs):
         messy = f"{dirs}/shoot//./"
         assert build_path_scope([messy]).prefixes == build_path_scope([str(dirs / 'shoot')]).prefixes
+
+    def test_a_case_variant_scope_collapses_where_the_filesystem_folds_case(self, dirs):
+        probe = dirs / 'CaseProbe'
+        probe.mkdir()
+        if not (dirs / 'caseprobe').exists():
+            pytest.skip('filesystem is case-sensitive')
+        # `shoot` and `Shoot` are one directory here, so both spellings must
+        # normalise to the single on-disk form the scanner would have stored.
+        assert (build_path_scope([str(dirs / 'Shoot')]).prefixes
+                == build_path_scope([str(dirs / 'shoot')]).prefixes)
 
     def test_a_missing_entry_raises(self, dirs):
         with pytest.raises(ValueError):

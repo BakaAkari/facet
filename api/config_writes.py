@@ -22,6 +22,7 @@ from datetime import datetime
 from fastapi import HTTPException
 
 from api.config import CONFIG_WRITE_LOCK, write_user_config
+import config_resolve
 from config_resolve import load_resolved
 from config.scoring_config import DEFAULT_CATEGORY_NAME
 from db import record_weight_snapshot
@@ -32,22 +33,40 @@ logger = logging.getLogger(__name__)
 MAX_CONFIG_BACKUPS = 20
 BACKUP_TIMESTAMP_FORMAT = '%Y%m%d_%H%M%S_%f'
 BACKUP_FILE_MODE = 0o600
-# O_NOFOLLOW because the destination is a FIXED, predictable name beside a
-# world-guessable one -- `scoring_config.json.backup`, plus the timestamped
-# variants. Without it, anyone able to create a name in the config directory
-# plants a symlink there, and the next password upgrade or weights save
-# truncates whatever it points at and writes the complete config through it:
-# every users.*.password_hash, viewer.password, upload.password, frame.tokens
-# and immich.api_key. The chmod that follows would re-mode the target too,
-# since it goes by name. api/config.py's boot sweep already lstats files
-# matching this same prefix for exactly this reason ("a link wearing a
-# scoring_config.json.backup name must not get the boot path to re-mode
-# whatever it points at"); the two writers of that path must not disagree.
-# O_NOFOLLOW is a no-op on Windows, where the same getattr idiom as
-# _SECRET_CLAIM_FLAGS keeps the constant importable.
+# The destination is a FIXED, predictable name beside a world-guessable one --
+# `scoring_config.json.backup`, plus the timestamped variants. Without a guard,
+# anyone able to create a name in the config directory plants a symlink there,
+# and the next password upgrade or weights save truncates whatever it points at
+# and writes the complete config through it: every users.*.password_hash,
+# viewer.password, upload.password, frame.tokens and immich.api_key. The chmod
+# that follows would re-mode the target too, since it goes by name.
+# api/config.py's boot sweep already lstats files matching this same prefix for
+# exactly this reason ("a link wearing a scoring_config.json.backup name must
+# not get the boot path to re-mode whatever it points at"); the two writers of
+# that path must not disagree.
+#
+# Two layers, because O_NOFOLLOW does not exist on Windows (the getattr idiom of
+# _SECRET_CLAIM_FLAGS keeps the constant importable there, as 0): the flag, where
+# it exists, and an lstat/fstat identity comparison everywhere, which is what
+# protects on Windows. O_TRUNC is deliberately NOT in the flags -- it empties
+# the target at the open, before anything could be checked -- so the truncate
+# happens only after the descriptor has been proven to be the file that was
+# looked at. O_BINARY keeps Windows from turning LF into CRLF.
 _BACKUP_OPEN_FLAGS = (
-    os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0)
+    os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
 )
+
+
+def _log_refused_symlink(backup_path):
+    """The one refusal message, so every refusal branch says the same thing."""
+    logger.error(
+        "Refusing to write %s: it is a symlink (or otherwise not the plain "
+        "file it was a moment ago), and this file holds the complete config — "
+        "every password hash, token and API key. Writing through it would "
+        "truncate whatever it points at. Remove it; the config write itself "
+        "is unaffected.",
+        backup_path,
+    )
 
 
 def write_owner_only_backup(source_path, backup_path):
@@ -77,54 +96,69 @@ def write_owner_only_backup(source_path, backup_path):
     than creating the file. Every caller already treats the return as
     best-effort and reports it, so None reads as "no backup was needed".
 
-    A backup path that is a SYMLINK returns None too, and loudly. O_NOFOLLOW
-    makes the open fail with ELOOP rather than writing the config through the
-    link; refusing is the whole point, so the failure must not be retried
-    without the flag or downgraded to a plain copy. It is reported rather than
-    raised because every caller treats a backup as best-effort — taking the
-    server down would hand a denial of service to whoever planted the link,
-    while the write it guards is still safe: the config writers go through
-    ``atomic_write_json``, which replaces the link itself instead of following
-    it. That guarantee survived the addition of a second commit route there and
-    is enforced on both — the route selector reads the destination with
-    ``os.lstat`` and sends a symlink straight to ``os.replace``, and the
-    in-place route opens with the same ``O_NOFOLLOW`` this backup writer uses,
-    so a link raced in after that lstat fails the open rather than being written
-    through.
+    A backup path that is a SYMLINK, a directory, or any other non-regular file
+    returns None too, and loudly. The destination is looked at with ``os.lstat``
+    before the open (a link is not a regular file, so it reads as "not a file I
+    may fill"), opened WITHOUT ``O_TRUNC``, and the opened descriptor is then
+    compared with that lstat by ``config_resolve.descriptor_matches_identity``;
+    only a descriptor that is the very file looked at is truncated and written.
+    ``O_NOFOLLOW`` is kept where it exists, but it is the second layer: on
+    Windows it is absent and the identity check is the protection. An absent
+    backup is created with ``O_EXCL``, so a link raced in at that instant fails
+    the open instead of being followed. Refusing is the whole point, so the
+    failure must not be retried without the guard or downgraded to a plain copy.
+    It is reported rather than raised because every caller treats a backup as
+    best-effort — taking the server down would hand a denial of service to
+    whoever planted the link, while the write it guards is still safe: the
+    config writers go through ``atomic_write_json``, which replaces the link
+    itself instead of following it. That guarantee survived the addition of a
+    second commit route there and is enforced on both — the route selector reads
+    the destination with ``os.lstat`` and sends a symlink straight to
+    ``os.replace``, and the in-place route compares the opened descriptor with
+    that lstat (and opens with ``O_NOFOLLOW`` where it exists), so a link raced
+    in after that lstat fails the open or the comparison rather than being
+    written through.
     """
     if not os.path.exists(source_path):
         return None
     with open(source_path, 'rb') as source:
+        # Attribute lookup at call time: tests substitute this by name.
+        identity = config_resolve._destination_identity(backup_path)
+        if identity is None and os.path.lexists(backup_path):
+            # A link, a directory, a FIFO ... : not a file this may fill.
+            _log_refused_symlink(backup_path)
+            return None
+        flags = _BACKUP_OPEN_FLAGS | (0 if identity else os.O_CREAT | os.O_EXCL)
         try:
-            fd = os.open(backup_path, _BACKUP_OPEN_FLAGS, BACKUP_FILE_MODE)
+            fd = os.open(backup_path, flags, BACKUP_FILE_MODE)
         except OSError as ex:
-            if ex.errno != errno.ELOOP:
+            if ex.errno not in (errno.ELOOP, errno.EEXIST, errno.ENOENT):
                 raise
-            logger.error(
-                "Refusing to write %s: it is a symlink, and this file holds "
-                "the complete config — every password hash, token and API key. "
-                "Writing through it would truncate whatever it points at. "
-                "Remove it; the config write itself is unaffected.",
-                backup_path,
-            )
+            # Raced in (or out) between the check and the open.
+            _log_refused_symlink(backup_path)
+            return None
+        if identity is not None and not config_resolve.descriptor_matches_identity(fd, identity):
+            os.close(fd)
+            _log_refused_symlink(backup_path)  # swapped for another file
             return None
         with os.fdopen(fd, 'wb') as destination:
-            # fchmod, not chmod: the descriptor is the file O_NOFOLLOW just
-            # verified, while the NAME can be swapped between the open and the
-            # chmod. Re-moding by name is exactly the redirection O_NOFOLLOW was
-            # added to stop, so doing it two lines later would have left the
-            # same race open against a fixed, predictable destination.
+            # Truncate FIRST (there is no O_TRUNC, see _BACKUP_OPEN_FLAGS), then
+            # re-mode while the file is empty, then write: there is no instant
+            # at which it both holds content and is readable beyond its owner.
+            destination.truncate(0)
+            # fchmod, not chmod: the descriptor is the file the identity check
+            # just verified, while the NAME can be swapped between the open and
+            # the chmod. Re-moding by name is exactly the redirection that check
+            # was added to stop.
             #
             # Guarded because os.fchmod is Availability: Unix -- the attribute
             # is simply absent on Windows, where an unguarded call raises
             # AttributeError and takes down every writer that backs up first
             # (weights, priorities, scoring contexts, panorama settings,
-            # --add-user, the password upgrade). The same getattr idiom guards
-            # O_NOFOLLOW in _BACKUP_OPEN_FLAGS above, for the same platform.
-            # Skipping it there is not a weakening: the POSIX mode bits are
-            # what api/config.py's _POSIX_FILE_MODES already records as
-            # meaningless on Windows, and the descriptor was created with
-            # BACKUP_FILE_MODE either way.
+            # --add-user, the password upgrade). Skipping it there is not a
+            # weakening: the POSIX mode bits are what api/config.py's
+            # _POSIX_FILE_MODES already records as meaningless on Windows, and
+            # the descriptor was created with BACKUP_FILE_MODE either way.
             if hasattr(os, 'fchmod'):
                 os.fchmod(destination.fileno(), BACKUP_FILE_MODE)
             shutil.copyfileobj(source, destination)

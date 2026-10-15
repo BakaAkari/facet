@@ -354,3 +354,22 @@ def fake_cgroup(monkeypatch, tmp_path):
         return tmp_path
 
     return point
+
+
+def symlink_or_skip(link, target):
+    """Create ``link`` -> ``target``, or skip where the platform will not allow it.
+
+    Windows grants ``SeCreateSymbolicLinkPrivilege`` only to elevated accounts
+    (or with Developer Mode on), so ``os.symlink`` raises ``WinError 1314`` for an
+    ordinary developer. That is an environment limit and skips; on any other
+    platform the same error is a real failure and is re-raised, so a skip can
+    never hide a broken symlink on Linux CI.
+    """
+    import sys
+
+    try:
+        os.symlink(target, link)
+    except OSError as ex:
+        if sys.platform != "win32":
+            raise
+        pytest.skip(f"cannot create a symlink here: {ex}")

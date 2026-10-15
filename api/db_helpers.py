@@ -7,10 +7,13 @@ import functools
 import hashlib
 import logging
 import math
+import ntpath
 import os
 import random
 import sqlite3
+import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 from fastapi import HTTPException, Query
@@ -1140,18 +1143,59 @@ class PathScope:
         return f"({' OR '.join(clauses)})", params
 
 
+def _is_windows_shaped(directory):
+    """True for ``D:``, ``D:\\x``, ``\\\\host\\share`` and ``\\\\?\\D:\\x``."""
+    return ntpath.splitdrive(directory)[0] != ''
+
+
+@functools.lru_cache(maxsize=256)
+def stored_path_form(directory):
+    """What the scanner would store for this directory: ``str(Path(p).resolve())``.
+
+    The scanner writes that inline at several sites, so there is no single
+    normaliser to import; this is the minimal shared one. A POSIX-shaped path is
+    returned untouched (resolving it would add a filesystem round trip and
+    change behaviour for symlinked configured paths). Cached because an offline
+    UNC costs about 130 ms on its first resolve.
+    """
+    if not _is_windows_shaped(directory):
+        return directory
+    text = directory
+    if text.startswith('\\\\?\\UNC\\'):
+        text = '\\\\' + text[8:]
+    elif text.startswith('\\\\?\\'):
+        text = text[4:]                       # resolve() does not strip the \\?\ prefix
+    drive, rest = ntpath.splitdrive(text)
+    if not rest:
+        text = drive + '\\'                   # bare `D:` resolves to the drive's CWD, not its root
+    if sys.platform == 'win32':
+        try:
+            return str(Path(text).resolve())  # the scanner's own call: separators, case, mapped drive -> UNC
+        except OSError:
+            pass
+    return ntpath.normpath(text)              # a POSIX host holding a DB scanned on Windows: lexical only
+
+
+# Rows were written by the filesystem of the machine that scanned them, so the
+# viewer's host decides how a POSIX-shaped directory must be compared. APFS is
+# case-insensitive by default; NTFS always is. Windows-shaped directories are
+# compared case-insensitively on every host (see ``get_visibility_clause``).
+_CASE_INSENSITIVE_HOST = sys.platform in ('win32', 'darwin')
+
+
 def build_path_scope(paths):
     """Resolve ``paths`` into a :class:`PathScope`, or ``None`` for "everything".
 
-    Each entry is ``realpath``'d because the scanner stores ``Path(p).resolve()``.
-    A missing entry raises ``ValueError`` rather than silently scoping to nothing.
+    Each entry is normalised to the stored form because the scanner stores
+    ``Path(p).resolve()``. A missing entry raises ``ValueError`` rather than
+    silently scoping to nothing.
     """
     if not paths:
         return None
     prefixes = []
     files = []
     for entry in paths:
-        real = os.path.realpath(entry)
+        real = stored_path_form(os.path.realpath(entry))
         if os.path.isdir(real):
             prefixes.append(real.rstrip(os.sep) + os.sep)
         elif os.path.isfile(real):
@@ -1215,15 +1259,32 @@ def get_visibility_clause(user_id, table_alias='photos'):
     conditions = []
     params = []
     for d in all_dirs:
-        prefix = d.rstrip('/\\') + '/'
-        # Escape LIKE wildcards so a directory containing % or _ can only match
-        # itself: an unescaped `_` matches any single character, so a user scoped
-        # to `.../a_b/` would also see `.../axb/` belonging to another user.
-        # Backslashes are escaped too (they stay literal path separators, not
-        # LIKE escapes) now that we declare ESCAPE. Mirrors folders.py.
-        escaped = prefix.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-        conditions.append(f"{table_alias}.path LIKE ? ESCAPE '\\'")
-        params.append(escaped + '%')
+        # Match the form the scanner stored (str(Path.resolve())): backslash
+        # separators for a Windows-shaped directory, forward slashes otherwise.
+        # Measured on a 130k-row library: one native-form LIKE per directory,
+        # not two forms and not REPLACE(path, '\', '/') (3x slower).
+        form = stored_path_form(d)
+        windows = _is_windows_shaped(form)
+        prefix = form.rstrip('/\\') + ('\\' if windows else '/')
+        if _CASE_INSENSITIVE_HOST or windows:
+            # NTFS (and APFS) wrote these rows case-insensitively, and LIKE
+            # folds ASCII case. Escape LIKE wildcards so a directory containing
+            # % or _ can only match itself: an unescaped `_` matches any single
+            # character, so a user scoped to `.../a_b/` would also see
+            # `.../axb/` belonging to another user. Backslashes are escaped too
+            # (they stay literal path separators, not LIKE escapes) now that we
+            # declare ESCAPE. Mirrors folders.py.
+            escaped = prefix.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+            conditions.append(f"{table_alias}.path LIKE ? ESCAPE '\\'")
+            params.append(escaped + '%')
+        else:
+            # A case-sensitive host: LIKE would fold ASCII case, so a user
+            # scoped to /mnt/photos also saw /mnt/Photos (another user's
+            # photos). A BINARY half-open range [prefix, prefix with its last
+            # character bumped) is exact, needs no escaping, and is a SEARCH on
+            # the path primary key, which LIKE can never use.
+            conditions.append(f"{table_alias}.path >= ? AND {table_alias}.path < ?")
+            params += [prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)]
 
     return f"({' OR '.join(conditions)})", params
 

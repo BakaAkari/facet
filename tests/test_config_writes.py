@@ -19,6 +19,7 @@ from fastapi import HTTPException
 import config_resolve
 
 from api import config as api_config
+from api import config_writes
 from api.auth import _is_hashed, upgrade_legacy_password
 from api.config import CONFIG_WRITE_LOCK, write_user_config
 from api.config_writes import (
@@ -30,6 +31,7 @@ from api.config_writes import (
     write_owner_only_backup,
 )
 from config.scoring_config import ScoringConfig
+from tests.conftest import symlink_or_skip
 
 REPO_CONFIG_PATH = Path(config_resolve.defaults_path())
 
@@ -1041,12 +1043,13 @@ class TestTheBackupWriterRefusesASymlink:
         victim = tmp_path / "victim.txt"
         victim.write_text("ORIGINAL\n")
         backup = tmp_path / "scoring_config.json.backup"
-        backup.symlink_to(victim)
+        symlink_or_skip(backup, victim)
 
         assert write_owner_only_backup(str(source), str(backup)) is None
         assert victim.read_text() == "ORIGINAL\n"
         assert backup.is_symlink()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
     def test_it_does_not_re_mode_the_target(self, tmp_path):
         """The chmod goes by name, so following the link would tighten -- or on
         another path loosen -- a file the attacker chose."""
@@ -1057,7 +1060,7 @@ class TestTheBackupWriterRefusesASymlink:
         victim.write_text("ORIGINAL\n")
         victim.chmod(0o644)
         backup = tmp_path / "scoring_config.json.backup"
-        backup.symlink_to(victim)
+        symlink_or_skip(backup, victim)
 
         write_owner_only_backup(str(source), str(backup))
 
@@ -1070,7 +1073,7 @@ class TestTheBackupWriterRefusesASymlink:
         victim = tmp_path / "victim.txt"
         victim.write_text("ORIGINAL\n")
         backup = tmp_path / "scoring_config.json.backup"
-        backup.symlink_to(victim)
+        symlink_or_skip(backup, victim)
 
         with caplog.at_level(logging.ERROR, logger="api.config_writes"):
             write_owner_only_backup(str(source), str(backup))
@@ -1085,7 +1088,101 @@ class TestTheBackupWriterRefusesASymlink:
 
         assert write_owner_only_backup(str(source), str(backup)) == str(backup)
         assert backup.read_text() == '{"viewer": {"password": "topsecret"}}'
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not apply on Windows")
+    def test_an_ordinary_backup_is_owner_only(self, tmp_path):
+        from api.config_writes import write_owner_only_backup
+
+        source = self._config(tmp_path)
+        backup = tmp_path / "scoring_config.json.backup"
+
+        assert write_owner_only_backup(str(source), str(backup)) == str(backup)
         assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+
+    def test_a_destination_swapped_for_another_file_is_refused(self, tmp_path, monkeypatch, caplog):
+        """The lstat saw one file, the open reached another: write into neither.
+
+        Needs no symlink privilege, so it runs on Windows, where O_NOFOLLOW does
+        not exist and the identity comparison is the only thing standing between
+        a swapped name and the complete config.
+        """
+        source = self._config(tmp_path)
+        victim = tmp_path / "victim.txt"
+        victim.write_text("ORIGINAL\n")
+        backup = tmp_path / "scoring_config.json.backup"
+        backup.write_text("PREVIOUS BACKUP\n")
+        victim_identity = os.lstat(victim)
+        monkeypatch.setattr(config_resolve, "_destination_identity", lambda path: victim_identity)
+
+        with caplog.at_level(logging.ERROR, logger="api.config_writes"):
+            assert write_owner_only_backup(str(source), str(backup)) is None
+
+        assert backup.read_text() == "PREVIOUS BACKUP\n"
+        assert victim.read_text() == "ORIGINAL\n"
+        assert any("Refusing" in r.getMessage() for r in caplog.records)
+
+    def test_a_non_regular_destination_is_refused(self, tmp_path, caplog):
+        """A directory, FIFO or device at the backup name is not a file to fill."""
+        source = self._config(tmp_path)
+        backup = tmp_path / "scoring_config.json.backup"
+        backup.mkdir()
+
+        with caplog.at_level(logging.ERROR, logger="api.config_writes"):
+            assert write_owner_only_backup(str(source), str(backup)) is None
+
+        assert backup.is_dir()
+        assert list(backup.iterdir()) == []
+        assert any("Refusing" in r.getMessage() for r in caplog.records)
+
+    def test_an_absent_backup_that_appears_before_the_create_is_refused(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """An absent name is created with O_EXCL, so a file raced in at that
+        instant fails the open rather than being truncated and written."""
+        source = self._config(tmp_path)
+        backup = tmp_path / "scoring_config.json.backup"
+        backup.write_text("RACED IN\n")
+        # Both pre-open looks report the name absent although it exists now.
+        monkeypatch.setattr(config_resolve, "_destination_identity", lambda path: None)
+        monkeypatch.setattr(os.path, "lexists", lambda path: False)
+
+        with caplog.at_level(logging.ERROR, logger="api.config_writes"):
+            assert write_owner_only_backup(str(source), str(backup)) is None
+
+        assert backup.read_text() == "RACED IN\n"
+        assert any("Refusing" in r.getMessage() for r in caplog.records)
+
+    def test_a_shorter_backup_leaves_no_stale_tail_and_no_crlf(self, tmp_path):
+        source = tmp_path / "scoring_config.json"
+        backup = tmp_path / "scoring_config.json.backup"
+        backup.write_bytes(b"x" * 500)
+        source.write_bytes(b'{\n  "a": 1\n}\n')
+
+        assert write_owner_only_backup(str(source), str(backup)) == str(backup)
+        assert backup.read_bytes() == b'{\n  "a": 1\n}\n'
+
+        fresh = tmp_path / "scoring_config.json.backup.2"
+        assert write_owner_only_backup(str(source), str(fresh)) == str(fresh)
+        assert fresh.read_bytes() == b'{\n  "a": 1\n}\n'
+
+    def test_it_refuses_a_link_even_where_the_open_cannot(self, tmp_path, monkeypatch, caplog):
+        """Strip O_NOFOLLOW (the flag set Windows effectively has) and the link
+        must still be refused: the lstat guard is what holds, not the flag."""
+        source = self._config(tmp_path)
+        victim = tmp_path / "victim.txt"
+        victim.write_text("ORIGINAL\n")
+        backup = tmp_path / "scoring_config.json.backup"
+        symlink_or_skip(backup, victim)
+        monkeypatch.setattr(
+            config_writes, "_BACKUP_OPEN_FLAGS", os.O_WRONLY | getattr(os, "O_BINARY", 0)
+        )
+
+        with caplog.at_level(logging.ERROR, logger="api.config_writes"):
+            assert write_owner_only_backup(str(source), str(backup)) is None
+
+        assert victim.read_text() == "ORIGINAL\n"
+        assert backup.is_symlink()
+        assert any("symlink" in r.getMessage() for r in caplog.records)
 
     def test_an_absent_source_still_returns_none_without_writing(self, tmp_path):
         """The zero-config first write: an install that overrides nothing has no

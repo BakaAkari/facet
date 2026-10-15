@@ -7,6 +7,7 @@ plus the no-clobber / overwrite behaviour around an existing darktable sidecar.
 
 import os
 import subprocess
+import sys
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -419,17 +420,26 @@ _GOOD_XMP = (
 
 def _fake_exiftool(tmp_path, version="13.55", payload="<broken attr=\"a=\" b"):
     """Executable stand-in: answers -ver, returns [] for reads, corrupts on write."""
-    script = tmp_path / "fake_exiftool"
-    script.write_text(
-        "#!/bin/sh\n"
-        f'if [ "$1" = "-ver" ]; then echo {version}; exit 0; fi\n'
-        'for a in "$@"; do last="$a"; done\n'
-        'case "$*" in *-json*) echo "[]"; exit 0;; esac\n'
-        f"printf '%s' '{payload}' > \"$last\"\n"
-        "exit 0\n"
+    body = tmp_path / "fake_exiftool.py"
+    body.write_text(
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:1] == ['-ver']:\n"
+        f"    print({version!r})\n"
+        "    sys.exit(0)\n"
+        "if '-json' in ' '.join(args):\n"
+        "    print('[]')\n"
+        "    sys.exit(0)\n"
+        f"open(args[-1], 'wb').write({payload!r}.encode())\n"
     )
-    script.chmod(0o755)
-    return str(script)
+    if sys.platform == "win32":
+        launcher = tmp_path / "fake_exiftool.cmd"
+        launcher.write_text(f'@"{sys.executable}" "{body}" %*\r\n')
+    else:
+        launcher = tmp_path / "fake_exiftool"
+        launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{body}" "$@"\n')
+        launcher.chmod(0o755)
+    return str(launcher)
 
 
 @pytest.fixture

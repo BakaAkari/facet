@@ -20,7 +20,13 @@ jobs:
           python-version: "3.12"
           cache: "pip"
       - name: Install test dependencies
-        run: pip install pytest pytest-asyncio pytest-cov fastapi[standard] httpx pyjwt pillow pillow-heif numpy scipy scikit-learn opencv-python-headless tqdm aiosqlite sqlite-vec imagehash psutil watchdog send2trash tifffile imagecodecs lupa
+        # This line is the only dependency source for the job (it does not read
+        # the lock files). jsonschema and pytest-timeout are the two exceptions
+        # that are pinned, at their lock-file versions: without jsonschema the
+        # schema tests in tests/test_config_schema.py skip silently, and without
+        # pytest-timeout the `timeout` marker is an inert unknown mark. The
+        # versions are the ones verified against the suite.
+        run: pip install pytest pytest-asyncio pytest-cov fastapi[standard] httpx pyjwt pillow pillow-heif numpy scipy scikit-learn opencv-python-headless tqdm aiosqlite sqlite-vec imagehash psutil watchdog send2trash tifffile imagecodecs lupa jsonschema==4.26.0 pytest-timeout==2.4.0
       - name: Run tests
         run: python -m pytest --tb=short -q --cov=api --cov=processing --cov=analyzers --cov=config --cov=utils --cov-report=term-missing
       - uses: actions/setup-node@v7
@@ -65,15 +71,19 @@ jobs:
           python-version: "3.12"
           cache: "pip"
       - name: Install test dependencies
-        run: pip install pytest pytest-asyncio pytest-cov fastapi[standard] httpx pyjwt pillow pillow-heif numpy scipy scikit-learn opencv-python-headless tqdm aiosqlite sqlite-vec imagehash psutil send2trash
-      - name: Run the platform-sensitive suites
-        # Deliberately NOT the whole suite. Much of it hard-codes POSIX paths
-        # ("/lib/a.jpg") that no Windows path ever matches, so a full run is
-        # permanently red and therefore ignored. These two files are the actual
-        # platform surface: the library lock picks a different backend here
-        # (msvcrt byte-range locks, which have no shared mode), and the device
-        # policy resolves CUDA/MPS/CPU. Both were unexercised until this job.
-        run: python -m pytest tests/test_scan.py tests/test_device.py -q --tb=short
+        # Same list as python-tests: the files below import tifffile, imagecodecs
+        # and lupa, and jsonschema keeps tests/test_config_schema.py from skipping.
+        run: pip install pytest pytest-asyncio pytest-cov fastapi[standard] httpx pyjwt pillow pillow-heif numpy scipy scikit-learn opencv-python-headless tqdm aiosqlite sqlite-vec imagehash psutil watchdog send2trash tifffile imagecodecs lupa jsonschema==4.26.0 pytest-timeout==2.4.0
+      - name: Run the Windows-green suites
+        # Deliberately NOT the whole suite yet: the files listed here are the
+        # ones kept green on Windows, and the rest of the suite is not run on
+        # this platform. A file is added to this list in the PR that makes it
+        # green there. tests/test_scan.py (the library lock picks a different
+        # backend here: msvcrt byte-range locks, which have no shared mode) and
+        # tests/test_device.py (CUDA/MPS/CPU resolution) are the original
+        # platform surface; the others cover path, permission, symlink and
+        # subprocess handling that differs on Windows.
+        run: python -m pytest tests/test_scan.py tests/test_device.py tests/test_auto_cull_cli.py tests/test_config_merge.py tests/test_config_path_env.py tests/test_config_writes.py tests/test_manifest_builder.py tests/test_system_memory.py tests/test_weight_optimizer_sources.py tests/test_xmp_export.py tests/test_visibility_fail_open.py tests/test_cull.py tests/test_raw_decode.py tests/test_config_schema.py -q --tb=short
 
   angular-tests:
     name: Angular Tests

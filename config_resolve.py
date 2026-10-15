@@ -351,6 +351,23 @@ def _destination_identity(path):
     return info if stat.S_ISREG(info.st_mode) else None
 
 
+def descriptor_matches_identity(fd, identity):
+    """True when the open descriptor ``fd`` is the plain file ``identity`` lstat'ed.
+
+    The second half of the check :func:`_destination_identity` starts: that
+    function reads the NAME before the open, this one reads the DESCRIPTOR after
+    it, and a name swapped for another file (or for something that is not a file
+    at all) in between shows up as a different ``(st_ino, st_dev)`` pair or a
+    non-regular mode. Shared by both config writers -- the in-place rewrite here
+    and ``api.config_writes.write_owner_only_backup`` -- so they cannot disagree
+    about what "the same file" means. It does not need ``O_NOFOLLOW``, which is
+    what makes it the protection on Windows, where that flag does not exist.
+    """
+    opened = os.fstat(fd)
+    return stat.S_ISREG(opened.st_mode) and (opened.st_ino, opened.st_dev) == (
+        identity.st_ino, identity.st_dev)
+
+
 # Errnos that mean "you may not change this file's ownership" rather than
 # "something is wrong". The rootless container this whole route exists for
 # answers EPERM: the config belongs to the operator's real uid, the process
@@ -531,9 +548,7 @@ def _rewrite_in_place(path, payload, identity):
         logger.debug("Could not open %s for an in-place rewrite", path, exc_info=True)
         return False
     try:
-        opened = os.fstat(fd)
-        if (not stat.S_ISREG(opened.st_mode)
-                or (opened.st_ino, opened.st_dev) != (identity.st_ino, identity.st_dev)):
+        if not descriptor_matches_identity(fd, identity):
             # The name now leads somewhere else than the lstat found, or to
             # something that is not a file at all. Refuse rather than write into
             # whatever it is -- the caller's os.replace is safe against both.
