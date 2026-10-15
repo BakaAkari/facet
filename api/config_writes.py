@@ -15,6 +15,7 @@ the very same file.
 import errno
 import logging
 import os
+import secrets
 import shutil
 from collections import Counter
 from datetime import datetime
@@ -22,7 +23,6 @@ from datetime import datetime
 from fastapi import HTTPException
 
 from api.config import CONFIG_WRITE_LOCK, write_user_config
-import config_resolve
 from config_resolve import load_resolved
 from config.scoring_config import DEFAULT_CATEGORY_NAME
 from db import record_weight_snapshot
@@ -34,39 +34,69 @@ MAX_CONFIG_BACKUPS = 20
 BACKUP_TIMESTAMP_FORMAT = '%Y%m%d_%H%M%S_%f'
 BACKUP_FILE_MODE = 0o600
 # The destination is a FIXED, predictable name beside a world-guessable one --
-# `scoring_config.json.backup`, plus the timestamped variants. Without a guard,
-# anyone able to create a name in the config directory plants a symlink there,
-# and the next password upgrade or weights save truncates whatever it points at
-# and writes the complete config through it: every users.*.password_hash,
-# viewer.password, upload.password, frame.tokens and immich.api_key. The chmod
-# that follows would re-mode the target too, since it goes by name.
-# api/config.py's boot sweep already lstats files matching this same prefix for
-# exactly this reason ("a link wearing a scoring_config.json.backup name must
-# not get the boot path to re-mode whatever it points at"); the two writers of
-# that path must not disagree.
+# `scoring_config.json.backup`, plus the timestamped variants. Anyone able to
+# create a name in the config directory can plant something there: a symlink, a
+# hard link to a file they want filled, or a plain file of their own. A writer
+# that OPENS the name and writes into it fills whatever sits there with the
+# complete config -- every users.*.password_hash, viewer.password,
+# upload.password, frame.tokens and immich.api_key -- and no check made on the
+# name or on the opened descriptor can tell "the file I meant" from "a second
+# name for somebody else's file": a hard link IS the file it was compared with.
+# NTFS creates hard links without any privilege, which makes that the easy
+# attack on Windows (symlinks there need SeCreateSymbolicLinkPrivilege).
 #
-# Two layers, because O_NOFOLLOW does not exist on Windows (the getattr idiom of
-# _SECRET_CLAIM_FLAGS keeps the constant importable there, as 0): the flag, where
-# it exists, and an lstat/fstat identity comparison everywhere, which is what
-# protects on Windows. O_TRUNC is deliberately NOT in the flags -- it empties
-# the target at the open, before anything could be checked -- so the truncate
-# happens only after the descriptor has been proven to be the file that was
-# looked at. O_BINARY keeps Windows from turning LF into CRLF.
-_BACKUP_OPEN_FLAGS = (
-    os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
+# So the backup never writes into an existing inode. It is staged under a fresh
+# name created with O_EXCL and then os.replace()d over the backup name, which
+# substitutes whatever is at the NAME -- link, planted file, old backup --
+# instead of writing through it. The staging name starts with a dot and does
+# not begin with `<config>.backup`, so neither _prune_config_backups nor
+# api/config.py's boot sweep (both prefix-matchers) ever sees one, and it is
+# not a `.scoring_config.tmp*.json` crash leftover either.
+#
+# O_BINARY exists only on Windows, where a raw descriptor defaults to text mode;
+# O_NOFOLLOW and O_NONBLOCK exist only on POSIX. getattr(..., 0) keeps the
+# constant importable everywhere.
+_STAGING_OPEN_FLAGS = (
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    | getattr(os, 'O_NOFOLLOW', 0)
+    | getattr(os, 'O_NONBLOCK', 0)
+    | getattr(os, 'O_BINARY', 0)
 )
+_STAGING_ATTEMPTS = 5
 
 
-def _log_refused_symlink(backup_path):
-    """The one refusal message, so every refusal branch says the same thing."""
-    logger.error(
-        "Refusing to write %s: it is a symlink (or otherwise not the plain "
-        "file it was a moment ago), and this file holds the complete config — "
-        "every password hash, token and API key. Writing through it would "
-        "truncate whatever it points at. Remove it; the config write itself "
-        "is unaffected.",
-        backup_path,
-    )
+def _create_staging_file(backup_path):
+    """Create a fresh, empty, owner-only file beside ``backup_path``; return ``(fd, path)``.
+
+    O_EXCL means the name is guaranteed new, so the inode is ours alone -- never
+    a link or a file somebody else holds. The mode is asserted again with
+    ``fchmod`` while the file is still empty (where it exists) so a restrictive
+    ``umask`` is the only thing that could make it tighter, never looser.
+    """
+    directory = os.path.dirname(backup_path) or '.'
+    stem = os.path.basename(backup_path)
+    for _ in range(_STAGING_ATTEMPTS):
+        path = os.path.join(directory, f".{stem}.bak-tmp-{secrets.token_hex(8)}")
+        try:
+            fd = os.open(path, _STAGING_OPEN_FLAGS, BACKUP_FILE_MODE)
+        except FileExistsError:
+            continue
+        if hasattr(os, 'fchmod'):
+            try:
+                os.fchmod(fd, BACKUP_FILE_MODE)
+            except BaseException:
+                os.close(fd)
+                _unlink_quietly(path)
+                raise
+        return fd, path
+    raise FileExistsError(errno.EEXIST, "no unused staging name", directory)
+
+
+def _unlink_quietly(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def write_owner_only_backup(source_path, backup_path):
@@ -83,85 +113,54 @@ def write_owner_only_backup(source_path, backup_path):
     ``chmod`` afterwards does not fix that: the bytes are on disk at the loose
     mode first, and any local account only has to read them inside that window.
 
-    So the destination is opened with an explicit 0600 creation mode and
-    re-moded while it is still EMPTY — a backup name that already existed at a
-    looser mode is tightened before it holds anything — and only then does the
-    content go in. There is no instant at which this file both exists with
-    content and is readable beyond its owner.
+    So the content is written to a brand-new file created at 0600 (and
+    re-moded while still empty), and only then moved over ``backup_path``. There
+    is no instant at which a file holds the content and is readable beyond its
+    owner, and a backup name that already existed at a looser mode is simply
+    replaced by the tight one.
+
+    The backup name is REPLACED, never written into: a symlink, a hard link or a
+    regular file somebody pre-planted at that name is swapped out by
+    ``os.replace`` and whatever it pointed at is left untouched (see the note
+    above ``_STAGING_OPEN_FLAGS``). A directory at the name cannot be replaced by
+    a file; that is reported and returns None.
 
     An absent source returns None and writes nothing. A config file that does
     not exist is now the ordinary state of an install that overrides nothing,
     so "back it up before writing" has to mean "if there is anything to back
     up" — otherwise the first write to a zero-config install dies here rather
     than creating the file. Every caller already treats the return as
-    best-effort and reports it, so None reads as "no backup was needed".
+    best-effort and reports it, so None reads as "no backup was made".
 
-    A backup path that is a SYMLINK, a directory, or any other non-regular file
-    returns None too, and loudly. The destination is looked at with ``os.lstat``
-    before the open (a link is not a regular file, so it reads as "not a file I
-    may fill"), opened WITHOUT ``O_TRUNC``, and the opened descriptor is then
-    compared with that lstat by ``config_resolve.descriptor_matches_identity``;
-    only a descriptor that is the very file looked at is truncated and written.
-    ``O_NOFOLLOW`` is kept where it exists, but it is the second layer: on
-    Windows it is absent and the identity check is the protection. An absent
-    backup is created with ``O_EXCL``, so a link raced in at that instant fails
-    the open instead of being followed. Refusing is the whole point, so the
-    failure must not be retried without the guard or downgraded to a plain copy.
-    It is reported rather than raised because every caller treats a backup as
-    best-effort — taking the server down would hand a denial of service to
-    whoever planted the link, while the write it guards is still safe: the
-    config writers go through ``atomic_write_json``, which replaces the link
-    itself instead of following it. That guarantee survived the addition of a
-    second commit route there and is enforced on both — the route selector reads
-    the destination with ``os.lstat`` and sends a symlink straight to
-    ``os.replace``, and the in-place route compares the opened descriptor with
-    that lstat (and opens with ``O_NOFOLLOW`` where it exists), so a link raced
-    in after that lstat fails the open or the comparison rather than being
-    written through.
+    Any failure to stage or place the backup is logged at ERROR, the staging
+    file is removed, and None is returned. It is reported rather than raised
+    because every caller treats a backup as best-effort — taking the server
+    down would hand a denial of service to whoever can make the directory
+    awkward, while the write it guards stays safe on its own: the config
+    writers go through ``atomic_write_json``, which replaces a link itself
+    instead of following it.
     """
     if not os.path.exists(source_path):
         return None
-    with open(source_path, 'rb') as source:
-        # Attribute lookup at call time: tests substitute this by name.
-        identity = config_resolve._destination_identity(backup_path)
-        if identity is None and os.path.lexists(backup_path):
-            # A link, a directory, a FIFO ... : not a file this may fill.
-            _log_refused_symlink(backup_path)
-            return None
-        flags = _BACKUP_OPEN_FLAGS | (0 if identity else os.O_CREAT | os.O_EXCL)
-        try:
-            fd = os.open(backup_path, flags, BACKUP_FILE_MODE)
-        except OSError as ex:
-            if ex.errno not in (errno.ELOOP, errno.EEXIST, errno.ENOENT):
-                raise
-            # Raced in (or out) between the check and the open.
-            _log_refused_symlink(backup_path)
-            return None
-        if identity is not None and not config_resolve.descriptor_matches_identity(fd, identity):
-            os.close(fd)
-            _log_refused_symlink(backup_path)  # swapped for another file
-            return None
-        with os.fdopen(fd, 'wb') as destination:
-            # Truncate FIRST (there is no O_TRUNC, see _BACKUP_OPEN_FLAGS), then
-            # re-mode while the file is empty, then write: there is no instant
-            # at which it both holds content and is readable beyond its owner.
-            destination.truncate(0)
-            # fchmod, not chmod: the descriptor is the file the identity check
-            # just verified, while the NAME can be swapped between the open and
-            # the chmod. Re-moding by name is exactly the redirection that check
-            # was added to stop.
-            #
-            # Guarded because os.fchmod is Availability: Unix -- the attribute
-            # is simply absent on Windows, where an unguarded call raises
-            # AttributeError and takes down every writer that backs up first
-            # (weights, priorities, scoring contexts, panorama settings,
-            # --add-user, the password upgrade). Skipping it there is not a
-            # weakening: the POSIX mode bits are what api/config.py's
-            # _POSIX_FILE_MODES already records as meaningless on Windows, and
-            # the descriptor was created with BACKUP_FILE_MODE either way.
-            if hasattr(os, 'fchmod'):
-                os.fchmod(destination.fileno(), BACKUP_FILE_MODE)
-            shutil.copyfileobj(source, destination)
+    staging = None
+    try:
+        with open(source_path, 'rb') as source:
+            fd, staging = _create_staging_file(str(backup_path))
+            with os.fdopen(fd, 'wb') as destination:
+                shutil.copyfileobj(source, destination)
+        os.replace(staging, backup_path)
+    except OSError as ex:
+        if staging is not None:
+            _unlink_quietly(staging)
+        logger.error(
+            "Could not write the config backup %s (%s). This file holds the "
+            "complete config — every password hash, token and API key — so it "
+            "is only ever written by replacing the name, never into an existing "
+            "file; if the name is a directory, remove it. The config write "
+            "itself is unaffected.",
+            backup_path, ex,
+        )
+        return None
     return backup_path
 
 

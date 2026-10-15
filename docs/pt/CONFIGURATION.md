@@ -156,11 +156,11 @@ Modo multiusuário opcional. Quando a chave `users` está presente (com pelo men
 | `password_hash` | string | Hash PBKDF2-HMAC-SHA256 (`salt_hex:dk_hex`). Gerado pelo CLI `--add-user`. |
 | `display_name` | string | Exibido no cabeçalho da interface |
 | `role` | string | `user`, `admin` ou `superadmin` |
-| `directories` | array | Diretórios de fotos privados deste usuário. As entradas são comparadas com os caminhos armazenados como o scanner os escreveu: a diferença entre maiúsculas e minúsculas ASCII é ignorada no Windows e em entradas UNC ou com letra de unidade em qualquer lugar, mas no Linux a comparação diferencia maiúsculas de minúsculas (case-sensitive); escreva cada entrada como o scanner a armazenou (limites conhecidos: diferenças de maiúsculas fora do ASCII e uma unidade mapeada em um host que não consegue resolvê-la) |
+| `directories` | array | Diretórios de fotos privados deste usuário. As entradas são comparadas com os caminhos armazenados como o scanner os escreveu: a diferença entre maiúsculas e minúsculas ASCII é ignorada no Windows, no macOS e em entradas UNC ou com letra de unidade em qualquer lugar, mas nos demais hosts (por exemplo, no Linux) a comparação diferencia maiúsculas de minúsculas (case-sensitive); escreva cada entrada como o scanner a armazenou (limites conhecidos: diferenças de maiúsculas fora do ASCII e uma unidade mapeada em um host que não consegue resolvê-la) |
 
 ### Diretórios compartilhados
 
-A chave `shared_directories` (irmã dos objetos de usuário) lista diretórios visíveis a todos os usuários. As entradas de `directories` e `shared_directories` são comparadas com os caminhos armazenados como o scanner os escreveu: a diferença entre maiúsculas e minúsculas ASCII é ignorada no Windows e em entradas UNC ou com letra de unidade em qualquer lugar, mas no Linux a comparação diferencia maiúsculas de minúsculas (case-sensitive); escreva cada entrada como o scanner a armazenou (limites conhecidos: diferenças de maiúsculas fora do ASCII e uma unidade mapeada em um host que não consegue resolvê-la).
+A chave `shared_directories` (irmã dos objetos de usuário) lista diretórios visíveis a todos os usuários. As entradas de `directories` e `shared_directories` são comparadas com os caminhos armazenados como o scanner os escreveu: a diferença entre maiúsculas e minúsculas ASCII é ignorada no Windows, no macOS e em entradas UNC ou com letra de unidade em qualquer lugar, mas nos demais hosts (por exemplo, no Linux) a comparação diferencia maiúsculas de minúsculas (case-sensitive); escreva cada entrada como o scanner a armazenou (limites conhecidos: diferenças de maiúsculas fora do ASCII e uma unidade mapeada em um host que não consegue resolvê-la).
 
 ### Funções (roles)
 

@@ -89,7 +89,7 @@ Für Familien-NAS-Szenarien, in denen jedes Mitglied eigene private Fotoverzeich
 }
 ```
 
-Einträge in `directories` und `shared_directories` werden mit den gespeicherten Pfaden verglichen, so wie der Scanner sie geschrieben hat: unter Windows und bei UNC- oder Laufwerksbuchstaben-Einträgen überall wird die ASCII-Groß-/Kleinschreibung ignoriert, unter Linux unterscheidet der Vergleich dagegen zwischen Groß- und Kleinschreibung (case-sensitive); jeden Eintrag so schreiben, wie der Scanner ihn gespeichert hat (bekannte Grenzen: Groß-/Kleinschreibung außerhalb von ASCII und ein zugeordnetes Laufwerk auf einem Host, der es nicht auflösen kann).
+Einträge in `directories` und `shared_directories` werden mit den gespeicherten Pfaden verglichen, so wie der Scanner sie geschrieben hat: unter Windows, unter macOS und bei UNC- oder Laufwerksbuchstaben-Einträgen überall wird die ASCII-Groß-/Kleinschreibung ignoriert, auf allen anderen Hosts (zum Beispiel unter Linux) unterscheidet der Vergleich dagegen zwischen Groß- und Kleinschreibung (case-sensitive); jeden Eintrag so schreiben, wie der Scanner ihn gespeichert hat (bekannte Grenzen: Groß-/Kleinschreibung außerhalb von ASCII und ein zugeordnetes Laufwerk auf einem Host, der es nicht auflösen kann).
 
 Benutzer werden ausschließlich über die CLI angelegt (keine Registrierungs-UI):
 

@@ -92,7 +92,7 @@ cd client && npx ng serve
 }
 ```
 
-`directories` 与 `shared_directories` 中的条目按扫描器写入时的样子与已存储路径比较：在 Windows 上以及任何系统上的 UNC 或盘符条目，忽略 ASCII 大小写，而在 Linux 上比较区分大小写（case-sensitive），因此请按扫描器存储的写法填写每个条目（已知限制：非 ASCII 的大小写差异，以及在无法解析映射驱动器的主机上使用映射驱动器）。
+`directories` 与 `shared_directories` 中的条目按扫描器写入时的样子与已存储路径比较：在 Windows 和 macOS 上以及任何系统上的 UNC 或盘符条目，忽略 ASCII 大小写，而在其他主机（例如 Linux）上比较区分大小写（case-sensitive），因此请按扫描器存储的写法填写每个条目（已知限制：非 ASCII 的大小写差异，以及在无法解析映射驱动器的主机上使用映射驱动器）。
 
 用户只能通过 CLI 创建（没有注册界面）：
 

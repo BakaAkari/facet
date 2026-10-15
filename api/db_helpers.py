@@ -12,6 +12,7 @@ import os
 import random
 import sqlite3
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -1148,18 +1149,77 @@ def _is_windows_shaped(directory):
     return ntpath.splitdrive(directory)[0] != ''
 
 
-@functools.lru_cache(maxsize=256)
+# ``stored_path_form`` caches because an offline UNC costs about 130 ms per
+# resolve. What it may cache depends on whether the answer can still change: a
+# translation whose target EXISTS is the one the scanner stores, so it is kept
+# for the life of the process; one whose target does not exist may have been made
+# while a mapped drive or share was unreachable (a NAS asleep at viewer start),
+# so it is kept for ``_STORED_FORM_RETRY_SECONDS`` only and then resolved again.
+# Pinning it forever left that user with an empty library until a restart,
+# silently, because a visibility prefix that matches no stored path fails closed.
+_STORED_FORM_RETRY_SECONDS = 60.0
+_STORED_FORM_CACHE_MAX = 256
+_monotonic = time.monotonic              # a name of its own so tests can move the clock
+_stored_form_lock = threading.Lock()
+_stored_form_settled = {}                # directory -> form whose target exists
+_stored_form_provisional = {}            # directory -> (form, monotonic expiry)
+
+
+def _remember(cache, key, value):
+    """Insert into a bounded dict, dropping the oldest entry first. Hold the lock."""
+    if key not in cache and len(cache) >= _STORED_FORM_CACHE_MAX:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
+
+
+def _clear_stored_path_form_cache():
+    with _stored_form_lock:
+        _stored_form_settled.clear()
+        _stored_form_provisional.clear()
+
+
 def stored_path_form(directory):
     """What the scanner would store for this directory: ``str(Path(p).resolve())``.
 
     The scanner writes that inline at several sites, so there is no single
     normaliser to import; this is the minimal shared one. A POSIX-shaped path is
     returned untouched (resolving it would add a filesystem round trip and
-    change behaviour for symlinked configured paths). Cached because an offline
-    UNC costs about 130 ms on its first resolve.
+    change behaviour for symlinked configured paths).
+
+    Cached, with the asymmetry described above ``_STORED_FORM_RETRY_SECONDS``:
+    a result whose path exists is cached for good, any other result for a
+    minute, so a drive that comes back is picked up without a restart while an
+    offline UNC does not cost its ~130 ms on every request.
     """
     if not _is_windows_shaped(directory):
         return directory
+    with _stored_form_lock:
+        form = _stored_form_settled.get(directory)
+        if form is not None:
+            return form
+        cached = _stored_form_provisional.get(directory)
+        if cached is not None and _monotonic() < cached[1]:
+            return cached[0]
+    # Resolved outside the lock: an offline UNC takes ~130 ms and must not
+    # serialise every other request behind it. Two threads racing here both
+    # compute the same answer, and the last write wins harmlessly.
+    form = _resolve_stored_path_form(directory)
+    exists = os.path.exists(form)
+    with _stored_form_lock:
+        if exists:
+            _remember(_stored_form_settled, directory, form)
+            _stored_form_provisional.pop(directory, None)
+        else:
+            _remember(_stored_form_provisional, directory,
+                      (form, _monotonic() + _STORED_FORM_RETRY_SECONDS))
+    return form
+
+
+stored_path_form.cache_clear = _clear_stored_path_form_cache
+
+
+def _resolve_stored_path_form(directory):
+    """The uncached half of :func:`stored_path_form` for a Windows-shaped path."""
     text = directory
     if text.startswith('\\\\?\\UNC\\'):
         text = '\\\\' + text[8:]
@@ -1259,6 +1319,15 @@ def get_visibility_clause(user_id, table_alias='photos'):
     conditions = []
     params = []
     for d in all_dirs:
+        if not isinstance(d, str) or not d.strip():
+            # A blank entry would normalise to the prefix '/', which as a range
+            # is every path in the library. Granting nothing is the only safe
+            # reading of "no directory".
+            logger.warning(
+                "Ignoring a blank directory entry (%r) for user %r: a blank "
+                "entry grants nothing, never the whole library. Remove it from "
+                "this user's directories.", d, user_id)
+            continue
         # Match the form the scanner stored (str(Path.resolve())): backslash
         # separators for a Windows-shaped directory, forward slashes otherwise.
         # Measured on a 130k-row library: one native-form LIKE per directory,
@@ -1286,6 +1355,8 @@ def get_visibility_clause(user_id, table_alias='photos'):
             conditions.append(f"{table_alias}.path >= ? AND {table_alias}.path < ?")
             params += [prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)]
 
+    if not conditions:
+        return NO_VISIBILITY_SQL, []
     return f"({' OR '.join(conditions)})", params
 
 

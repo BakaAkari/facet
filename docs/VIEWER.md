@@ -92,7 +92,7 @@ For family NAS scenarios where each member has private photo directories. Enable
 }
 ```
 
-Entries in `directories` and `shared_directories` are compared with the stored paths as the scanner wrote them: ASCII case is ignored on Windows and for UNC or drive-letter entries anywhere, but the comparison is case-sensitive on Linux, so write each entry the way the scanner stored it (known limits: non-ASCII case differences, and a mapped drive on a host that cannot resolve it).
+Entries in `directories` and `shared_directories` are compared with the stored paths as the scanner wrote them: ASCII case is ignored on Windows, on macOS and for UNC or drive-letter entries anywhere, but the comparison is case-sensitive on every other host (Linux, for example), so write each entry the way the scanner stored it (known limits: non-ASCII case differences, and a mapped drive on a host that cannot resolve it).
 
 Users are created via CLI only (no registration UI):
 

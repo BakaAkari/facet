@@ -398,3 +398,22 @@ Reviewer: independent opus pass, `.claude/.scratch/refute-windows-test-suite.md`
 read or rewrite the ACL, `/remove:d` exits 5 and `tmp_path` becomes undeletable (observed on this box; recovered with
 `takeown`). The build uses `(RD)` (read data only): `open()` still raises `PermissionError`, and `/remove:d` in `finally`
 succeeds.
+
+### Review fixes (independent review, REVIEW.md)
+- **I1 backup writer.** The lstat/fstat identity check (G7) only proves the opened file is the one looked at, so a
+  hard link (no privilege on NTFS) or a pre-planted regular file passed it and was filled with the complete config. The
+  writer now never opens an existing inode: it creates `.<backup>.bak-tmp-<random>` with `O_CREAT|O_EXCL` (+ `O_NOFOLLOW`,
+  `O_NONBLOCK`, `O_BINARY` where they exist) at 0600, writes, closes, and `os.replace`s it over the backup name. Any
+  `OSError` unlinks the staging file, logs, returns `None`. `_BACKUP_OPEN_FLAGS`, the identity branch and
+  `_log_refused_symlink` are gone (also resolves M1 FIFO block, M2 comment, M3 fd leak, M4 message). Tests that
+  asserted the old refusals changed: symlink and swapped-file and raced-in cases now assert replacement, not `None`.
+- **I2 `stored_path_form`.** `lru_cache` pinned a translation made while a drive was offline. Targets that exist are
+  cached for good; others for 60 s (`_STORED_FORM_RETRY_SECONDS`, `_monotonic`), bounded to 256 entries, under a lock.
+  `stored_path_form.cache_clear` is kept as an attribute.
+- **M6.** A blank or whitespace-only `directories` entry granted the whole library (prefix `/`); it now grants nothing
+  and warns naming the user. Left alone, listed: a Linux entry ending in a literal backslash loses it
+  (`rstrip('/\')`), and a drive-relative `D:photos` resolves against the viewer's CWD. `build_path_scope('')` still
+  scopes a headless run to the CWD (`os.path.realpath('')`).
+- **M5, M7.** `_destination_identity` / `descriptor_matches_identity` docstrings now say that on Windows the identity
+  comparison, not `O_NOFOLLOW`, is the protection and that it cannot catch a hard link. "Case-sensitive on Linux" became
+  "case-sensitive on every other host than Windows/macOS" in CHANGELOG and the 7 languages of CONFIGURATION/VIEWER.

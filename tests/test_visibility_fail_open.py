@@ -5,6 +5,7 @@ deployment — multi-user mode, or a single-user viewer password — and everyth
 only on a fully open single-user install. Authenticated users are unchanged.
 """
 
+import logging
 import sqlite3
 import sys
 import types
@@ -236,3 +237,97 @@ class TestStoredPathForm:
         (tmp_path / "MixedCase").mkdir()
         got = db_helpers.stored_path_form(str(tmp_path / "mixedcase"))
         assert got == str((tmp_path / "MixedCase").resolve())
+
+
+class TestStoredPathFormRetriesAnAbsentTarget:
+    """A translation made while the target was unreachable must not be pinned.
+
+    A mapped drive or share that is offline at the first request resolves to a
+    path that does not exist; cached for the life of the process, that user sees
+    an empty library (the prefix matches nothing, so it fails closed) until the
+    viewer restarts. Real drive-letter translation cannot be produced without
+    ``subst`` or a network share, so this drives the cache with a patched
+    resolver that returns the lexical form while a flag is down and a real,
+    existing directory once it is up; the cache decides on the EXISTENCE of what
+    the resolver returned, which is real here.
+    """
+
+    ENTRY = "Q:\\alice"
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        db_helpers.stored_path_form.cache_clear()
+        yield
+        db_helpers.stored_path_form.cache_clear()
+
+    @pytest.fixture
+    def world(self, tmp_path, monkeypatch):
+        state = types.SimpleNamespace(
+            up=False, calls=0, now=1000.0,
+            absent=str(tmp_path / "not-there-yet"), present=str(tmp_path))
+
+        def _resolver(directory):
+            state.calls += 1
+            return state.present if state.up else state.absent
+
+        monkeypatch.setattr(db_helpers, "_resolve_stored_path_form", _resolver)
+        monkeypatch.setattr(db_helpers, "_monotonic", lambda: state.now)
+        return state
+
+    def test_an_absent_target_is_cached_for_the_retry_window_then_resolved_again(self, world):
+        ttl = db_helpers._STORED_FORM_RETRY_SECONDS
+        assert db_helpers.stored_path_form(self.ENTRY) == world.absent
+        world.up = True                                  # the drive comes back
+
+        world.now += ttl - 1                             # still inside the window
+        assert db_helpers.stored_path_form(self.ENTRY) == world.absent
+        assert world.calls == 1                          # served from the cache
+
+        world.now += 2                                   # window over
+        assert db_helpers.stored_path_form(self.ENTRY) == world.present
+        assert world.calls == 2
+
+    def test_an_existing_target_is_cached_for_good(self, world):
+        world.up = True
+        assert db_helpers.stored_path_form(self.ENTRY) == world.present
+        world.now += 10 * db_helpers._STORED_FORM_RETRY_SECONDS
+        world.up = False                                 # even if it later vanishes
+        assert db_helpers.stored_path_form(self.ENTRY) == world.present
+        assert world.calls == 1
+
+    def test_the_cache_stays_bounded(self, world, monkeypatch):
+        monkeypatch.setattr(db_helpers, "_STORED_FORM_CACHE_MAX", 3)
+        for i in range(10):
+            db_helpers.stored_path_form(f"Q:\\dir{i}")
+        assert len(db_helpers._stored_form_provisional) == 3
+        assert len(db_helpers._stored_form_settled) == 0
+
+    def test_cache_clear_drops_both_kinds(self, world):
+        db_helpers.stored_path_form(self.ENTRY)
+        world.up = True
+        db_helpers.stored_path_form("Q:\\bob")
+        db_helpers.stored_path_form.cache_clear()
+        assert not db_helpers._stored_form_provisional and not db_helpers._stored_form_settled
+
+
+class TestABlankDirectoryEntryGrantsNothing:
+    """An empty entry used to become the prefix '/', i.e. the whole library."""
+
+    STORED = ["/a/x.jpg", "/mnt/a/y.jpg", "/b/z.jpg"]
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t", "\n"])
+    @pytest.mark.parametrize("ci_host", [False, True])
+    def test_a_blank_entry_alone_sees_nothing(self, photos_db, monkeypatch, caplog, blank, ci_host):
+        monkeypatch.setattr(db_helpers, "_CASE_INSENSITIVE_HOST", ci_host)
+        assert _clause([blank]) == (db_helpers.NO_VISIBILITY_SQL, [])
+        with caplog.at_level(logging.WARNING, logger="facet.api.db_helpers"):
+            assert _visible(photos_db, [blank], self.STORED) == set()
+        assert any("alice" in r.getMessage() and "blank" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("ci_host", [False, True])
+    def test_a_blank_entry_does_not_widen_a_real_one(self, photos_db, monkeypatch, ci_host):
+        monkeypatch.setattr(db_helpers, "_CASE_INSENSITIVE_HOST", ci_host)
+        assert _visible(photos_db, ["", "/mnt/a"], self.STORED) == {"/mnt/a/y.jpg"}
+
+    def test_a_none_entry_is_ignored_too(self, photos_db):
+        assert _clause([None]) == (db_helpers.NO_VISIBILITY_SQL, [])
