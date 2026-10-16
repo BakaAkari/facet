@@ -10,8 +10,9 @@ The oracle must not be circular. Two things keep it independent of the code unde
 * the ROW ORDER comes from HEAD's own statement (``HEAD_BURST_SQL``, byte for byte
   ``... WHERE phash IS NOT NULL ORDER BY date_taken``) executed by SQLite against the same
   database, never from the Python sort key the new code pins. The order of equal dates is
-  whatever the planner's index walk yields; ``head_order_plan`` returns the plan so the test
-  can assert it is the one the pin was derived from (``idx_date_taken_desc``);
+  whatever the planner's index walk yields, so the oracle pins that walk to the index the pin
+  was derived from (``idx_date_taken_desc``, see ``HEAD_ORDER_INDEX``); ``head_order_plan``
+  returns the plan so the test can assert the walk is still an index scan, not a sort;
 * the date of every pair is parsed per pair, as HEAD did, and nothing is precomputed.
 
 ``reference_bursts`` returns ``(state, emitted, group_count)``: ``state`` maps path to
@@ -32,12 +33,21 @@ HEAD_BURST_SQL = (
     "FROM photos WHERE phash IS NOT NULL ORDER BY date_taken"
 )
 
+# HEAD's tie order is whichever index the planner walks. The SQLite the pin was derived on
+# (3.51) walks ``idx_date_taken_desc``; an older planner (the ubuntu-24.04 CI runner's) prefers
+# the new ``idx_date_asc_cover``, an index HEAD's schema never had. ``INDEXED BY`` replays the
+# 3.51 walk on every SQLite, so the order still comes from HEAD's statement and HEAD's index,
+# not from the Python sort key under test.
+HEAD_ORDER_INDEX = "idx_date_taken_desc"
+_ORACLE_SQL = HEAD_BURST_SQL.replace(
+    "FROM photos WHERE", f"FROM photos INDEXED BY {HEAD_ORDER_INDEX} WHERE")
+
 
 def head_order_plan(db_path):
     """The ``EXPLAIN QUERY PLAN`` detail lines of HEAD's statement on this database."""
     conn = sqlite3.connect(db_path)
     try:
-        return [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + HEAD_BURST_SQL)]
+        return [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + _ORACLE_SQL)]
     finally:
         conn.close()
 
@@ -47,7 +57,7 @@ def reference_bursts(db_path, max_hamming_distance, time_window_minutes, rapid_b
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        photos = conn.execute(HEAD_BURST_SQL).fetchall()
+        photos = conn.execute(_ORACLE_SQL).fetchall()
 
         stored = {
             r['path']: (r['phash'], r['is_burst_lead'], r['burst_group_id'])

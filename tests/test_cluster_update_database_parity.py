@@ -320,10 +320,21 @@ def test_person_rows_match_the_golden(case, actual, golden):
 
 
 @pytest.mark.parametrize("case", CASES)
-def test_centroid_bytes_match_the_golden(case, actual, golden):
-    """Bit-identical: ``ORDER BY id`` and the unchanged mean pin the summation order."""
-    assert [p["centroid"] for p in actual[case]["persons"]] == \
-           [p["centroid"] for p in golden[case]["persons"]]
+def test_centroids_match_the_golden(case, actual, golden):
+    """``ORDER BY id`` and the unchanged mean pin the summation order, so on the machine that
+    produced the golden the bytes are identical. The normalisation goes through the BLAS
+    build, which differs between platforms in the last float32 bit, so a tolerance is compared
+    here; it is far below anything a face-to-person distance can see."""
+    def vec(b64):
+        return None if b64 is None else np.frombuffer(base64.b64decode(b64), dtype=np.float32)
+    got = [vec(p["centroid"]) for p in actual[case]["persons"]]
+    want = [vec(p["centroid"]) for p in golden[case]["persons"]]
+    assert len(got) == len(want)
+    for g, w in zip(got, want):
+        if w is None:
+            assert g is None
+        else:
+            np.testing.assert_allclose(g, w, atol=1e-6)
 
 
 def test_the_scenario_exercises_what_it_claims(actual):

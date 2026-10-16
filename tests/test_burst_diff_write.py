@@ -379,7 +379,10 @@ def test_burst_read_is_a_covering_scan_of_idx_post_scan(tmp_path):
 
 def test_head_burst_statement_still_plans_the_pinned_order(tmp_path):
     """The Python tie order is the order of this plan (NULL dates first, equal dates by
-    DESCENDING rowid). Any other plan means the pin no longer reproduces HEAD: stop."""
+    DESCENDING rowid). Any other plan means the pin no longer reproduces HEAD: stop.
+
+    The oracle names the index with ``INDEXED BY`` (an older planner picks another one), so
+    this guards the walk itself: an index scan in that order, never a temp B-tree sort."""
     db_path = str(tmp_path / "burst.db")
     _build_library(db_path, 1, with_faces=False, with_learned=False)
     plan = head_order_plan(db_path)
