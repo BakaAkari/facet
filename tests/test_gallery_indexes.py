@@ -479,9 +479,14 @@ def test_camera_page_walks_the_camera_index_in_sort_order(gallery, traced, spars
         _create_entry(conn, 'idx_gallery_camera',
                       f"camera_model, lens_model, aggregate DESC, path, {_C}")
         conn.execute("ANALYZE photos")
+    # The positive check must fail. Which plan replaces it is the planner's choice
+    # (a temp sort over the camera's rows, or a walk of idx_gallery_aggregate),
+    # and it differs between SQLite builds.
     for sql in pages:
         plan = _plan(sparse_db, sql)
-        assert _temp_sort(plan), plan
+        walks_in_order = (any("INDEX idx_gallery_camera (camera_model=?)" in line for line in plan)
+                          and not _temp_sort(plan))
+        assert not walks_in_order, plan
 
 
 def test_star_rating_sort_uses_the_rating_path_index(gallery, traced, sparse_db):
