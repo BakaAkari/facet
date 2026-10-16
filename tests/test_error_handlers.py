@@ -17,6 +17,7 @@ from api import (
     unhandled_exception_handler,
     validation_exception_handler,
 )
+from utils.exit_codes import LIBRARY_LOCK_HELD_EXIT_CODE
 
 
 def _make_app(slow_request_ms=1000):
@@ -202,6 +203,38 @@ class TestLibraryBusy:
             resp = client.post("/api/photo/set_rating",
                                json={"photo_path": seeded_photos[0]["path"], "rating": 4})
         self._assert_busy(resp)
+
+    @pytest.mark.parametrize("path, body", [
+        ("/api/recalculate", None),
+        ("/api/stats/categories/recompute", {"category": "portrait"}),
+    ])
+    @pytest.mark.parametrize("returncode, status", [
+        (LIBRARY_LOCK_HELD_EXIT_CODE, 503),  # another job holds the library lock
+        (1, 500),  # any other failure of the child
+    ])
+    def test_a_facet_child_refused_by_the_library_lock_answers_busy(
+            self, monkeypatch, path, body, returncode, status):
+        """The lock is the source of truth: another worker's index build, a scan or
+        a CLI recompute holds it while this process reports nothing building."""
+        import asyncio
+
+        class Child:
+            def __init__(self):
+                self.returncode = returncode
+
+            async def communicate(self):
+                return b"", b"A scan is already running"
+
+        async def spawn(*args, **kwargs):
+            return Child()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        resp = self._client(monkeypatch).post(path, json=body)
+        if status == 503:
+            self._assert_busy(resp)
+        else:
+            assert resp.status_code == 500, resp.text
+            assert resp.json()["detail"] != "library_busy"
 
     @pytest.mark.parametrize("path, body", [
         ("/api/recalculate", None),

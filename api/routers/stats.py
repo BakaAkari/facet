@@ -23,7 +23,8 @@ from api.config import (
 )
 from api.database import get_async_db, get_db
 from api.db_helpers import (
-    get_visibility_clause, refuse_while_gallery_index_build_runs, to_exif_date, to_iso_date,
+    get_visibility_clause, library_lock_held_error, refuse_while_gallery_index_build_runs,
+    to_exif_date, to_iso_date,
 )
 from api.config_writes import update_category_weights
 from api.models.stats import (
@@ -1140,7 +1141,7 @@ async def api_stats_categories_recompute(
             raise HTTPException(
                 status_code=500,
                 detail=stderr or stdout,
-            )
+            ) from library_lock_held_error(proc.returncode)
 
     except HTTPException:
         raise

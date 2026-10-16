@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from api import create_app
 from api.auth import CurrentUser, create_access_token, require_authenticated
 from api.routers.scan import SCAN_STREAM_PURPOSE
+from utils.exit_codes import LIBRARY_LOCK_HELD_EXIT_CODE
 
 _AUTH_MODULE = "api.auth"
 _ROUTER_MODULE = "api.routers.scan"
@@ -1560,7 +1561,7 @@ class TestUpgradeDbSchemaLock:
             with pytest.raises(SystemExit) as exit_info:
                 facet._upgrade_db_schema(self._upgrade_args(db_path), db_path)
 
-        assert exit_info.value.code == 1
+        assert exit_info.value.code == LIBRARY_LOCK_HELD_EXIT_CODE
         assert migrated == []
 
     def test_the_lock_is_released_even_when_the_migration_raises(self, tmp_path, monkeypatch):
@@ -1758,7 +1759,7 @@ class TestScanHoldsTheLibraryLock:
         facet.main()
 
         result = seen['result']
-        assert result.returncode == 1
+        assert result.returncode == LIBRARY_LOCK_HELD_EXIT_CODE
         output = result.stdout + result.stderr
         assert "A scan is already running" in output
         assert "Traceback" not in output
@@ -1776,7 +1777,7 @@ class TestScanHoldsTheLibraryLock:
             holder.kill()
             holder.wait()
 
-        assert result.returncode == 1
+        assert result.returncode == LIBRARY_LOCK_HELD_EXIT_CODE
         output = result.stdout + result.stderr
         assert "recompute is already running" in output
         assert "Found 0 total" not in output
@@ -1913,8 +1914,16 @@ class TestLibraryJobCoverage:
             holder.kill()
             holder.wait()
 
-        assert result.returncode == 1
+        assert result.returncode == LIBRARY_LOCK_HELD_EXIT_CODE
         assert "scan is already running" in result.stdout + result.stderr
+
+    def test_only_a_held_lock_exits_with_the_busy_code(self):
+        """The viewer answers 503 library_busy on that code, so an unusable lock
+        file (a fault that waiting does not clear) must keep exiting 1."""
+        from facet import LibraryLockError, LibraryLockUnusableError, _library_lock_exit_code
+
+        assert _library_lock_exit_code(LibraryLockError("held")) == LIBRARY_LOCK_HELD_EXIT_CODE
+        assert _library_lock_exit_code(LibraryLockUnusableError("unusable")) == 1
 
     def test_a_read_only_command_is_not_blocked_by_the_lock(self, tmp_path):
         db_path = str(tmp_path / "photos.db")

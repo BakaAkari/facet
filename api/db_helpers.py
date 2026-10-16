@@ -35,6 +35,7 @@ from db import DEFAULT_DB_PATH
 from db.person_centroids import recompute_person_centroid
 from db.manual_tags import TAG_SEPARATOR, normalize_manual_tag, ManualTagError
 from utils.detection import DEFAULT_PHOTO_THUMBNAIL_SIZE
+from utils.exit_codes import LIBRARY_LOCK_HELD_EXIT_CODE
 from utils.panorama import KINDS as PANORAMA_KINDS
 from utils.sequence import BRACKET as BRACKET_KIND
 
@@ -55,11 +56,13 @@ RETRY_BASE_DELAY = 0.05
 # handler hold one of the 40 anyio threadpool tokens for ~20 s before answering
 # 503. Whichever limit is reached first ends the retries, so a burst that clears
 # instantly still gets all its attempts. The budget is checked before a retry
-# starts, never during one, so the worst case is the first attempt's busy_timeout
-# plus one more busy_timeout-long retry: about 10 s before the 503. No retry is
-# made while this process builds the gallery indexes (about 5 s), but the build
-# status is per process: with --workers N only the worker that builds skips the
-# retry, and a write that reaches another worker can still take about 10 s.
+# starts, never during one, and it starts at the first lock error, so a retry can
+# start up to the whole budget later (after quick failures such as an immediate
+# SQLITE_BUSY_SNAPSHOT) and then sit out busy_timeout again: the worst case is
+# 5 + 2.5 + 5, about 12.5 s before the 503. No retry is made while this process
+# builds the gallery indexes (about 5 s), but the build status is per process:
+# with --workers N only the worker that builds skips the retry, and a write that
+# reaches another worker can still take up to about 12.5 s.
 RETRY_BUDGET_SECONDS = 2.5
 
 # The stable `detail` code of the 503 answered when SQLite reports the database
@@ -151,6 +154,20 @@ def refuse_while_gallery_index_build_runs() -> None:
     if gallery_index_build_running():
         raise sqlite3.OperationalError(
             f"{_BUSY_MESSAGES[0]} (the gallery index build holds the library lock)")
+
+
+def library_lock_held_error(returncode):
+    """The busy error for a ``facet.py`` child that exited on a held library lock, else None.
+
+    The library lock, not this process's build status, is the source of truth:
+    another worker's index build, a scan or a CLI recompute holds it just the
+    same. Raise the route's own 5xx ``from`` it, and the app's handler
+    (api/__init__.py) answers 503 ``library_busy`` instead.
+    """
+    if returncode != LIBRARY_LOCK_HELD_EXIT_CODE:
+        return None
+    return sqlite3.OperationalError(
+        f"{_BUSY_MESSAGES[0]} (another library job holds the library lock)")
 
 
 def _schema_caches_warm(now: float) -> bool:

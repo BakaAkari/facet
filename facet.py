@@ -100,6 +100,7 @@ from config.scoring_config import resolve_scoring_config_path
 from utils.image_loading import (
     RAW_EXTENSIONS, HEIF_EXTENSIONS, JPEG_EXTENSIONS, SCANNABLE_IMAGE_EXTENSIONS,
 )
+from utils.exit_codes import LIBRARY_LOCK_HELD_EXIT_CODE
 
 
 
@@ -1494,18 +1495,28 @@ class LibraryLock:
         return False
 
 
+def _library_lock_exit_code(ex):
+    """``LIBRARY_LOCK_HELD_EXIT_CODE`` when another job holds the lock, 1 when it is unusable."""
+    return 1 if isinstance(ex, LibraryLockUnusableError) else LIBRARY_LOCK_HELD_EXIT_CODE
+
+
 def _acquire_library_lock(args, kind):
-    """Hold the library lock for this job, or exit(1) with a clear message."""
+    """Hold the library lock for this job, or exit with a clear message.
+
+    A lock held by another job exits ``LIBRARY_LOCK_HELD_EXIT_CODE``, which the
+    viewer answers 503 ``library_busy`` for the jobs it spawns; an unusable lock
+    file exits 1.
+    """
     lock = LibraryLock(args.db, kind=kind, force=args.force_library_lock)
     try:
         return lock.acquire()
     except LibraryLockError as ex:
         logger.error("%s", ex)
-        exit(1)
+        exit(_library_lock_exit_code(ex))
 
 
 def hold_library_lock_or_exit(db_path, kind):
-    """Take the library mutex for a job in a sibling CLI, or exit(1) with the reason.
+    """Take the library mutex for a job in a sibling CLI, or exit with the reason.
 
     ``database.py``, ``validate_db.py`` and ``tag_existing.py`` rewrite the same
     ``photos`` table this module's jobs do, so they contend for SQLite's single
@@ -1516,7 +1527,7 @@ def hold_library_lock_or_exit(db_path, kind):
         return LibraryLock(db_path, kind=kind).acquire()
     except LibraryLockError as ex:
         logger.error("%s", ex)
-        sys.exit(1)
+        sys.exit(_library_lock_exit_code(ex))
 
 
 def _library_job_requested(args):

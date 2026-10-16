@@ -26,7 +26,9 @@ from api.config import (
 )
 from api.database import get_db
 from api.path_validation import resolve_photo_disk_path
-from api.db_helpers import get_visibility_clause, refuse_while_gallery_index_build_runs
+from api.db_helpers import (
+    get_visibility_clause, library_lock_held_error, refuse_while_gallery_index_build_runs,
+)
 from api.models.comparison import (
     NextPairResponse, DownloadOptionsResponse, CategoryPrioritiesResponse,
     ScoringContextsResponse, ComparisonStatsResponse, CategoryWeightsResponse,
@@ -426,7 +428,7 @@ async def api_recalculate(
             raise HTTPException(
                 status_code=500,
                 detail=f'Recalculation failed: {stderr or stdout}',
-            )
+            ) from library_lock_held_error(proc.returncode)
 
     except HTTPException:
         raise
