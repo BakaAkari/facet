@@ -35,15 +35,20 @@ VARIANTS = {
     'clip': dict(shadow_clipped=1, highlight_clipped=1, liqe_score=3.3, aesthetic_iaa=8.1),
 }
 # Captured by running the pre-W4 calculate_aggregate_logic (HEAD 291488f6).
+# The default / landscape / night entries (the categories whose quality_percent is
+# non-zero) were re-captured when quality_percent became a real aesthetic weight instead
+# of a flat constant: (a + q) * aes replaces a * aes + q, so each moves by q * (aes - 1)
+# with aes = 6.3 here: default +0.318 (q = 0.06), landscape and night +0.159 (q = 0.03).
+# Every category with no quality weight keeps its pre-W4 value to the last digit.
 GOLDENS = {
-    'plain': (6.028, 'default'),
+    'plain': (6.345999999999998, 'default'),
     'portrait': (6.748999999999999, 'portrait'),
     'group': (6.673999999999999, 'group_portrait'),
     'blink': (3.5839999999999996, 'portrait'),
-    'landscape': (5.876999999999999, 'landscape'),
-    'night': (4.686999999999999, 'night'),
+    'landscape': (6.036, 'landscape'),
+    'night': (4.846, 'night'),
     'mono': (7.393, 'urban'),
-    'clip': (3.482, 'default'),
+    'clip': (3.799999999999999, 'default'),
 }
 
 
@@ -94,13 +99,14 @@ def test_commercial_score_with_null_iqa_matches_manual_renormalisation(commercia
     m = _photo('plain')
     m.update(aesthetic_iaa=None, liqe_score=None, face_quality_iqa=None, noise_sigma=0.5)
     score, cat = f.calculate_aggregate_logic(m)
-    w = f.config.get_weights(cat)
-    vec = build_metric_vector(m, f.config, cat, weights=w)
+    w = dict(f.config.get_weights(cat))
+    w['aesthetic'] = w.get('aesthetic', 0.0) + w.get('quality', 0.0)  # quality is folded into aesthetic
+    vec = build_metric_vector(m, f.config, cat)
     kept = {k: w.get(k, 0.0) for k in vec if k not in gone and w.get(k, 0.0) > 0}
-    rem = sum(kept.values()) + w.get('quality', 0.0)  # quality is folded into aesthetic
+    rem = sum(kept.values())
     manual = sum(max(0.0, min(10.0, vec[k])) * v / rem for k, v in kept.items()) + w.get('bonus', 0.0)
     pen = _calculate_scoring_penalties(m, f.config)
-    assert pen['noise_penalty'] == 0 and pen['bimodality_penalty'] == 0 and pen['oversaturation_penalty'] == 0
+    assert pen['noise_penalty'] == 0 and pen['oversaturation_penalty'] == 0
     assert not set(kept) & gone
     assert score == pytest.approx(manual, abs=1e-9)
     # and the vector omits (does not neutralise) those metrics

@@ -62,7 +62,7 @@ METRIC_COLUMNS = {
 # Additional DB columns needed for modifier optimization and filter analysis
 EXTRA_COLUMNS = [
     'noise_sigma', 'shadow_clipped', 'highlight_clipped',
-    'histogram_bimodality', 'mean_saturation', 'is_blink',
+    'mean_saturation', 'is_blink',
     'is_monochrome', 'is_silhouette', 'face_ratio', 'face_count',
     'iso', 'shutter_speed', 'tags', 'mean_luminance',
 ]
@@ -915,8 +915,6 @@ def optimize_modifiers(
     noise_threshold = penalty_settings.get('noise_sigma_threshold', 4.0)
     noise_max_pen = penalty_settings.get('noise_max_penalty_points', 1.5)
     noise_rate = penalty_settings.get('noise_penalty_per_sigma', 0.3)
-    bimodality_threshold = penalty_settings.get('bimodality_threshold', 2.5)
-    bimodality_pen = penalty_settings.get('bimodality_penalty_points', 0.5)
     oversat_threshold = penalty_settings.get('oversaturation_threshold', 0.9)
     oversat_pen = penalty_settings.get('oversaturation_penalty_points', 0.5)
     skip_clipping = weights.get('_skip_clipping_penalty', category == 'silhouette')
@@ -949,7 +947,6 @@ def optimize_modifiers(
     base_scores = np.zeros(n)
     noise_penalties = np.zeros(n)
     clipping_penalties = np.zeros(n)
-    bimodality_penalties = np.zeros(n)
     oversat_penalties = np.zeros(n)
     mos = np.zeros(n)
 
@@ -977,11 +974,6 @@ def optimize_modifiers(
             if shadow or highlight:
                 clipping_penalties[i] = shadow * 0.5 + highlight * 1.0
 
-        # Bimodality penalty
-        bimod = float(r.get('histogram_bimodality') or 0)
-        if bimod > bimodality_threshold:
-            bimodality_penalties[i] = bimodality_pen
-
         # Oversaturation penalty
         if not skip_oversat:
             mean_sat = float(r.get('mean_saturation') or 0)
@@ -994,7 +986,6 @@ def optimize_modifiers(
         scores = base_scores + bonus
         scores -= clipping_penalties * clip_mult
         scores -= noise_penalties * noise_tol
-        scores -= bimodality_penalties
         scores -= oversat_penalties
         return np.clip(scores, 0.0, 10.0)
 

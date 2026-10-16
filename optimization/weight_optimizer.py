@@ -238,7 +238,7 @@ class WeightOptimizer:
         Values are clamped to 0-10 exactly as the scorer clamps them.
         """
         cat = category or self.cfg.determine_category(with_face_defaults(row))
-        vec = build_metric_vector(row, self.cfg, cat, weights=self.cfg.get_weights(cat))
+        vec = build_metric_vector(row, self.cfg, cat)
         return [max(0.0, min(10.0, vec.get(c, 0.0))) for c in self.SCORE_COMPONENTS]
 
     def _fetch_comparison_data(

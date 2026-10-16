@@ -447,7 +447,9 @@ class BatchProcessor:
                     'histogram_spread': float(histogram_data['spread']),
                     'mean_luminance': float(histogram_data['mean_luminance']),
                     'histogram_bimodality': float(histogram_data['bimodality']),
-                    'power_point_score': float(comp_data['power_point_score']),
+                    # None (no subject box) is stored as NULL, never as a made-up 5.0
+                    'power_point_score': (None if comp_data['power_point_score'] is None
+                                          else float(comp_data['power_point_score'])),
                     'raw_color_entropy': float(color_data['raw_entropy']),
                     'raw_eye_sharpness': float(face_res.get('raw_eye_sharpness', 0)),
                     'config_version': self.scorer.config.version_hash,

@@ -3,7 +3,9 @@
 ``ReferenceSaliency`` holds the bodies of ``SaliencyScorer._score_from_mask``,
 ``SaliencyScorer._compute_placement_score`` and ``models.saliency_scorer.bbox_from_mask`` as they were
 at 07280e7a (float64 numpy formulation). Nothing here may be "improved": it exists so a faster rewrite
-is compared against what shipped, not against itself. ``tests/test_saliency_exact.py`` and
+is compared against what shipped, not against itself. The one deliberate deviation is the no-subject
+branch of ``_score_from_mask``: it stores None (not a made-up 5.0) for the three metrics that need a
+subject, because the production method now does. ``tests/test_saliency_exact.py`` and
 ``scripts/perf/verify_saliency_exact.py`` both import it.
 """
 import cv2
@@ -38,13 +40,13 @@ class ReferenceSaliency:
         subject_pixels = np.count_nonzero(mask)
         subject_prominence = subject_pixels / total_pixels if total_pixels > 0 else 0
 
-        # If no subject detected, return defaults
+        # If no subject detected, return defaults (None, not 5.0: see the module docstring)
         if subject_pixels < self.min_subject_pixels:  # Minimum subject size
             return {
-                'subject_sharpness': 5.0,
+                'subject_sharpness': None,
                 'subject_prominence': 0.0,
-                'subject_placement': 5.0,
-                'bg_separation': 5.0,
+                'subject_placement': None,
+                'bg_separation': None,
                 'subject_bbox': None,
             }
 

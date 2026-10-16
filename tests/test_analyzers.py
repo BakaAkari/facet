@@ -55,7 +55,7 @@ class TestPlacementData:
     def test_no_bbox_no_image_falls_back_to_center_assumption(self):
         data = CompositionAnalyzer.get_placement_data(None, 1000, 1000)
         assert data["score"] == 7.0
-        assert data["power_point_score"] == 5.0
+        assert data["power_point_score"] is None
         assert data["line_score"] == 5.0
 
     def test_power_point_score_high_at_intersection(self):

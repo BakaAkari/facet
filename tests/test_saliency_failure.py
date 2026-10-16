@@ -16,6 +16,8 @@ from processing.multi_pass import (  # noqa: E402
     SALIENCY_FAILED_KEY, SALIENCY_PASS_COLUMNS,
 )
 
+_NO_SUBJECT = {'subject_sharpness': None, 'subject_prominence': 0.0, 'subject_placement': None,
+               'bg_separation': None, 'subject_bbox': None}
 _COLS = ('subject_sharpness', 'subject_prominence', 'subject_placement', 'bg_separation',
          'subject_bbox')
 _FAILED = {k: None for k in _COLS}
@@ -52,11 +54,10 @@ def test_failed_photo_is_flagged_and_its_five_keys_stay_unset(seeded):
 
 def test_successful_photo_keeps_its_values_including_a_legit_no_subject_result(seeded):
     path, facet, _ = seeded
-    neutral = {'subject_sharpness': 5.0, 'subject_prominence': 0.0, 'subject_placement': 5.0,
-               'bg_separation': 5.0, 'subject_bbox': None}
-    results = _run_pass(_processor(facet, [['saliency']]), path, [neutral])
+    results = _run_pass(_processor(facet, [['saliency']]), path, [dict(_NO_SUBJECT)])
     assert SALIENCY_FAILED_KEY not in results[path]
-    assert results[path]['subject_sharpness'] == 5.0
+    assert results[path]['subject_sharpness'] is None
+    assert results[path]['subject_prominence'] == 0.0
     assert results[path]['subject_bbox'] is None
 
 
@@ -190,3 +191,68 @@ def test_restricted_save_skips_saliency_columns_of_a_flagged_photo_even_if_prese
              _images(path))
 
     assert _saliency_row(db, path) == before
+
+
+# --- T8: a photo with no subject stores NULL, not a made-up 5.0 ---------------------------
+
+def _stub_scorer():
+    from tests import test_saliency as _ts
+    return _ts
+
+
+def test_below_min_subject_pixels_scores_null_with_zero_prominence():
+    import numpy as np
+    from models.saliency_scorer import SaliencyScorer
+    scorer = SaliencyScorer.__new__(SaliencyScorer)
+    scorer.min_subject_pixels = 50
+    scorer.mask_threshold = 0.3
+    img = np.full((12, 16, 3), 120, dtype=np.uint8)
+    for mask in (np.zeros((12, 16), np.uint8),                         # empty
+                 np.pad(np.full((3, 3), 255, np.uint8), ((0, 9), (0, 13)))):  # 9 px < 50
+        assert scorer._score_from_mask(mask, img) == _NO_SUBJECT
+
+
+def test_batch_logs_no_failure_for_a_no_subject_photo(caplog):
+    import numpy as np
+    ts = _stub_scorer()
+    scorer = ts._fixed_batch(ts._oom_scorer(), 4)
+    imgs = ts._tagged_images(2)  # image 0 gets an empty mask, image 1 a full-frame one
+    cv = [np.full((12, 16, 3), 200, dtype=np.uint8)] * 2
+    with caplog.at_level("ERROR", logger="facet.saliency"):
+        results = scorer.score_batch(imgs, cv)
+    assert results[0] == _NO_SUBJECT
+    assert results[1]['subject_sharpness'] is not None
+    assert not [r for r in caplog.records if "Saliency failed" in r.getMessage()]
+    # ... and it is not the failure signature the writers test for
+    assert not all(results[0][k] is None for k in _COLS[:4])
+
+
+def test_batch_still_logs_a_genuine_failure(caplog):
+    import numpy as np
+    ts = _stub_scorer()
+    scorer = ts._fixed_batch(ts._oom_scorer(max_ok=0), 4)  # every mask comes back None
+    cv = [np.full((12, 16, 3), 200, dtype=np.uint8)] * 2
+    with caplog.at_level("ERROR", logger="facet.saliency"):
+        results = scorer.score_batch(ts._tagged_images(2), cv)
+    assert results == [dict(_FAILED), dict(_FAILED)]
+    assert [r for r in caplog.records if "Saliency failed for 2 of 2" in r.getMessage()]
+
+
+def test_no_subject_photo_is_saved_as_null_with_zero_prominence(seeded):
+    path, facet, db = seeded
+    proc = _processor(facet, [['saliency']])
+    results = _run_pass(proc, path, [dict(_NO_SUBJECT)])
+    assert SALIENCY_FAILED_KEY not in results[path]
+    _persist(proc, results, _images(path))
+    assert _saliency_row(db, path) == _NO_SUBJECT
+
+
+def test_recompute_flush_writes_a_no_subject_photo_as_null(recompute_db):
+    import facet as facet_cli
+    _, db = recompute_db
+    with get_connection(db, row_factory=False) as conn:
+        written = facet_cli._flush_saliency_batch(
+            conn, _Scorer([dict(_NO_SUBJECT)]), ['/x/never.jpg'], [object()], [object()])
+        conn.commit()
+    assert written == 1  # a result, not a failure
+    assert _saliency_row(db, '/x/never.jpg') == _NO_SUBJECT

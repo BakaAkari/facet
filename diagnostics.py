@@ -516,7 +516,8 @@ def _report_config_notices(config):
     """
     _section("Config notices")
     try:
-        notices = config.config_notices()
+        # The astro-guard notice is doctor-only: it is the operator's choice to keep it off
+        notices = [*config.config_notices(), *config.validate_astro_guard()]
     except Exception as e:
         _warn("Config notices", f"could not evaluate: {e}")
         return

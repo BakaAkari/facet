@@ -93,7 +93,8 @@
           "stars",
           "milky way"
         ],
-        "tag_match_mode": "any"
+        "tag_match_mode": "any",
+        "luminance_max": 0.30
       },
       "weights": {
         "aesthetic_percent": 52,
@@ -202,9 +203,6 @@
       },
       "modifiers": {
         "noise_tolerance_multiplier": 0.1,
-        "iso_tolerance_multiplier": 0.2,
-        "min_saturation_bonus": 0.3,
-        "contrast_bonus": 0.2,
         "_skip_oversaturation_penalty": true
       },
       "tags": {
@@ -948,7 +946,6 @@
       },
       "modifiers": {
         "noise_tolerance_multiplier": 0.93,
-        "iso_tolerance_multiplier": 0.3,
         "bonus": 0.541,
         "_clipping_multiplier": 0.501
       },
@@ -2410,12 +2407,7 @@
     "score_precision": 2
   },
   "thresholds": {
-    "portrait_face_ratio_percent": 5,
-    "blink_penalty_percent": 50,
-    "night_luminance_threshold": 0.15,
-    "night_iso_threshold": 3200,
-    "long_exposure_shutter_threshold": 1.0,
-    "astro_shutter_threshold": 10.0
+    "blink_penalty_percent": 50
   },
   "composition": {
     "power_point_weight": 2.0,
@@ -2434,11 +2426,8 @@
     "noise_sigma_threshold": 4.0,
     "noise_max_penalty_points": 1.5,
     "noise_penalty_per_sigma": 0.3,
-    "bimodality_threshold": 2.5,
-    "bimodality_penalty_points": 0.5,
     "leading_lines_blend_percent": 30,
     "oversaturation_threshold": 0.9,
-    "oversaturation_pixel_percent": 5,
     "oversaturation_penalty_points": 0.5
   },
   "normalization": {

@@ -1397,7 +1397,9 @@ class ChunkedMultiPassProcessor:
                 'comp_score': round(data.get('comp_score', 5.0), 2),
                 'composition_pattern': data.get('composition_pattern'),
                 'composition_explanation': data.get('composition_explanation'),
-                'power_point_score': float(data.get('power_point_score', 5.0)),
+                # An explicit None (no subject box) is stored as NULL, never as a made-up 5.0
+                'power_point_score': (None if data.get('power_point_score', 5.0) is None
+                                      else float(data.get('power_point_score', 5.0))),
                 'leading_lines_score': float(data.get('leading_lines_score', 0)),
 
                 # Supplementary PyIQA scores

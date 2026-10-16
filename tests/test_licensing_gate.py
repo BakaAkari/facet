@@ -771,19 +771,25 @@ class TestNullHonestFaces:
 # Default-mode numerics are byte-identical (goldens captured from the pre-change code)
 # ---------------------------------------------------------------------------
 
+# The landscape, default and no_face entries (the categories whose quality_percent is non-zero)
+# were re-captured when quality_percent became a real aesthetic weight instead of a flat
+# constant: (a + q) * aes replaces a * aes + q, so each moves by exactly q * (aes - 1):
+# landscape +0.135 (q = 0.03, aes 5.5), default +0.126 (q = 0.06, aes 3.1), the multi-pass
+# no_face row +0.186 (q = 0.03, aes 7.2). Every category with no quality weight (portrait,
+# group_portrait) keeps its pre-change value to the last digit.
 GOLDEN_SAMPLES = [
     dict(aesthetic=7.2, face_count=1, face_quality=6.5, eye_sharpness=7.0, face_sharpness=6.0,
          face_ratio=0.22, is_group_portrait=0, is_blink=0, isolation_bonus=1.4, comp=6.1,
          tags='portrait,person', iso=200, f_stop=1.8, want=(6.985, 'portrait')),
     dict(aesthetic=5.5, face_count=0, face_quality=0, eye_sharpness=0, face_sharpness=0,
          face_ratio=0, is_group_portrait=0, is_blink=0, isolation_bonus=1.0, comp=7.5,
-         tags='landscape,mountain', iso=100, f_stop=8.0, want=(6.289743333333333, 'landscape')),
+         tags='landscape,mountain', iso=100, f_stop=8.0, want=(6.424743333333333, 'landscape')),
     dict(aesthetic=8.8, face_count=5, face_quality=7.1, eye_sharpness=6.2, face_sharpness=5.5,
          face_ratio=0.3, is_group_portrait=1, is_blink=1, isolation_bonus=1.0, comp=5.0,
          tags='group,people', iso=800, f_stop=4.0, want=(3.6820000000000004, 'group_portrait')),
     dict(aesthetic=3.1, face_count=0, face_quality=0, eye_sharpness=0, face_sharpness=0,
          face_ratio=0, is_group_portrait=0, is_blink=0, isolation_bonus=1.0, comp=4.2,
-         tags='', iso=6400, f_stop=None, want=(3.742913333333333, 'default')),
+         tags='', iso=6400, f_stop=None, want=(3.8689133333333325, 'default')),
     dict(aesthetic=9.4, face_count=2, face_quality=8.2, eye_sharpness=8.5, face_sharpness=7.7,
          face_ratio=0.08, is_group_portrait=0, is_blink=0, isolation_bonus=2.1, comp=8.0,
          tags='street,city', iso=400, f_stop=2.0, want=(8.395, 'portrait')),
@@ -1237,7 +1243,7 @@ _NO_FACE = dict(
     results=dict(face_count=0, face_quality=0, eye_sharpness=0, face_sharpness=0, face_ratio=0,
                  face_confidence=0, is_blink=0, is_group_portrait=0, isolation_bonus=1.0,
                  raw_eye_sharpness=0, face_details=[], tags='landscape,mountain'),
-    stored=dict(aesthetic=7.2, aggregate=7.013743333333333, category='landscape',
+    stored=dict(aesthetic=7.2, aggregate=7.199743333333334, category='landscape',
                 scoring_model='topiq', quality_score=7.2, topiq_score=7.2, face_count=0,
                 face_quality=0.0, eye_sharpness=0.0, face_sharpness=0.0, face_ratio=0.0,
                 face_confidence=0.0, is_blink=0, is_group_portrait=0, isolation_bonus=1.0,

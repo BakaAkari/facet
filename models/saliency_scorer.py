@@ -481,13 +481,16 @@ class SaliencyScorer:
         subject_pixels = cv2.countNonZero(mask) if fast_mask else np.count_nonzero(mask)
         subject_prominence = subject_pixels / total_pixels if total_pixels > 0 else 0
 
-        # If no subject detected, return defaults
+        # No subject detected: prominence 0.0 is a real measurement, the three metrics
+        # that need a subject have no value, and None says so (a stored 5.0 was a
+        # made-up score that range filters and statistics could not tell from a real one).
+        # Not the all-None failure signature: a failed photo has a None prominence too.
         if subject_pixels < self.min_subject_pixels:  # Minimum subject size
             return {
-                'subject_sharpness': 5.0,
+                'subject_sharpness': None,
                 'subject_prominence': 0.0,
-                'subject_placement': 5.0,
-                'bg_separation': 5.0,
+                'subject_placement': None,
+                'bg_separation': None,
                 'subject_bbox': None,
             }
 
@@ -694,7 +697,8 @@ class SaliencyScorer:
             logger.error("  Batch saliency mask generation failed for batch size %d: %s", n, e)
             return [dict(failed) for _ in pil_images]
 
-        lost = sum(1 for r in results if r['subject_sharpness'] is None)
+        # The failure signature is all-None; a no-subject photo has prominence 0.0
+        lost = sum(1 for r in results if r['subject_prominence'] is None)
         if lost:
             logger.error("  Saliency failed for %d of %d image(s) in this batch (batch size %d); "
                          "their saliency columns are left unset", lost, n, n)

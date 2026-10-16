@@ -56,7 +56,7 @@ def test_weight_optimizer_categorises_null_like_zero():
     opt._cfg = _cfg()
     seen = []
 
-    def fake_vector(row, cfg, cat, weights=None):
+    def fake_vector(row, cfg, cat, penalties=None, unavailable=()):
         seen.append(cat)
         return {}
 

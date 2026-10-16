@@ -441,11 +441,11 @@ def _calculate_scoring_penalties(metrics, config):
     """Calculate penalty adjustments for scoring.
 
     Args:
-        metrics: Dict with noise_sigma, histogram_bimodality, mean_saturation, leading_lines_score keys.
+        metrics: Dict with noise_sigma, mean_saturation, leading_lines_score keys.
         config: ScoringConfig instance (or None).
 
     Returns:
-        dict with: noise_penalty, bimodality_penalty, oversaturation_penalty, leading_lines, leading_lines_blend
+        dict with: noise_penalty, noise_sigma, oversaturation_penalty, leading_lines, leading_lines_blend
     """
     penalty_settings = config.get_penalty_settings() if config else {}
 
@@ -456,11 +456,6 @@ def _calculate_scoring_penalties(metrics, config):
     noise_penalty = 0
     if noise_sigma > noise_threshold:
         noise_penalty = min(noise_penalty_max, (noise_sigma - noise_threshold) * noise_penalty_rate)
-
-    bimodality = _safe_float(metrics.get('histogram_bimodality'), 0)
-    bimodality_threshold = penalty_settings.get('bimodality_threshold', 2.5)
-    bimodality_penalty_amount = penalty_settings.get('bimodality_penalty_points', 0.5)
-    bimodality_penalty = bimodality_penalty_amount if bimodality > bimodality_threshold else 0
 
     mean_saturation = _safe_float(metrics.get('mean_saturation'), 0)
     oversat_threshold = penalty_settings.get('oversaturation_threshold', 0.9)
@@ -473,7 +468,6 @@ def _calculate_scoring_penalties(metrics, config):
     return {
         'noise_penalty': noise_penalty,
         'noise_sigma': noise_sigma,
-        'bimodality_penalty': bimodality_penalty,
         'oversaturation_penalty': oversaturation_penalty,
         'leading_lines': leading_lines,
         'leading_lines_blend': leading_lines_blend,
@@ -483,7 +477,8 @@ def _calculate_scoring_penalties(metrics, config):
 # Metric keys that calculate_aggregate_logic weights. Single source of truth for
 # the scoring feature space, shared with the weight optimizer so training and
 # serving use the exact same metrics. 'quality' is intentionally excluded from
-# the optimizable set: it is always 0 here (redistributed into 'aesthetic').
+# the optimizable set: it is always 0 here (folded into 'aesthetic' by
+# fold_quality_weight before the weights are applied).
 SCORING_METRIC_KEYS = (
     'aesthetic', 'face_quality', 'face_sharpness', 'eye_sharpness', 'tech_sharpness',
     'composition', 'power_point', 'leading_lines',
@@ -494,7 +489,7 @@ SCORING_METRIC_KEYS = (
 )
 
 
-def build_metric_vector(m, cfg, category, weights=None, penalties=None, unavailable=()):
+def build_metric_vector(m, cfg, category, penalties=None, unavailable=()):
     """Build the per-metric 0-10 scoring vector (pre-weighting).
 
     Single source of truth for the metric values that feed the weighted
@@ -503,8 +498,6 @@ def build_metric_vector(m, cfg, category, weights=None, penalties=None, unavaila
     {metric_key: value}; values sit in each metric's natural 0-10 range and
     'noise' is pre-inverted (higher = less noise = better).
 
-    weights: current category weights (only used for the legacy quality->aesthetic
-             redistribution); defaults to cfg.get_weights(category).
     penalties: precomputed _calculate_scoring_penalties result, to avoid a second
                pass when the caller already has it.
     unavailable: metric keys to leave out instead of substituting the neutral
@@ -512,7 +505,6 @@ def build_metric_vector(m, cfg, category, weights=None, penalties=None, unavaila
                  keeps the default () and so sees every metric.
     """
     safe_float = _safe_float
-    w = weights if weights is not None else (cfg.get_weights(category) if cfg else {})
     exif_settings = cfg.get_exif_adjustments() if cfg else {}
 
     # ISO-aware sharpness compensation
@@ -555,20 +547,13 @@ def build_metric_vector(m, cfg, category, weights=None, penalties=None, unavaila
     else:
         comp = comp_raw
 
-    # Quality weight is redistributed into aesthetic (no separate quality signal)
-    aes_extra = w.get('quality', 0.0)
-    aesthetic_value = (
-        aes + aes_extra / max(w.get('aesthetic', 0.01), 0.01)
-        if w.get('aesthetic', 0) > 0 else aes
-    )
-
     face_sharp = safe_float(m.get('face_sharpness'), 5.0)
     power_point = safe_float(m.get('power_point_score'), 5.0)
     saturation = min(10.0, safe_float(m.get('mean_saturation'), 0.5) * 10.0)
     noise_score = max(0.0, min(10.0, 10.0 - noise_sigma * 0.7))
 
     result = {
-        'aesthetic': aesthetic_value,
+        'aesthetic': aes,
         'face_quality': face_qual,
         'face_sharpness': face_sharp,
         'eye_sharpness': eye_sharp,
@@ -623,11 +608,23 @@ def build_metric_vector(m, cfg, category, weights=None, penalties=None, unavaila
 
 # Every key of a weights dict that names a scored metric (the rest are bonus,
 # penalty multipliers and underscore flags). 'quality' is folded into
-# 'aesthetic' by build_metric_vector but still carries weight.
+# 'aesthetic' by fold_quality_weight but still carries weight in the raw config.
 _WEIGHTED_METRIC_KEYS = frozenset(SCORING_METRIC_KEYS) | {
     'quality', 'symmetry', 'balance', 'edge_entropy', 'fractal', 'color_harmony',
     'qrealign', 'aesthetic_v25', 'deqa',
 }
+
+
+def fold_quality_weight(w):
+    """Fold the ``quality`` weight into ``aesthetic``: the scorer's contract that
+    ``quality_percent`` is "redistributed into aesthetic" (docs/SCORING.md).
+
+    There is no separate quality signal, so the weight is served by the aesthetic
+    metric: ``(aesthetic + quality) * aesthetic_value``. Applied to the raw category
+    weights BEFORE :func:`renormalise_weights`, so a commercial install whose
+    aesthetic metric is unavailable drops the folded weight with it. Returns a copy.
+    """
+    return {**w, 'aesthetic': w.get('aesthetic', 0.0) + w.get('quality', 0.0), 'quality': 0.0}
 
 
 def unavailable_for_config(cfg):
@@ -1332,12 +1329,11 @@ class Facet:
         # Calculate penalties from extracted helper
         penalties = _calculate_scoring_penalties(m, cfg)
         noise_penalty = penalties['noise_penalty']
-        bimodality_penalty = penalties['bimodality_penalty']
         oversaturation_penalty = penalties['oversaturation_penalty']
 
         # Determine photo category and load weights
         category = self._determine_photo_category(m, cfg)
-        w = cfg.get_weights(category) if cfg else {}
+        w = fold_quality_weight(cfg.get_weights(category) if cfg else {})
         unavailable = unavailable_for_config(cfg)
         if unavailable:
             w = renormalise_weights(w, unavailable)
@@ -1346,7 +1342,7 @@ class Facet:
         # DATA-DRIVEN SCORING: weighted sum over the shared metric vector
         # (same feature space used by the weight optimizer for training)
         # =================================================================
-        metric_values = build_metric_vector(m, cfg, category, weights=w, penalties=penalties,
+        metric_values = build_metric_vector(m, cfg, category, penalties=penalties,
                                             unavailable=unavailable)
 
         # Get category flags from config (with sensible defaults)
@@ -1386,7 +1382,6 @@ class Facet:
             score -= clipping_penalty * clipping_multiplier
 
         score -= noise_penalty * noise_tolerance
-        score -= bimodality_penalty
 
         if not skip_oversaturation:
             score -= oversaturation_penalty
@@ -1566,7 +1561,9 @@ class Facet:
                 'histogram_spread': float(histogram_data['spread']),
                 'mean_luminance': float(histogram_data['mean_luminance']),
                 'histogram_bimodality': float(histogram_data['bimodality']),
-                'power_point_score': float(comp_data['power_point_score']),
+                # None (no subject box) is stored as NULL, never as a made-up 5.0
+                'power_point_score': (None if comp_data['power_point_score'] is None
+                                      else float(comp_data['power_point_score'])),
                 'raw_color_entropy': float(color_data['raw_entropy']),
                 'raw_eye_sharpness': float(face_res.get('raw_eye_sharpness', 0)),
                 'config_version': self.config.version_hash,
@@ -1884,13 +1881,16 @@ class Facet:
                 # Use base comp_score - leading lines are added in calculate_aggregate_logic
                 # to avoid double-counting
                 new_comp_score = comp_data['score']
+                # None = no subject box: stored as NULL (this is the one writer that
+                # also replaces the legacy 5.0 placeholders)
                 new_power_point = comp_data.get('power_point_score', 5.0)
 
                 conn.execute(
                     """UPDATE photos
                        SET comp_score = ?, power_point_score = ?, leading_lines_score = ?
                        WHERE path = ?""",
-                    (round(new_comp_score, 2), round(new_power_point, 2),
+                    (round(new_comp_score, 2),
+                     None if new_power_point is None else round(new_power_point, 2),
                      round(leading_lines_data.get('leading_lines_score', 0), 2), path)
                 )
                 updated += 1
