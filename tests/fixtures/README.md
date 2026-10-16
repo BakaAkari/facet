@@ -116,3 +116,34 @@ pillow_heif.from_bytes(mode='RGB;16', size=(w, h), data=rgb.tobytes()).save(
 
 The round trip is exact: reopening with `convert_hdr_to_8bit=False` returns the
 same 1024 distinct values per channel.
+
+## `faces_update_database_golden.json` — 146 KB — synthetic, produced by pre-change code
+
+Not an image. The expected `faces.person_id` and `persons` rows after
+`FaceClusterer._update_database` runs five cases (incremental, a stable second run,
+incremental with new faces, named-only, force) on the synthetic library built by
+`tests/test_cluster_update_database_parity.py::build_library`: about 300 unit-norm
+embeddings in 8 blobs, 10 persons, a second embedding space, noise faces and legacy
+faces with no stored thumbnail. Centroids are stored as base64 of the exact float32
+bytes; person thumbnails as their sha256. No photo file is read (the decode is
+stubbed and the paths do not exist).
+
+It must come from the code BEFORE the owner write was made diff-only, because it is
+the oracle for that change. Produced from commit `8a2bb440` (`git archive HEAD` into
+a scratch directory, nothing checked out) with a driver that puts that tree first on
+`sys.path` and calls the test module's own `run_all_cases()`:
+
+```
+git archive HEAD | tar -x -C <scratch>/head
+PARITY_TEST_FILE=<repo>/tests/test_cluster_update_database_parity.py \
+  python -I dump_golden.py <scratch>/head <scratch>/golden_scratch golden.json 8a2bb440...
+```
+
+`dump_golden.py` is ~20 lines: `os.chdir(tree)`, `sys.path.insert(0, tree)`, load the
+test module by path, assert `faces.clusterer.__file__` lies under `tree`, call
+`run_all_cases(scratch)`, `json.dumps(..., indent=1, sort_keys=True)`, and collapse each
+`[face_id, person_id]` pair onto one line. Regenerate it only from a tree that predates
+the change (or after deliberately changing the scenario in `build_library`, which
+changes the expected rows). On that pre-change tree the parity tests pass and the
+behaviour tests (atomicity, id order, no decode inside a transaction, compare-and-set)
+fail, which is how the file is known to describe HEAD and not the new code.

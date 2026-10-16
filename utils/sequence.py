@@ -258,13 +258,20 @@ def _base_frame(run):
     return _metered_frame(ladder[middle - 1], ladder[middle])
 
 
+# A module constant so a test can plan the real statement. Every column it names is in
+# `idx_date_asc_cover` (db/schema.py), whose leading pair is `(date_taken, path)`, so the
+# read is index-only and the ORDER BY needs no sorter. The ORDER BY is a total order
+# (`path` is unique), so the result never depends on which plan SQLite picks.
+_LOAD_PHOTOS_SQL = (
+    "SELECT path, date_taken, camera_model, f_stop, shutter_speed, iso, phash, "
+    "shadow_clipped, highlight_clipped "
+    "FROM photos WHERE date_taken IS NOT NULL ORDER BY date_taken, path"
+)
+
+
 def _load_photos(conn):
     """Every photo that can carry an EV, in capture order."""
-    rows = conn.execute(
-        "SELECT path, date_taken, camera_model, f_stop, shutter_speed, iso, phash, "
-        "shadow_clipped, highlight_clipped "
-        "FROM photos WHERE date_taken IS NOT NULL ORDER BY date_taken, path"
-    ).fetchall()
+    rows = conn.execute(_LOAD_PHOTOS_SQL).fetchall()
     photos = []
     for row in rows:
         ev = exposure_value(row['f_stop'], row['shutter_speed'], row['iso'])

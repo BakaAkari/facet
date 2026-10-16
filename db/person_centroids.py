@@ -75,9 +75,11 @@ def recompute_person_centroid(conn, person_id, active=None):
     embeddings = []
     if model is not None:
         dim = expected_dim(model)
+        # ORDER BY id: the float summation order of the mean must not depend on
+        # which index happens to serve this read.
         rows = conn.execute(
             "SELECT embedding, embedding_model FROM faces "
-            "WHERE person_id = ? AND embedding IS NOT NULL",
+            "WHERE person_id = ? AND embedding IS NOT NULL ORDER BY id",
             (person_id,),
         ).fetchall()
         for row in rows:

@@ -2886,8 +2886,31 @@ class Facet:
 # HELPER FUNCTIONS
 # ============================================
 
+# The one read ``process_bursts`` makes: EVERY row, through the covering index
+# ``idx_post_scan`` (db/schema.py ``POST_SCAN_INDEXES``). Its column list IS the contract:
+# every non-subquery column named here must be in that index, or this scan walks the table
+# (and its thumbnails) again. ``learned_scores`` is probed by its own autoindex. The read has
+# no ORDER BY on purpose: the grouping order is pinned in Python (see ``process_bursts``), so
+# the result no longer depends on which index the planner picks.
+_BURST_ROWS_SQL = (
+    "SELECT rowid AS rid, path, date_taken, aggregate, phash, "
+    "face_count, eyes_open_score, expression_score, tech_sharpness, "
+    "is_burst_lead, burst_group_id, "
+    "(SELECT ls.learned_score FROM learned_scores ls "
+    " WHERE ls.photo_path = photos.path AND ls.user_id IS NULL "
+    " AND ls.category IS NULL) AS learned_score "
+    "FROM photos"
+)
+
+
 def process_bursts(db_path, config_path=None):
-    """Flags the highest-scoring image in groups of visually similar photos."""
+    """Flags the highest-scoring image in groups of visually similar photos.
+
+    Reads every row once, groups the rows that carry a phash in memory, and writes ONLY the
+    rows whose ``(is_burst_lead, burst_group_id)`` pair differs from the stored one, so a
+    second run on an unchanged library writes nothing. Rows without a phash take no part in
+    grouping: they are standalone (``is_burst_lead = 1``) and keep their ``burst_group_id``.
+    """
     # Load burst detection settings from config
     config = ScoringConfig(config_path)
     burst_config = config.get_burst_detection_settings()
@@ -2901,17 +2924,29 @@ def process_bursts(db_path, config_path=None):
 
     logger.info("Processing burst groups (rapid<=%ss, similarity>=%s%%, window=%smin)...", rapid_burst_seconds, similarity_percent, time_window_minutes)
 
+    from utils.date_utils import parse_date
+    from utils.selection import pick_lead
+
     with get_connection(db_path) as conn:
-        photos = conn.execute(
-            "SELECT path, date_taken, aggregate, phash, "
-            "face_count, eyes_open_score, expression_score, tech_sharpness, "
-            "(SELECT ls.learned_score FROM learned_scores ls "
-            " WHERE ls.photo_path = photos.path AND ls.user_id IS NULL "
-            " AND ls.category IS NULL) AS learned_score "
-            "FROM photos WHERE phash IS NOT NULL ORDER BY date_taken"
-        ).fetchall()
+        rows = conn.execute(_BURST_ROWS_SQL).fetchall()
+
+        # Photos without phash are not part of burst detection.
+        photos = [dict(r) for r in rows if r['phash'] is not None]
         if not photos:
             return
+
+        # The grouping order. SQLite's ``ORDER BY date_taken`` left the order of equal dates to
+        # the plan; the plan the old query used (a backward walk of idx_date_taken_desc) yields
+        # NULL dates first and equal dates by DESCENDING rowid, so that is pinned here. ``str()``
+        # keeps a stray non-text date from raising TypeError against text (the column is TEXT).
+        photos.sort(key=lambda p: (
+            p['date_taken'] is not None,
+            str(p['date_taken']) if p['date_taken'] is not None else '',
+            -p['rid'],
+        ))
+        # Parsed once per photo, not once per pair.
+        for p in photos:
+            p['_date'] = parse_date(p['date_taken'])
 
         # Build person_id lookup only if faces exist
         photo_persons = {}
@@ -2923,20 +2958,11 @@ def process_bursts(db_path, config_path=None):
             for row in face_data:
                 photo_persons.setdefault(row['photo_path'], set()).add(row['person_id'])
 
-        # Reset only photos with phash (ones that will be processed for bursts)
-        # Photos without phash are kept as NULL or set to 1 (standalone)
-        conn.execute("UPDATE photos SET is_burst_lead = 0 WHERE phash IS NOT NULL")
-        # Mark photos without phash as standalone (they weren't part of burst detection)
-        conn.execute("UPDATE photos SET is_burst_lead = 1 WHERE phash IS NULL")
-
         def phash_distance(hash1, hash2):
             """Compute hamming distance between two hex phash strings."""
             if not hash1 or not hash2:
                 return 999
             return bin(int(hash1, 16) ^ int(hash2, 16)).count('1')
-
-        from utils.date_utils import parse_date
-        from utils.selection import pick_lead
 
         def shares_person(path1, path2):
             """Check if two photos share at least one identified person."""
@@ -2950,12 +2976,12 @@ def process_bursts(db_path, config_path=None):
 
         def is_similar_to_burst(photo, burst, threshold, time_limit, rapid_seconds):
             """Check if photo belongs to burst - rapid shots require face consistency."""
-            photo_date = parse_date(photo['date_taken'])
+            photo_date = photo['_date']
             if photo_date is None:
                 return False
 
             for b in burst:
-                b_date = parse_date(b['date_taken'])
+                b_date = b['_date']
                 if b_date is None:
                     continue
 
@@ -2975,49 +3001,67 @@ def process_bursts(db_path, config_path=None):
 
             return False
 
-        # Reset burst_group_id (but preserve burst_reviewed for already-reviewed groups)
-        conn.execute("UPDATE photos SET burst_group_id = NULL WHERE phash IS NOT NULL")
+        # The state every row should end in: rowid -> (is_burst_lead, burst_group_id).
+        # A phash row defaults to "not a lead, in no group"; finalizing its burst overwrites
+        # that. A phash-less row is a standalone lead and its group id is left as stored.
+        wanted = {}
+        for r in rows:
+            if r['phash'] is None:
+                wanted[r['rid']] = (1, r['burst_group_id'])
+        for p in photos:
+            wanted[p['rid']] = (0, None)
+
+        burst_groups_for_emit = []
+
+        def finalize_burst(burst, burst_id):
+            # Composite best-of: aggregate dominates, eyes-open / expression /
+            # sharpness break near-ties toward the better keeper frame.
+            winner = pick_lead(burst)
+            grouped = len(burst) >= 2
+            group_value = burst_id if grouped else None
+            wanted[winner['rid']] = (1, group_value)
+            if grouped:
+                for p in burst:
+                    if p is not winner:
+                        wanted[p['rid']] = (0, group_value)
+                burst_groups_for_emit.append({
+                    'burst_group_id': burst_id,
+                    'photo_count': len(burst),
+                    'best_path': winner['path'],
+                    'paths': [p['path'] for p in burst],
+                })
 
         current_burst = [photos[0]]
         group_id = 0
-        burst_groups_for_emit = []
         for i in range(1, len(photos)):
             if is_similar_to_burst(photos[i], current_burst, max_hamming_distance, time_window_minutes, rapid_burst_seconds):
                 current_burst.append(photos[i])
             else:
                 # Finalize previous burst
                 if current_burst:
-                    # Composite best-of: aggregate dominates, eyes-open / expression /
-                    # sharpness break near-ties toward the better keeper frame.
-                    winner = pick_lead([dict(p) for p in current_burst])
-                    conn.execute("UPDATE photos SET is_burst_lead = 1 WHERE path = ?", (winner['path'],))
+                    finalize_burst(current_burst, group_id)
                     if len(current_burst) >= 2:
-                        for p in current_burst:
-                            conn.execute("UPDATE photos SET burst_group_id = ? WHERE path = ?", (group_id, p['path']))
-                        burst_groups_for_emit.append({
-                            'burst_group_id': group_id,
-                            'photo_count': len(current_burst),
-                            'best_path': winner['path'],
-                            'paths': [p['path'] for p in current_burst],
-                        })
                         group_id += 1
                 current_burst = [photos[i]]
 
         # Handle final burst
         if current_burst:
-            winner = pick_lead([dict(p) for p in current_burst])
-            conn.execute("UPDATE photos SET is_burst_lead = 1 WHERE path = ?", (winner['path'],))
-            if len(current_burst) >= 2:
-                for p in current_burst:
-                    conn.execute("UPDATE photos SET burst_group_id = ? WHERE path = ?", (group_id, p['path']))
-                burst_groups_for_emit.append({
-                    'burst_group_id': group_id,
-                    'photo_count': len(current_burst),
-                    'best_path': winner['path'],
-                    'paths': [p['path'] for p in current_burst],
-                })
+            finalize_burst(current_burst, group_id)
 
+        # Write only what differs from the stored pair. A row that left a group is written
+        # with burst_group_id = NULL explicitly; there is no blanket reset.
+        changes = [
+            (wanted[r['rid']][0], wanted[r['rid']][1], r['rid'])
+            for r in rows
+            if (r['is_burst_lead'], r['burst_group_id']) != wanted[r['rid']]
+        ]
+        if changes:
+            conn.executemany(
+                "UPDATE photos SET is_burst_lead = ?, burst_group_id = ? WHERE rowid = ?",
+                changes,
+            )
         conn.commit()
+        logger.info("Burst state: %d rows changed", len(changes))
         logger.info("Assigned %d burst groups", group_id + 1 if current_burst and len(current_burst) >= 2 else group_id)
 
     # Emit plugin events for burst groups

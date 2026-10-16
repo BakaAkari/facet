@@ -806,33 +806,25 @@ def detect_all_sequences(db_path, config_path, incremental=False, contain_failur
     Args:
         db_path: Path to the SQLite database
         config_path: Path to scoring_config.json
-        incremental: Measure only runs holding a photo scanned since the last
-            pass. For callers whose job is something else and who reach this as
-            a tail step; an explicit re-run wants every run measured.
+        incremental: Reuse the cached raw detector result of every candidate run
+            whose content is unchanged, measuring only the rest. For callers
+            whose job is something else and who reach this as a tail step; an
+            explicit re-run wants every run measured. Labels are re-derived
+            either way.
         contain_failure: Swallow a panorama failure and carry on. False for the
             entry point whose whole purpose IS that pass, which must be able to
             report it failed.
     """
     from utils.sequence import detect_sequences
-    from utils.panorama import detect_panoramas, snapshot_panorama_labels
+    from utils.panorama import detect_panoramas
 
-    # Taken before the bracket pass, which rewrites `sequence_kind` by path on
-    # every run it finds -- including rows currently labelled a panorama kind.
-    # An HDR panorama's frames are bracketed at every position, so that
-    # rewrite always fires on one; the panorama pass's incremental reuse
-    # (`stored_segments`) would otherwise read that overwritten column back
-    # and find a settled panorama gone. Only worth taking when the panorama
-    # pass will actually consult it.
-    label_snapshot = snapshot_panorama_labels(db_path) if incremental else None
     brackets = detect_sequences(db_path, config_path=config_path)
     if not contain_failure:
         return brackets, detect_panoramas(db_path, config_path=config_path,
-                                          incremental=incremental,
-                                          label_snapshot=label_snapshot)
+                                          incremental=incremental)
     try:
         panoramas = detect_panoramas(db_path, config_path=config_path,
-                                     incremental=incremental,
-                                     label_snapshot=label_snapshot)
+                                     incremental=incremental)
     except Exception:
         # Contained here rather than at each caller. The bracket pass is
         # arithmetic over stored columns and keeps failing loudly as it always
