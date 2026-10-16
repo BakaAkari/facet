@@ -25,6 +25,9 @@ METRIC_RANGES_KEY = 'metric_ranges'
 # without letting a finished migration keep nagging for long.
 PENDING_RENDER_TTL_SECONDS = 3600
 
+# How long a read-path cache write may wait for the write lock (best_effort_write).
+CACHE_WRITE_BUSY_TIMEOUT_MS = 500
+
 
 def refresh_stats_cache(db_path='photo_scores_pro.db', verbose=True):
     """Refresh all cached statistics for performance optimization.
@@ -289,8 +292,7 @@ def get_pending_render_count(db_path=None, max_age_seconds=PENDING_RENDER_TTL_SE
     with get_connection(path) as conn:
         count = count_pending_render(conn)
         try:
-            _cache_stat(conn, PENDING_RENDER_KEY, count, time_module.time())
-            conn.commit()
+            cache_stats_best_effort(conn, [(PENDING_RENDER_KEY, count)])
         except sqlite3.OperationalError:
             logger.debug("Could not persist %s (read-only database?)", PENDING_RENDER_KEY)
     return count
@@ -302,6 +304,50 @@ def _cache_stat(conn, key, value, timestamp):
         "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
         (key, str(value), timestamp)
     )
+
+
+def best_effort_write(conn, write, what="cache rows"):
+    """Run ``write(conn)`` and commit it from a READ path, without queueing behind a writer.
+
+    A GET handler that caches its answer must not turn into a write that waits
+    out ``busy_timeout`` (5 s) behind the gallery index build, whose CREATE INDEX
+    holds the write lock for up to minutes: that would answer 503 ``library_busy``
+    on a read or add seconds to it. So the write is skipped outright while this
+    process builds the indexes, and otherwise waits at most
+    ``CACHE_WRITE_BUSY_TIMEOUT_MS`` -- long enough to land between a scan's
+    continuous commits, short enough never to hold a request. The connection's own
+    timeout is restored afterwards. The cache is only an optimisation: the caller
+    returns the value it computed either way. Only a busy/locked error is
+    swallowed (the transaction is rolled back); any other raises.
+
+    Returns True when the write was committed.
+    """
+    from api.db_helpers import gallery_index_build_running, is_locked_error
+    if gallery_index_build_running():
+        return False
+    previous = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute(f"PRAGMA busy_timeout = {CACHE_WRITE_BUSY_TIMEOUT_MS}")
+    try:
+        write(conn)
+        conn.commit()
+        return True
+    except sqlite3.OperationalError as ex:
+        if not is_locked_error(ex):
+            raise
+        conn.rollback()
+        logger.debug("Skipped writing %s: the database is busy", what)
+        return False
+    finally:
+        conn.execute(f"PRAGMA busy_timeout = {int(previous)}")
+
+
+def cache_stats_best_effort(conn, entries):
+    """``best_effort_write`` of ``(key, value)`` rows into ``stats_cache``."""
+    def write(c):
+        now = time_module.time()
+        for key, value in entries:
+            _cache_stat(c, key, value, now)
+    return best_effort_write(conn, write, ", ".join(key for key, _ in entries))
 
 
 def get_cached_stat(db_path='photo_scores_pro.db', key=None, max_age_seconds=300):

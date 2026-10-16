@@ -2034,7 +2034,7 @@ Ajustes de rendimiento de la base de datos.
 |---------|---------|-------------|
 | `mmap_size_mb` | `2048` | Tamaño de E/S mapeada en memoria de SQLite |
 | `cache_size_mb` | `128` | Tamaño de la caché de SQLite |
-| `wal_checkpoint_minutes` | `30` | Anulación opcional (ausente en el archivo distribuido). Intervalo en minutos del `PRAGMA wal_checkpoint(TRUNCATE)` en segundo plano del visor. Evita el crecimiento del WAL en despliegues de larga duración. Establécelo en `0` para desactivarlo. |
+| `wal_checkpoint_minutes` | `30` | Anulación opcional (ausente en el archivo distribuido). Intervalo en minutos del `PRAGMA wal_checkpoint(TRUNCATE)` en segundo plano del visor. Evita el crecimiento del WAL en despliegues de larga duración. Establécelo en `0` para desactivar el hilo periódico; el checkpoint en un cierre limpio se ejecuta siempre. |
 | `slow_request_ms` | `1000` | Las solicitudes de la API del visor más lentas que estos milisegundos se registran como WARNING con un marcador `SLOW`. Establécelo en `0` para desactivarlo. |
 
 ---

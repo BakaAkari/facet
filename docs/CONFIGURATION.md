@@ -2009,7 +2009,7 @@ Database performance settings.
 |---------|---------|-------------|
 | `mmap_size_mb` | `2048` | SQLite memory-mapped I/O size |
 | `cache_size_mb` | `128` | SQLite cache size |
-| `wal_checkpoint_minutes` | `30` | Optional override (absent from the shipped file). Interval in minutes for the viewer's background `PRAGMA wal_checkpoint(TRUNCATE)`. Prevents WAL bloat on long-running deployments. Set to `0` to disable. |
+| `wal_checkpoint_minutes` | `30` | Optional override (absent from the shipped file). Interval in minutes for the viewer's background `PRAGMA wal_checkpoint(TRUNCATE)`. Prevents WAL bloat on long-running deployments. Set to `0` to disable the periodic thread; the checkpoint on clean shutdown always runs. |
 | `slow_request_ms` | `1000` | Viewer API requests slower than this many milliseconds are logged at WARNING with a `SLOW` marker. Set to `0` to disable. |
 
 ---

@@ -3,6 +3,7 @@ Database helper functions for the FastAPI API server.
 
 """
 
+import asyncio
 import functools
 import hashlib
 import logging
@@ -17,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException, Query
+from fastapi import Query, Request
 
 from api.config import (
     _existing_columns_cache, _existing_columns_lock,
@@ -26,12 +27,15 @@ from api.config import (
     is_multi_user_enabled, get_user_directories, _FULL_CONFIG, VIEWER_CONFIG,
     config_load_failed, server_scoring_config,
 )
+from api import database as _database
+from api.change_token import db_change_token
 from api.database import get_db_connection
 from comparison.comparison_manager import record_culling_pairs
 from db import DEFAULT_DB_PATH
 from db.person_centroids import recompute_person_centroid
 from db.manual_tags import TAG_SEPARATOR, normalize_manual_tag, ManualTagError
 from utils.detection import DEFAULT_PHOTO_THUMBNAIL_SIZE
+from utils.exit_codes import LIBRARY_LOCK_HELD_EXIT_CODE
 from utils.panorama import KINDS as PANORAMA_KINDS
 from utils.sequence import BRACKET as BRACKET_KIND
 
@@ -44,16 +48,39 @@ logger = logging.getLogger("facet.api.db_helpers")
 # a hard error into a slightly slower success.
 RETRY_ATTEMPTS = 4
 RETRY_BASE_DELAY = 0.05
-# Total wall clock a retried handler may spend, attempts notwithstanding. Every
-# attempt already waits out the connection's own `busy_timeout` (5s), so an
-# attempt count alone let one sync handler hold one of the 40 anyio threadpool
-# tokens for ~20s before answering 503. Whichever limit is reached first ends
-# the retries, so a burst that clears instantly still gets all its attempts.
+# Wall clock the RETRIES may spend, counted from the first lock error, attempts
+# notwithstanding. The first attempt has already waited out the connection's own
+# `busy_timeout` (5 s) when it reports the lock, so a budget counted from the
+# call's start was spent before the first retry and no retry ever ran. Each retry
+# can wait out busy_timeout again, so an attempt count alone would let one sync
+# handler hold one of the 40 anyio threadpool tokens for ~20 s before answering
+# 503. Whichever limit is reached first ends the retries, so a burst that clears
+# instantly still gets all its attempts. The budget is checked before a retry
+# starts, never during one, and it starts at the first lock error, so a retry can
+# start up to the whole budget later (after quick failures such as an immediate
+# SQLITE_BUSY_SNAPSHOT) and then sit out busy_timeout again: the worst case is
+# 5 + 2.5 + 5, about 12.5 s before the 503. No retry is made while this process
+# builds the gallery indexes (about 5 s), but the build status is per process:
+# with --workers N only the worker that builds skips the retry, and a write that
+# reaches another worker can still take up to about 12.5 s.
 RETRY_BUDGET_SECONDS = 2.5
+
+# The stable `detail` code of the 503 answered when SQLite reports the database
+# locked or busy past every wait (api/__init__.py maps any such error escaping a
+# route to it). The client keys its "try again in a moment" message on it.
+LIBRARY_BUSY_DETAIL = 'library_busy'
+LIBRARY_BUSY_RETRY_AFTER_SECONDS = 5
+
+
+# SQLITE_BUSY as Python's sqlite3 words it ("database is locked"), plus the
+# wording SQLite uses for the same code elsewhere. SQLITE_LOCKED ("database
+# table is locked", "database schema is locked") is a conflict inside one
+# connection, which waiting does not clear, so it is deliberately not matched.
+_BUSY_MESSAGES = ('database is locked', 'database is busy')
 
 
 def is_locked_error(ex) -> bool:
-    """True for a transient SQLite busy/locked error, not a real fault.
+    """True for a transient SQLite busy error (another writer holds the lock).
 
     Lets callers tell "come back in a moment" apart from a genuine schema or
     constraint failure, which must still surface as a 500.
@@ -61,7 +88,7 @@ def is_locked_error(ex) -> bool:
     if not isinstance(ex, sqlite3.OperationalError):
         return False
     message = str(ex).lower()
-    return 'locked' in message or 'busy' in message
+    return any(busy in message for busy in _BUSY_MESSAGES)
 
 
 def retry_on_locked(attempts=RETRY_ATTEMPTS, base_delay=RETRY_BASE_DELAY,
@@ -74,40 +101,130 @@ def retry_on_locked(attempts=RETRY_ATTEMPTS, base_delay=RETRY_BASE_DELAY,
     that is not a lock error propagates untouched on the first raise.
 
     Retrying stops at ``attempts`` OR once ``budget_seconds`` of wall clock is
-    spent, whichever comes first — each attempt can itself sit out the
-    connection's ``busy_timeout``, so an attempt count alone does not bound how
-    long the caller's threadpool token is held. Giving up yields 503 +
-    Retry-After — the write is still possible, the server is merely busy, so it
-    is not a 500.
+    spent after the first lock error, whichever comes first — each attempt can
+    itself sit out the connection's ``busy_timeout``, so an attempt count alone
+    does not bound how long the caller's threadpool token is held. No retry is
+    made while this process builds its gallery indexes: one index is seconds to
+    minutes of write lock, so a retry would only hold the token longer. Giving
+    up re-raises the lock error, which the app's handler answers with 503
+    ``library_busy`` + Retry-After — the write is still possible, the server is
+    merely busy, so it is not a 500.
     """
     def decorate(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            started = time.monotonic()
+            first_lock_error_at = None
             for attempt in range(attempts):
                 try:
                     return fn(*args, **kwargs)
                 except sqlite3.OperationalError as ex:
                     if not is_locked_error(ex):
                         raise
+                    now = time.monotonic()
+                    if first_lock_error_at is None:
+                        first_lock_error_at = now
                     # Exponential backoff, jittered so parallel writers from the
                     # same burst don't line up and collide again in lockstep.
                     delay = base_delay * (2 ** attempt) * (0.5 + random.random())
-                    elapsed = time.monotonic() - started
-                    if attempt == attempts - 1 or elapsed + delay >= budget_seconds:
-                        logger.warning(
-                            "%s still blocked by a database lock after %d attempts "
-                            "in %.2fs, giving up",
-                            fn.__name__, attempt + 1, elapsed, exc_info=True,
-                        )
-                        raise HTTPException(
-                            status_code=503,
-                            detail='Database is busy, please retry',
-                            headers={'Retry-After': '1'},
-                        ) from ex
+                    retrying_for = now - first_lock_error_at
+                    if (attempt == attempts - 1
+                            or retrying_for + delay >= budget_seconds
+                            or gallery_index_build_running()):
+                        raise
                     time.sleep(delay)
         return wrapper
     return decorate
+
+
+def gallery_index_build_running() -> bool:
+    """True while this process builds the gallery indexes (api/schema_startup.py)."""
+    from api.schema_startup import index_build_status
+    return index_build_status()['state'] == 'building'
+
+
+def refuse_while_gallery_index_build_runs() -> None:
+    """Refuse, as busy, a ``facet.py`` child that needs the library lock.
+
+    The gallery index build holds ``facet.LibraryLock`` for its whole run, so a
+    child spawned meanwhile fails on that lock and its route would answer 500.
+    Raising the busy error before spawning answers 503 ``library_busy`` through the
+    app's handler (api/__init__.py) instead, like any other write refused during
+    the build.
+    """
+    if gallery_index_build_running():
+        raise sqlite3.OperationalError(
+            f"{_BUSY_MESSAGES[0]} (the gallery index build holds the library lock)")
+
+
+def library_lock_held_error(returncode):
+    """The busy error for a ``facet.py`` child that exited on a held library lock, else None.
+
+    The library lock, not this process's build status, is the source of truth:
+    another worker's index build, a scan or a CLI recompute holds it just the
+    same. Raise the route's own 5xx ``from`` it, and the app's handler
+    (api/__init__.py) answers 503 ``library_busy`` instead.
+    """
+    if returncode != LIBRARY_LOCK_HELD_EXIT_CODE:
+        return None
+    return sqlite3.OperationalError(
+        f"{_BUSY_MESSAGES[0]} (another library job holds the library lock)")
+
+
+def _schema_caches_warm(now: float) -> bool:
+    """True when no cached schema probe would open a connection for a while yet."""
+    from api import config as _config_mod
+    with _existing_columns_lock:
+        if _existing_columns_cache is None:
+            return False
+    with _photo_tags_lock:
+        # Refreshed at half its lifetime, so it cannot expire between this check
+        # and the handler that reads it.
+        if (_photo_tags_available is None
+                or now - _config_mod._photo_tags_checked_at >= PHOTO_TAGS_CACHE_TTL / 2):
+            return False
+    # Refreshed at half its lifetime, like photo_tags above.
+    if _manual_tags_cached(str(DEFAULT_DB_PATH), now, PHOTO_TAGS_CACHE_TTL / 2) is None:
+        return False
+    from api.change_token import change_token_sentinel_open
+    return change_token_sentinel_open(DEFAULT_DB_PATH)
+
+
+def _warm_schema_caches() -> None:
+    from api import config as _config_mod
+    get_existing_columns()
+    with _photo_tags_lock:
+        if time.monotonic() - _config_mod._photo_tags_checked_at >= PHOTO_TAGS_CACHE_TTL / 2:
+            # Expire it so the call below re-probes instead of answering from cache.
+            _config_mod._photo_tags_checked_at = 0.0
+    key = str(DEFAULT_DB_PATH)
+    if _manual_tags_cached(key, time.monotonic(), PHOTO_TAGS_CACHE_TTL / 2) is None:
+        _manual_tags_present.pop(key, None)
+    is_photo_tags_available()
+    is_manual_tags_available()
+    db_change_token(DEFAULT_DB_PATH)
+
+
+async def warm_schema_caches(request: Request) -> None:
+    """App-wide dependency: fill the cached schema probes on a worker thread.
+
+    The column list, the photo_tags and photo_manual_tags probes and the
+    change-token sentinel are read synchronously deep inside async handlers
+    (``build_photo_select_columns``, ``_add_tag_filter``, the count-cache key);
+    a cold or expiring entry would open a SQLite connection on the event loop
+    and stall every request in flight. Warm, this costs a few lookups. The
+    liveness route is skipped: it reads in-process state only and must answer
+    without touching the database.
+    """
+    from api.routers.health import LIVENESS_PATH
+    route = request.scope.get("route")
+    if getattr(route, "path", None) == LIVENESS_PATH or _schema_caches_warm(time.monotonic()):
+        return
+    try:
+        await asyncio.to_thread(_warm_schema_caches)
+    except Exception:
+        # Never fail a request over a warm-up: the handler that needs a probe
+        # runs it itself and reports its own error.
+        logger.debug("Warming the schema caches failed", exc_info=True)
 
 
 def trigger_auto_retrain(db_path, user_id, added=1, conn=None):
@@ -537,8 +654,9 @@ def is_photo_tags_available(conn=None):
         close_conn = True
 
     try:
-        row = conn.execute("SELECT COUNT(*) FROM photo_tags").fetchone()
-        result = row[0] > 0 if row else False
+        # Existence of one row, not a count: the answer is the same and a COUNT
+        # walks the whole table (millions of rows on a large library).
+        result = conn.execute("SELECT 1 FROM photo_tags LIMIT 1").fetchone() is not None
     except sqlite3.OperationalError:
         logger.debug("photo_tags table not available", exc_info=True)
         result = False
@@ -553,12 +671,26 @@ def is_photo_tags_available(conn=None):
     return _photo_tags_available
 
 
-# Positive results only, keyed by database file: once photo_manual_tags exists it
-# does not go away, while a False must be re-checked because a lifespan
-# init_database (or a CLI upgrade) can create it while the server is up. Table
-# existence is the whole check -- no row count -- so a manual-only library and a
-# first-ever write are both seen at once.
-_manual_tags_present: set[str] = set()
+# Keyed by database file: (found, checked_at). A True never expires -- once
+# photo_manual_tags exists it does not go away -- while a False is re-checked
+# after PHOTO_TAGS_CACHE_TTL, because a CLI upgrade can create the table while the
+# server is up (a lifespan init_database clears this through
+# invalidate_existing_columns_cache). Caching the False too keeps a library
+# without the table from opening a connection on every request. Table existence
+# is the whole check -- no row count -- so a manual-only library and a first-ever
+# write are both seen at once.
+_manual_tags_present: dict[str, tuple[bool, float]] = {}
+
+
+def _manual_tags_cached(key: str, now: float, max_age: float):
+    """The cached answer for ``key`` when it is still fresh at ``now``, else None."""
+    entry = _manual_tags_present.get(key)
+    if entry is None:
+        return None
+    found, checked_at = entry
+    if found or now - checked_at < max_age:
+        return found
+    return None
 
 
 def is_manual_tags_available(conn=None):
@@ -571,8 +703,10 @@ def is_manual_tags_available(conn=None):
     short-lived one of our own on a cache miss.
     """
     key = str(DEFAULT_DB_PATH)
-    if key in _manual_tags_present:
-        return True
+    now = time.monotonic()
+    cached = _manual_tags_cached(key, now, PHOTO_TAGS_CACHE_TTL)
+    if cached is not None:
+        return cached
     close_conn = False
     if not isinstance(conn, sqlite3.Connection):
         conn = get_db_connection()
@@ -587,8 +721,7 @@ def is_manual_tags_available(conn=None):
     finally:
         if close_conn:
             conn.close()
-    if found:
-        _manual_tags_present.add(key)
+    _manual_tags_present[key] = (found, now)
     return found
 
 
@@ -725,28 +858,26 @@ def _count_cache_store(cache_key, count):
                 del _count_cache[k]
 
 
-def _db_change_token():
-    """Cross-process DB-mutation marker for count-cache keys.
+def _count_cache_key(prefix, from_clause, where_str, sql_params):
+    """Cache key for a count-style query: the query, the database it runs on and
+    that database's change token (``api.change_token``).
 
-    A per-request connection cannot use ``PRAGMA data_version`` (it resets to a
-    baseline on every open), so the on-disk size+mtime of the database and its
-    ``-wal`` is used instead: any commit from any process — including the
-    ``--detect-junk`` / ``--recompute-*`` CLI — moves one of them and invalidates
-    stale counts.
+    The path is read from ``api.database`` AT CALL TIME because that module's
+    ``DEFAULT_DB_PATH`` is the global every request connection opens (and the one
+    tests patch); this module's own import-time binding would key one database's
+    counts under another's.
     """
-    parts = []
-    for suffix in ("", "-wal"):
-        try:
-            st = os.stat(f"{DEFAULT_DB_PATH}{suffix}")
-            parts.append(f"{st.st_size}:{st.st_mtime_ns}")
-        except OSError:
-            parts.append("-")
-    return "|".join(parts)
+    db_path = _database.DEFAULT_DB_PATH
+    token = db_change_token(db_path)
+    digest = hashlib.sha256(
+        f"{db_path}:{from_clause}:{where_str}:{tuple(sql_params)}:{token}".encode()
+    ).hexdigest()
+    return prefix + digest
 
 
 def get_cached_count(conn, where_str, sql_params, from_clause="photos"):
     """Cache COUNT results to avoid repeated full-table scans."""
-    cache_key = hashlib.sha256(f"{from_clause}:{where_str}:{tuple(sql_params)}:{_db_change_token()}".encode()).hexdigest()
+    cache_key = _count_cache_key("", from_clause, where_str, sql_params)
     cached = _count_cache_lookup(cache_key)
     if cached is not None:
         return cached
@@ -759,7 +890,7 @@ def get_cached_count(conn, where_str, sql_params, from_clause="photos"):
 
 async def get_cached_count_async(conn, where_str, sql_params, from_clause="photos"):
     """Async variant of get_cached_count for aiosqlite paths."""
-    cache_key = hashlib.sha256(f"{from_clause}:{where_str}:{tuple(sql_params)}:{_db_change_token()}".encode()).hexdigest()
+    cache_key = _count_cache_key("", from_clause, where_str, sql_params)
     cached = _count_cache_lookup(cache_key)
     if cached is not None:
         return cached
@@ -780,9 +911,7 @@ async def get_cached_hidden_aggregates_async(conn, where_str, sql_params, from_c
     with the same TTL/keying as the count cache instead of re-running it on every
     infinite-scroll fetch.
     """
-    cache_key = "hs:" + hashlib.sha256(
-        f"{from_clause}:{where_str}:{tuple(sql_params)}:{_db_change_token()}".encode()
-    ).hexdigest()
+    cache_key = _count_cache_key("hs:", from_clause, where_str, sql_params)
     cached = _count_cache_lookup(cache_key)
     if cached is not None:
         return cached

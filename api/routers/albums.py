@@ -26,6 +26,7 @@ from api.db_helpers import (
 )
 from api.models.albums import AlbumPhotosResponse, SharedAlbumResponse
 from api.top_picks import get_top_picks_score_sql, with_top_picks_alias
+from db.stats_cache import cache_stats_best_effort
 from api.types import VALID_SORT_COLS, available_sort_options, normalize_params, order_by_clause
 
 router = APIRouter(tags=["albums"])
@@ -172,7 +173,7 @@ async def _fetch_album_photos(conn, album_row, user_id, page, per_page, sort_col
             select_cols, safe_sort == 'top_picks_score' or saved_filters.get('top_picks_filter') == '1')
         cur = await conn.execute(
             f"SELECT {', '.join(select_cols)} FROM {from_clause}{where_str} "
-            f"ORDER BY {order_by_clause(safe_sort, sort_dir)} LIMIT ? OFFSET ?",
+            f"ORDER BY {order_by_clause(safe_sort, sort_dir, tiebreak='photos.path ASC')} LIMIT ? OFFSET ?",
             all_params + [per_page, (page - 1) * per_page]
         )
         rows = await cur.fetchall()
@@ -215,7 +216,7 @@ async def _fetch_album_photos(conn, album_row, user_id, page, per_page, sort_col
             f"SELECT {', '.join(select_cols)} FROM album_photos ap "
             f"JOIN {from_clause} ON photos.path = ap.photo_path "
             f"WHERE {where_str} "
-            f"ORDER BY {order_by_clause(safe_sort, sort_dir)} LIMIT ? OFFSET ?",
+            f"ORDER BY {order_by_clause(safe_sort, sort_dir, tiebreak='photos.path ASC')} LIMIT ? OFFSET ?",
             from_params + base_params + [per_page, (page - 1) * per_page]
         )
         rows = await cur.fetchall()
@@ -337,11 +338,7 @@ def _smart_album_cover(conn, album_row):
     if cached and (time.time() - cached['updated_at']) < _COVER_CACHE_TTL:
         return cached['value'] or None
     path = _compute_smart_album_cover(conn, album_row, owner_id)
-    conn.execute(
-        "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-        (cache_key, path or '', time.time()),
-    )
-    conn.commit()
+    cache_stats_best_effort(conn, [(cache_key, path or '')])
     return path
 
 

@@ -378,7 +378,7 @@ Checks: Score ranges, face metrics, BLOB corruption, embedding sizes, orphaned f
 
 | Command | Description |
 |---------|-------------|
-| `python database.py` | Initialize/upgrade schema |
+| `python database.py` | Initialize/upgrade schema (also builds the gallery covering indexes, as a scan does at its start; the viewer builds missing ones in the background at start, see [VIEWER.md](VIEWER.md#gallery-indexes-and-the-count-cache)) |
 | `python database.py --info` | Show schema information |
 | `python database.py --migrate-tags` | Populate photo_tags lookup (10-50x faster queries) |
 | `python database.py --rebuild-fts` | Rebuild FTS5 full-text search index from captions/tags |
@@ -438,7 +438,7 @@ Headless auto-cull: the terminal form of the viewer's [Auto-cull](VIEWER.md#auto
 - **Copy.** `--copy-keepers` copies each non-rejected in-scope photo plus its same-stem RAW and `.xmp` companions, never a rejected photo or a rejected photo's companions; same-named files from different folders get a `_1` suffix, and a re-run into the same folder skips identical files (same size and time, reported as `already_present`). `DIR` must not equal, lie inside or contain the scope or the library folders (checked in a dry run too, exit 1), or the next scan would ingest the copies. Files resolve through the scan-directory allow-list (`users.*.directories` / `viewer.scan_directories` in the server config): if every photo is skipped because of it, the command exits 3 and names those keys. It also refuses a folder that overlaps a previously scanned root recorded by Facet.
 - **Users.** On a multi-user install `--user` is required (exit 1 without it, or with an unknown user). On a single-user install `--user` is ignored with a warning and the command sees every photo even when a viewer password is set. `--apply` takes the library lock; a dry run takes none.
 - **Usage errors (exit 2).** `--apply`, `--copy-keepers` or any `--cull-*` without `--auto-cull`; `--dry-run`, `--resume`, `--retry-failed` or `--watch` with `--auto-cull`; `--auto-cull PATH` together with positional directories; strictness outside 0–100 or `--cull-min-keep` below 1. `--apply` is now an exact flag, so the abbreviation no longer selects `--apply-recommendations`.
-- **Exit codes.** `0` success (a dry run and zero groups included); `1` precondition, config or database failure (missing database, missing `--user`, copy target overlapping the library); `2` usage error; `3` the cull succeeded but the copy step had errors or copied nothing because every photo was skipped. A dry run whose keepers would all be skipped by the scan-directory allow-list also exits `3`. In scan-then-cull, an interrupted scan logs that the cull was skipped.
+- **Exit codes.** `0` success (a dry run and zero groups included); `1` precondition, config or database failure (missing database, missing `--user`, copy target overlapping the library); `2` usage error; `75` `--apply` found the library lock held by another job; `3` the cull succeeded but the copy step had errors or copied nothing because every photo was skipped. A dry run whose keepers would all be skipped by the scan-directory allow-list also exits `3`. In scan-then-cull, an interrupted scan logs that the cull was skipped.
 - **Retrain nudge.** The auto-retrain timer does not survive the CLI process: the comparison counter persists, and the retrain runs on the next viewer action or a `--train-*` command. The first run may create `.facet_secret` (importing the API layer does, as for `--report-unreviewed-bursts`).
 
 ## Common Workflows

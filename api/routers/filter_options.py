@@ -3,6 +3,7 @@ Filter options router — lazy-loaded dropdown options.
 
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -24,7 +25,7 @@ from api.models.media import (
     MediaLocationNameResponse,
 )
 from db import person_not_hidden_clause
-from db.stats_cache import METRIC_RANGES_KEY
+from db.stats_cache import METRIC_RANGES_KEY, cache_stats_best_effort
 
 router = APIRouter(prefix="/api/filter_options", tags=["filter_options"])
 logger = logging.getLogger(__name__)
@@ -61,7 +62,8 @@ async def _cached_filter_query(cache_key, result_key, query_fn, vis):
     """
     from db import get_cached_stat, DEFAULT_DB_PATH
     if not vis and not is_multi_user_enabled():
-        data, is_fresh = get_cached_stat(DEFAULT_DB_PATH, cache_key, max_age_seconds=300)
+        data, is_fresh = await asyncio.to_thread(
+            get_cached_stat, DEFAULT_DB_PATH, cache_key, max_age_seconds=300)
         if data and is_fresh:
             return {result_key: data, 'cached': True}
 
@@ -118,6 +120,12 @@ async def lenses(user: Optional[CurrentUser] = Depends(get_optional_user)):
     return await _cached_filter_query('lenses', 'lenses', query, vis)
 
 
+def _tag_tables_ready():
+    """(photo_tags has rows, photo_manual_tags exists), on one sync connection."""
+    with get_db() as sync_conn:
+        return is_photo_tags_available(sync_conn), is_manual_tags_available(sync_conn)
+
+
 @router.get("/tags", response_model=MediaFilterOptionTagsResponse, response_model_exclude_unset=True)
 async def tags(user: Optional[CurrentUser] = Depends(get_optional_user)):
     """Lazy-load tag options with counts.
@@ -133,39 +141,62 @@ async def tags(user: Optional[CurrentUser] = Depends(get_optional_user)):
     vis, vp = _vis_where(user)
 
     if not vis and not is_multi_user_enabled():
-        data, is_fresh = get_cached_stat(DEFAULT_DB_PATH, 'tags', max_age_seconds=300)
+        data, is_fresh = await asyncio.to_thread(
+            get_cached_stat, DEFAULT_DB_PATH, 'tags', max_age_seconds=300)
         if data and is_fresh:
             return {'tags': data[:max_tags], 'cached': True}
 
     async with get_async_db() as conn:
-        # `is_photo_tags_available` runs a `SELECT name FROM sqlite_master`
-        # under a sync connection; the result is stable per server lifetime
-        # so the synchronous probe is fine here.
-        photo_tags_ready = False
-        with get_db() as sync_conn:
-            photo_tags_ready = is_photo_tags_available(sync_conn)
-            manual_ready = is_manual_tags_available(sync_conn)
+        # Both probes are cached, but a cache miss opens a sync connection and
+        # queries it: run them on a worker thread so a miss never stalls the event
+        # loop (and with it every other request in flight).
+        photo_tags_ready, manual_ready = await asyncio.to_thread(_tag_tables_ready)
 
         if photo_tags_ready:
             try:
-                vis_sub = f' AND photo_path IN (SELECT path FROM photos WHERE 1=1{vis})' if vis else ''
-                # UNION (not UNION ALL) de-dupes (photo, tag): a manual tag equal to an
-                # AI tag counts that photo once.
-                tag_pairs = "SELECT photo_path, tag FROM photo_tags"
-                if manual_ready:
-                    tag_pairs += " UNION SELECT photo_path, tag FROM photo_manual_tags"
-                rows = await _fetch_all(
-                    conn,
-                    f"""
-                    SELECT tag, COUNT(*) as cnt
-                    FROM ({tag_pairs})
-                    WHERE 1=1{vis_sub}
-                    GROUP BY tag
-                    ORDER BY cnt DESC, tag ASC
-                    LIMIT ?
-                    """,
-                    vp + [max_tags],
-                )
+                if vis:
+                    # The visibility filter needs the (photo, tag) pair rows, so this
+                    # branch keeps the pair-level UNION. UNION (not UNION ALL) de-dupes
+                    # (photo, tag): a manual tag equal to an AI tag counts that photo once.
+                    vis_sub = f' AND photo_path IN (SELECT path FROM photos WHERE 1=1{vis})'
+                    tag_pairs = "SELECT photo_path, tag FROM photo_tags"
+                    if manual_ready:
+                        tag_pairs += " UNION SELECT photo_path, tag FROM photo_manual_tags"
+                    rows = await _fetch_all(
+                        conn,
+                        f"""
+                        SELECT tag, COUNT(*) as cnt
+                        FROM ({tag_pairs})
+                        WHERE 1=1{vis_sub}
+                        GROUP BY tag
+                        ORDER BY cnt DESC, tag ASC
+                        LIMIT ?
+                        """,
+                        vp + [max_tags],
+                    )
+                else:
+                    # Whole library: count the AI pairs with an index-only GROUP BY on
+                    # idx_photo_tags_tag, then add the manual pairs the AI side does not
+                    # already hold (the anti-join is the same (photo, tag) de-dupe the
+                    # UNION did, without building a temp b-tree over every pair).
+                    manual_half = (
+                        " UNION ALL SELECT m.tag, COUNT(*) FROM photo_manual_tags m"
+                        " WHERE NOT EXISTS (SELECT 1 FROM photo_tags t"
+                        " WHERE t.photo_path = m.photo_path AND t.tag = m.tag)"
+                        " GROUP BY m.tag"
+                        if manual_ready else ""
+                    )
+                    rows = await _fetch_all(
+                        conn,
+                        f"""
+                        SELECT tag, SUM(n) AS cnt
+                        FROM (SELECT tag, COUNT(*) AS n FROM photo_tags GROUP BY tag{manual_half})
+                        GROUP BY tag
+                        ORDER BY cnt DESC, tag ASC
+                        LIMIT ?
+                        """,
+                        [max_tags],
+                    )
                 return {'tags': [(r[0], r[1]) for r in rows], 'cached': False}
             except sqlite3.Error:
                 logger.debug("photo_tags query failed, falling back to split", exc_info=True)
@@ -325,24 +356,26 @@ async def focal_lengths(user: Optional[CurrentUser] = Depends(get_optional_user)
     return await _cached_filter_query('focal_lengths', 'focal_lengths', query, vis)
 
 
-async def _store_color_cache(conn, temps, hue_buckets):
+def _store_color_cache_sync(temps, hue_buckets):
+    with get_db() as conn:
+        cache_stats_best_effort(conn, [
+            ('color_temps', json.dumps(temps)),
+            ('color_hue_buckets', json.dumps(hue_buckets)),
+        ])
+
+
+async def _store_color_cache(temps, hue_buckets):
     """Persist the colour facets into ``stats_cache`` (best-effort).
 
     Lets repeated dropdown opens skip the full ``dominant_hue`` scan. Failures
     (e.g. a missing table before init) are swallowed so a cache miss never
-    breaks the actual response.
+    breaks the actual response, and the write is skipped while the gallery index
+    build or another writer holds the lock (``cache_stats_best_effort``). It runs
+    on its own short-lived connection in a worker thread, so its lock wait never
+    blocks the event loop.
     """
-    now = time.time()
     try:
-        await conn.execute(
-            "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-            ('color_temps', json.dumps(temps), now),
-        )
-        await conn.execute(
-            "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-            ('color_hue_buckets', json.dumps(hue_buckets), now),
-        )
-        await conn.commit()
+        await asyncio.to_thread(_store_color_cache_sync, temps, hue_buckets)
     except sqlite3.Error:
         logger.debug("Failed to cache color facets", exc_info=True)
 
@@ -367,8 +400,11 @@ async def colors(user: Optional[CurrentUser] = Depends(get_optional_user)):
     use_cache = not vis and not is_multi_user_enabled()
 
     if use_cache:
-        temps_cached, temps_fresh = get_cached_stat(DEFAULT_DB_PATH, 'color_temps', max_age_seconds=300)
-        hues_cached, hues_fresh = get_cached_stat(DEFAULT_DB_PATH, 'color_hue_buckets', max_age_seconds=300)
+        def read_cached():
+            return (get_cached_stat(DEFAULT_DB_PATH, 'color_temps', max_age_seconds=300),
+                    get_cached_stat(DEFAULT_DB_PATH, 'color_hue_buckets', max_age_seconds=300))
+
+        (temps_cached, temps_fresh), (hues_cached, hues_fresh) = await asyncio.to_thread(read_cached)
         if temps_fresh and hues_fresh and temps_cached is not None and hues_cached is not None:
             return {'temps': temps_cached, 'hue_buckets': hues_cached, 'cached': True}
 
@@ -402,7 +438,7 @@ async def colors(user: Optional[CurrentUser] = Depends(get_optional_user)):
                     counts[name] += 1
             hue_buckets = [(name, counts[name]) for name in HUE_BUCKETS if counts[name]]
             if use_cache:
-                await _store_color_cache(conn, temps, hue_buckets)
+                await _store_color_cache(temps, hue_buckets)
             return {'temps': temps, 'hue_buckets': hue_buckets}
         except sqlite3.Error:
             logger.exception("Failed to query colors")
@@ -615,11 +651,7 @@ def _compute_metric_ranges():
         # empty result would keep the sidebar blank for a whole TTL after the
         # first scan lands.
         if ranges:
-            conn.execute(
-                "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-                (METRIC_RANGES_KEY, json.dumps(ranges), time.time()),
-            )
-            conn.commit()
+            cache_stats_best_effort(conn, [(METRIC_RANGES_KEY, json.dumps(ranges))])
         return ranges
 
 

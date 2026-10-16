@@ -1755,6 +1755,15 @@ describe('GalleryStore optimistic mutations', () => {
     await store.setRating('/a.jpg', 5);
     expect(store.photos()[0].star_rating).toBe(3);
   });
+
+  it('reverts a rating and a favourite the server refused with 503 library_busy', async () => {
+    const busy = new HttpErrorResponse({ status: 503, error: { detail: 'library_busy' } });
+    apiPost.mockReturnValue(throwError(() => busy));
+    await store.setRating('/a.jpg', 5);
+    await store.toggleFavorite('/a.jpg');
+    expect(store.photos()[0].star_rating).toBe(3);
+    expect(store.photos()[0].is_favorite).toBe(false);
+  });
 });
 
 describe('GalleryStore restoreSnapshot', () => {

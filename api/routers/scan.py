@@ -100,11 +100,11 @@ def _recompute_conflict_detail():
 
 def _cross_process_job_env():
     """Subprocess env marking a spawned job as viewer-origin for LibraryLock."""
-    from facet import JOB_ORIGIN_ENV_VAR
+    from facet import JOB_ORIGIN_ENV_VAR, JOB_ORIGIN_VIEWER
 
     from api.config import child_process_env
 
-    return child_process_env({JOB_ORIGIN_ENV_VAR: 'viewer'})
+    return child_process_env({JOB_ORIGIN_ENV_VAR: JOB_ORIGIN_VIEWER})
 
 
 def _read_scan_output(proc):

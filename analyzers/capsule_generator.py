@@ -170,12 +170,19 @@ def geocode_grid(conn, lat, lon, grid_resolution=0.1):
     except (ImportError, Exception):
         name = ""
 
+    # Best effort: this runs on read paths (the lightbox location label, on-demand
+    # capsules), which must not queue behind the gallery index build's write lock.
     try:
-        conn.execute(
-            "INSERT OR IGNORE INTO location_names (lat_grid, lon_grid, display_name) VALUES (?, ?, ?)",
-            [lat_grid, lon_grid, name],
+        from db.stats_cache import best_effort_write
+        best_effort_write(
+            conn,
+            lambda c: c.execute(
+                "INSERT OR IGNORE INTO location_names (lat_grid, lon_grid, display_name) "
+                "VALUES (?, ?, ?)",
+                [lat_grid, lon_grid, name],
+            ),
+            "location_names",
         )
-        conn.commit()
     except Exception:
         pass  # Cache write failure is non-fatal
 
@@ -1217,7 +1224,10 @@ def _generate_seeded(conn, capsule_config, min_aggregate, vis, user_id):
 
         # --- Visual similarity axis (vectorized, uses pre-loaded matrix) ---
         seed_emb = bytes_to_normalized_embedding(seed["clip_embedding"])
-        if seed_emb is not None and emb_matrix is not None:
+        # ``emb_matrix`` was filtered to one dimension; the seed was not, so a
+        # minority-dimension seed skips only this axis (matmul would raise).
+        if (seed_emb is not None and emb_matrix is not None
+                and seed_emb.shape[0] == emb_matrix.shape[1]):
             sims = emb_matrix @ seed_emb  # vectorized cosine similarity
             mask = sims >= embedding_threshold
             similar_idx = np.where(mask)[0]

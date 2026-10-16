@@ -53,6 +53,44 @@ init_database(_TEST_DB_FILE.name)
 
 
 @pytest.fixture(autouse=True)
+def _reset_count_cache_and_change_token():
+    """The count cache is keyed on a per-database change token, so neither it nor
+    the token's sentinel connections may outlive the test that filled them.
+
+    A key from another test's database must never be a hit, and an open sentinel
+    would hold a file handle on a tmp DB the test is about to delete.
+    """
+    from api import config as api_config
+    from api.change_token import close_change_token_sentinels
+    with api_config._count_cache_lock:
+        api_config._count_cache.clear()
+    yield
+    close_change_token_sentinels()
+
+
+@pytest.fixture(autouse=True)
+def _reset_index_build_status():
+    """The gallery index build status is process-global (one lifespan per server):
+    a lifespan test's final state must not reach the next test's /health or the
+    write-retry decorator, which skips retries while it reads ``building``."""
+    from api import schema_startup
+    schema_startup._set_status(state=schema_startup.STATE_READY, done=0, total=0)
+    yield
+    schema_startup._set_status(state=schema_startup.STATE_READY, done=0, total=0)
+
+
+@pytest.fixture(autouse=True)
+def _reset_culling_groups_cache():
+    """The culling-groups memo is process-global with a 45 s TTL: a result one test
+    computed (an empty feed, say) would otherwise be served to the next test that
+    asks with the same parameters."""
+    from api.routers.burst_culling import _invalidate_culling_groups_cache
+    _invalidate_culling_groups_cache()
+    yield
+    _invalidate_culling_groups_cache()
+
+
+@pytest.fixture(autouse=True)
 def _reset_licensing_policy():
     """Licensing policy is process-global state: never let one test's mode leak.
 

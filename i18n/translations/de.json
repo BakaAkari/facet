@@ -488,6 +488,7 @@
     "edition_expired": "Bearbeitungsmodus nicht mehr aktiv - Bearbeitung entsperren und erneut versuchen",
     "server_error": "Serverfehler — bitte versuchen Sie es erneut",
     "action_failed": "Aktion fehlgeschlagen — Änderung rückgängig gemacht",
+    "library_busy": "Die Bibliothek ist beschäftigt, vermutlich mit einer einmaligen Aktualisierung — Änderungen können gerade nicht gespeichert werden; bitte gleich erneut versuchen",
     "server_detail": "Servermeldung:"
   },
   "language": {

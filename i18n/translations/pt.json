@@ -488,6 +488,7 @@
     "edition_expired": "O modo de edição já não está ativo - desbloqueie Edição e tente novamente",
     "server_error": "Erro no servidor — tente novamente",
     "action_failed": "Ação falhou — alteração revertida",
+    "library_busy": "A biblioteca está ocupada, provavelmente concluindo uma atualização única — não é possível salvar alterações agora; tente novamente em instantes",
     "server_detail": "Mensagem do servidor:"
   },
   "language": {

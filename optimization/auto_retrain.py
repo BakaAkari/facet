@@ -182,9 +182,9 @@ def _hold_library_lock(db_path, scope):
     this thread is that same writer reached from the viewer, and taking it here
     is what makes the lock's invariant true for the in-process path.
     """
-    from facet import LIBRARY_JOB_RETRAIN, LibraryLock, LibraryLockError
+    from facet import JOB_ORIGIN_VIEWER, LIBRARY_JOB_RETRAIN, LibraryLock, LibraryLockError
     try:
-        return LibraryLock(db_path, kind=LIBRARY_JOB_RETRAIN).acquire()
+        return LibraryLock(db_path, kind=LIBRARY_JOB_RETRAIN, origin=JOB_ORIGIN_VIEWER).acquire()
     except LibraryLockError as ex:
         logger.info("Auto-retrain (scope=%s) deferred: %s", scope, ex)
         return None

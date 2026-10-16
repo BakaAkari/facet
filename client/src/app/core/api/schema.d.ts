@@ -4218,7 +4218,8 @@ export interface paths {
         };
         /**
          * Health
-         * @description Liveness check — confirms the process is running.
+         * @description Liveness check — confirms the process is running, and reports the gallery
+         *     index build that follows an upgrade (in-process state, no database access).
          */
         get: operations["health_health_get"];
         put?: never;
@@ -5331,6 +5332,28 @@ export interface components {
             /** Has Direct Photos */
             has_direct_photos: boolean;
         };
+        /**
+         * GalleryIndexStatus
+         * @description The background gallery index build of this process (api/schema_startup.py).
+         *
+         *     ``building`` while the indexes are written: reads are served, writes are
+         *     refused with 503 ``library_busy`` while an index holds the write lock.
+         *     ``deferred`` when another job holds the library lock (with ``--workers N``,
+         *     the workers that do not build report it), ``stopped`` after a shutdown
+         *     interrupted the build. ``done`` of ``total`` counts the missing indexes this
+         *     start found.
+         */
+        GalleryIndexStatus: {
+            /** Done */
+            done: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "building" | "ready" | "deferred" | "failed" | "stopped";
+            /** Total */
+            total: number;
+        };
         /** GpsUpdateRequest */
         GpsUpdateRequest: {
             /** Gps Latitude */
@@ -5344,6 +5367,15 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HealthResponse */
+        HealthResponse: {
+            gallery_indexes: components["schemas"]["GalleryIndexStatus"];
+            /**
+             * Status
+             * @constant
+             */
+            status: "ok";
         };
         /**
          * HiddenSummary
@@ -13464,7 +13496,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["HealthResponse"];
                 };
             };
         };

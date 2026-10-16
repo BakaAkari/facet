@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 
+from db.stats_cache import cache_stats_best_effort
 from utils.version import current_version, is_newer
 
 logger = logging.getLogger("facet.updates")
@@ -80,7 +81,9 @@ def check_for_update(conn, force=False):
     """Whether a newer release exists, answering from cache within the interval.
 
     The timestamp is written even when the fetch fails, so an install with no
-    outbound network retries once per interval rather than on every request.
+    outbound network retries once per interval rather than on every request. The
+    write is skipped while the database is busy (the gallery index build, a scan),
+    and the check then repeats on the next request instead.
     """
     current = current_version()
     settings = get_update_settings()
@@ -101,11 +104,7 @@ def check_for_update(conn, force=False):
             return _result(current, stored)
 
     fetched = _fetch_latest(settings['check_url']) or {'latest': None, 'release_url': ''}
-    conn.execute(
-        "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-        (CACHE_KEY, json.dumps(fetched), time.time()),
-    )
-    conn.commit()
+    cache_stats_best_effort(conn, [(CACHE_KEY, json.dumps(fetched))])
     return _result(current, fetched)
 
 

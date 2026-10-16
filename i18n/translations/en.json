@@ -488,6 +488,7 @@
     "edition_expired": "Edition mode is no longer active - unlock Edition and try again",
     "server_error": "Server error — please try again",
     "action_failed": "Action failed — change reverted",
+    "library_busy": "The library is busy, most likely finishing a one-time upgrade — changes cannot be saved right now; try again in a moment",
     "server_detail": "Server message:"
   },
   "language": {

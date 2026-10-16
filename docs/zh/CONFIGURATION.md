@@ -1995,7 +1995,7 @@ python facet.py --recompute-tags-vlm   # 用 VLM 标签模型重新打标签
 |---------|---------|-------------|
 | `mmap_size_mb` | `2048` | SQLite 内存映射 I/O 的大小 |
 | `cache_size_mb` | `128` | SQLite 缓存大小 |
-| `wal_checkpoint_minutes` | `30` | 可选覆盖项（随附文件中没有）。查看器后台执行 `PRAGMA wal_checkpoint(TRUNCATE)` 的间隔（分钟）。可防止长期运行的部署出现 WAL 膨胀。设为 `0` 可禁用。 |
+| `wal_checkpoint_minutes` | `30` | 可选覆盖项（随附文件中没有）。查看器后台执行 `PRAGMA wal_checkpoint(TRUNCATE)` 的间隔（分钟）。可防止长期运行的部署出现 WAL 膨胀。设为 `0` 可禁用周期性线程；正常关闭时的检查点始终会执行。 |
 | `slow_request_ms` | `1000` | 查看器 API 请求耗时超过这么多毫秒时，会以 WARNING 级别并带 `SLOW` 标记记入日志。设为 `0` 可禁用。 |
 
 ---

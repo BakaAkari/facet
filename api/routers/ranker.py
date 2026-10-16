@@ -20,7 +20,7 @@ router = APIRouter(tags=["ranker"])
 
 
 @router.get("/api/ranker/status", response_model=RankerStatusResponse, response_model_exclude_unset=True)
-async def api_ranker_status(
+def api_ranker_status(
     user: Optional[CurrentUser] = Depends(get_optional_user),
     scope: Optional[str] = Query(None, alias="user"),
 ):

@@ -6,11 +6,11 @@ Uses precomputed burst_group_id from the database (populated by --recompute-burs
 Groups marked as burst_reviewed=1 are skipped so confirmed decisions persist.
 """
 
-import asyncio
 import json
 import logging
 import random
 import sqlite3
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -34,6 +34,7 @@ from api.db_helpers import (
 from api.similarity_groups import compute_similarity_groups
 from api.routers.scenes import compute_scenes, apply_scene_cull, SceneConfirmBody
 from processing.burst_score import burst_weights_from_config, compute_burst_score
+from db.stats_cache import cache_stats_best_effort
 from utils.date_utils import parse_date
 from db.sequence_overrides import (
     clear_sequence_overrides, existing_group_key, set_sequence_overrides,
@@ -639,7 +640,7 @@ def _sequence_members(rows):
 
 
 @router.post("/api/burst-groups/select")
-async def select_burst_photos(
+def select_burst_photos(
     body: BurstSelectionBody,
     user: CurrentUser = Depends(require_edition),
 ):
@@ -760,7 +761,7 @@ def get_similar_groups(
 
 
 @router.post("/api/similar-groups/select")
-async def select_similar_photos(
+def select_similar_photos(
     body: SimilarSelectionBody,
     user: CurrentUser = Depends(require_edition),
 ):
@@ -1157,11 +1158,42 @@ def _culling_sort_reverse(sort, direction):
 _culling_groups_cache: dict = {}
 _CULLING_GROUPS_CACHE_TTL = 45.0
 _CULLING_GROUPS_CACHE_MAX = 16
+# Handlers run on threadpool threads, so a GET can be computing the groups while
+# a confirm commits and invalidates. Each invalidation bumps the generation, and
+# a result is only stored when no invalidation ran since its computation began:
+# otherwise the GET would put back the set the confirm had just changed, and the
+# memo would serve it for the rest of its TTL.
+_culling_groups_lock = threading.Lock()
+_culling_groups_generation = 0
 
 
 def _invalidate_culling_groups_cache():
     """Drop the enriched culling-groups memo after a confirm changes the set."""
-    _culling_groups_cache.clear()
+    global _culling_groups_generation
+    with _culling_groups_lock:
+        _culling_groups_generation += 1
+        _culling_groups_cache.clear()
+
+
+def _cached_culling_groups(cache_key, now):
+    """``(groups or None, generation)``: the memoized set if still fresh, and the
+    generation a computation starting now must hand to ``_store_culling_groups``."""
+    with _culling_groups_lock:
+        cached = _culling_groups_cache.get(cache_key)
+        generation = _culling_groups_generation
+    if cached is not None and now - cached[0] < _CULLING_GROUPS_CACHE_TTL:
+        return cached[1], generation
+    return None, generation
+
+
+def _store_culling_groups(cache_key, now, groups, generation):
+    """Memoize ``groups`` unless the set was invalidated while they were computed."""
+    with _culling_groups_lock:
+        if generation != _culling_groups_generation:
+            return
+        if len(_culling_groups_cache) >= _CULLING_GROUPS_CACHE_MAX:
+            _culling_groups_cache.clear()
+        _culling_groups_cache[cache_key] = (now, groups)
 
 
 def _category_comparison_needs(conn):
@@ -1224,7 +1256,7 @@ def _order_group_photos_by_capture(groups):
 
 
 @router.post("/api/culling-group/faces")
-async def api_culling_group_faces(
+def api_culling_group_faces(
     body: CullingFacesBody,
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
@@ -1300,7 +1332,7 @@ async def api_culling_group_faces(
             })
         return faces_by_path
 
-    faces_by_path = await asyncio.to_thread(_build_faces)
+    faces_by_path = _build_faces()
     return {'faces_by_path': faces_by_path, 'thresholds': thresholds}
 
 
@@ -1352,7 +1384,7 @@ def _subject_crop_and_sharpness(thumbnail_bytes, bbox):
 
 
 @router.post("/api/culling-group/subjects")
-async def api_culling_group_subjects(
+def api_culling_group_subjects(
     body: CullingSubjectsBody,
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
@@ -1423,12 +1455,12 @@ async def api_culling_group_subjects(
                     e['crop_sharpness_score'] = round(10.0 * e['crop_sharpness'] / max_sharp, 2)
         return subjects_by_path
 
-    subjects_by_path = await asyncio.to_thread(_build_subjects)
+    subjects_by_path = _build_subjects()
     return {'subjects_by_path': subjects_by_path}
 
 
 @router.get("/api/culling-groups", response_model=CullingGroupsResponse, response_model_exclude_unset=True)
-async def api_culling_groups(
+def api_culling_groups(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     similarity_threshold: float = Query(0.85, ge=0.5, le=1.0),
@@ -1483,10 +1515,10 @@ async def api_culling_groups(
                 # instead of re-materializing + re-scoring every group per page.
                 cache_key = (round(similarity_threshold, 3), seed, sort, direction, exclude_rejected,
                              user_id, album_id, date_from, date_to, group_by)
-                cached = _culling_groups_cache.get(cache_key)
                 now = time.time()
-                if cached is not None and now - cached[0] < _CULLING_GROUPS_CACHE_TTL:
-                    all_groups = cached[1]
+                cached_groups, generation = _cached_culling_groups(cache_key, now)
+                if cached_groups is not None:
+                    all_groups = cached_groups
                 elif group_by in _KEEP_WHOLE_KINDS:
                     # Brackets and panoramas are each their own granularity, and
                     # never merged into `all`: their frames were shot to be
@@ -1514,9 +1546,7 @@ async def api_culling_groups(
                                     reverse=_culling_sort_reverse(sort, direction))
                     if sort == 'chronological':
                         _order_group_photos_by_capture(all_groups)
-                    if len(_culling_groups_cache) >= _CULLING_GROUPS_CACHE_MAX:
-                        _culling_groups_cache.clear()
-                    _culling_groups_cache[cache_key] = (now, all_groups)
+                    _store_culling_groups(cache_key, now, all_groups, generation)
                 else:
                     burst_groups = []
                     if group_by in ('all', 'burst'):
@@ -1556,9 +1586,7 @@ async def api_culling_groups(
                     if sort == 'chronological':
                         _order_group_photos_by_capture(all_groups)
 
-                    if len(_culling_groups_cache) >= _CULLING_GROUPS_CACHE_MAX:
-                        _culling_groups_cache.clear()
-                    _culling_groups_cache[cache_key] = (now, all_groups)
+                    _store_culling_groups(cache_key, now, all_groups, generation)
 
             total_groups = len(all_groups)
             total_pages, offset = paginate(total_groups, page, per_page)
@@ -1732,7 +1760,7 @@ def _confirm_sequence_group(body, user, kind):
 
 
 @router.post("/api/culling-groups/confirm")
-async def confirm_culling_group(
+def confirm_culling_group(
     body: CullingConfirmBody,
     user: CurrentUser = Depends(require_edition),
 ):
@@ -1758,19 +1786,19 @@ async def confirm_culling_group(
             burst_id=body.group_id,
             keep_paths=body.keep_paths,
         )
-        return await select_burst_photos(burst_body, user)
+        return select_burst_photos(burst_body, user)
     elif body.type == 'similar':
         similar_body = SimilarSelectionBody(
             paths=body.paths,
             keep_paths=body.keep_paths,
         )
-        return await select_similar_photos(similar_body, user)
+        return select_similar_photos(similar_body, user)
     elif body.type == 'scene':
         scene_body = SceneConfirmBody(
             paths=body.paths,
             keep_paths=body.keep_paths,
         )
-        return await apply_scene_cull(scene_body, user)
+        return apply_scene_cull(scene_body, user)
     else:
         raise HTTPException(status_code=400, detail=f'Unknown group type: {body.type}')
 
@@ -2215,11 +2243,7 @@ def _shoot_type_evidence(conn, user_id, album_id, date_from, date_to):
             pass
 
     evidence = _query_shoot_type_evidence(conn, user_id, album_id, date_from, date_to)
-    conn.execute(
-        "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-        (cache_key, json.dumps(evidence), time.time()),
-    )
-    conn.commit()
+    cache_stats_best_effort(conn, [(cache_key, json.dumps(evidence))])
     return evidence
 
 

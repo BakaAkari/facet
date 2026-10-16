@@ -5,9 +5,13 @@ import { catchError, throwError } from 'rxjs';
 import { AuthService } from '../services/auth.service';
 import { I18nService } from '../services/i18n.service';
 import { I18N } from '../i18n/keys';
-import { extractErrorDetail } from '../utils/http-error.util';
+import { extractErrorDetail, isLibraryBusyError } from '../utils/http-error.util';
 
 const CLIENT_ERRORS_URL = '/api/client-errors';
+
+// A read refused as library_busy changed nothing the user did, so it gets no
+// "try again" toast; only a save the user made is told why it did not land.
+const READ_METHODS = new Set(['GET', 'HEAD']);
 
 const isAuthUrl = (url: string) => url.startsWith('/api/auth/') || url.includes('/api/auth/');
 
@@ -63,6 +67,17 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
             { duration: detail ? 8000 : (lostEdition ? 6000 : 3000) },
           );
         });
+      } else if (isLibraryBusyError(error)) {
+        // Not a fault: another writer -- most often the one-time gallery index
+        // build after an upgrade -- holds the library, so nothing is reported as
+        // a crash. Opened on the next task, after the caller's own error handling
+        // (an optimistic revert and its generic "action failed" toast) has run, so
+        // that toast cannot replace the one that says why and what to do.
+        if (!READ_METHODS.has(req.method)) {
+          // Assumes the caller's error handling runs within the current task (its
+          // own microtasks included), which a macrotask is guaranteed to follow.
+          setTimeout(() => snackBar.open(i18n.t(I18N.errors.library_busy), '', { duration: 6000 }));
+        }
       } else if (error.status >= 500) {
         snackBar.open(i18n.t(I18N.errors.server_error), '', { duration: 3000 });
         if (!isCrashReportUrl(req.url)) {

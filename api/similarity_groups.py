@@ -8,6 +8,7 @@ import numpy as np
 from collections import defaultdict
 
 from api.database import get_db_connection
+from db.stats_cache import cache_stats_best_effort
 from utils.embedding import bytes_to_normalized_embedding, filter_uniform_embeddings
 from utils.union_find import UnionFind
 
@@ -176,11 +177,7 @@ def compute_similarity_groups(conn=None, threshold=None, min_size=None, user_id=
         if not use_cache:
             return groups
         try:
-            conn.execute(
-                "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-                (cache_key, json.dumps(groups), time.time())
-            )
-            conn.commit()
+            cache_stats_best_effort(conn, [(cache_key, json.dumps(groups))])
         except sqlite3.Error as e:
             logger.debug("Failed to cache similarity groups: %s", e)
 

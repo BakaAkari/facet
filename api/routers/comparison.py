@@ -26,7 +26,9 @@ from api.config import (
 )
 from api.database import get_db
 from api.path_validation import resolve_photo_disk_path
-from api.db_helpers import get_visibility_clause
+from api.db_helpers import (
+    get_visibility_clause, library_lock_held_error, refuse_while_gallery_index_build_runs,
+)
 from api.models.comparison import (
     NextPairResponse, DownloadOptionsResponse, CategoryPrioritiesResponse,
     ScoringContextsResponse, ComparisonStatsResponse, CategoryWeightsResponse,
@@ -263,17 +265,18 @@ async def api_download_single(
     """
     from api.raw_processing import convert_raw_darktable_async, find_companion_raw
 
-    db_path, real_disk, sequence_kind = _validate_and_resolve(path, user)
+    db_path, real_disk, sequence_kind = await asyncio.to_thread(_validate_and_resolve, path, user)
 
     quality = VIEWER_CONFIG['display'].get('image_jpeg_quality', 96)
     stem = os.path.splitext(os.path.basename(db_path))[0]
 
     # --- Darktable profile export ---
     if type == 'darktable':
-        raw_path = find_companion_raw(real_disk)
+        raw_path = await asyncio.to_thread(find_companion_raw, real_disk)
         if not raw_path:
             # Fall back to original when no RAW companion exists
-            return _serve_original(real_disk, db_path, quality, sequence_kind)
+            return await asyncio.to_thread(
+                _serve_original, real_disk, db_path, quality, sequence_kind)
 
         try:
             jpeg_bytes = await convert_raw_darktable_async(raw_path, profile, quality)
@@ -293,9 +296,10 @@ async def api_download_single(
 
     # --- RAW file download ---
     if type == 'raw':
-        raw_path = find_companion_raw(real_disk)
+        raw_path = await asyncio.to_thread(find_companion_raw, real_disk)
         if not raw_path:
-            return _serve_original(real_disk, db_path, quality, sequence_kind)
+            return await asyncio.to_thread(
+                _serve_original, real_disk, db_path, quality, sequence_kind)
 
         return FileResponse(
             raw_path,
@@ -304,7 +308,8 @@ async def api_download_single(
         )
 
     # --- Original file download ---
-    return _serve_original(real_disk, db_path, quality, sequence_kind)
+    # rawpy decodes a standalone RAW here: seconds of CPU, so off the event loop.
+    return await asyncio.to_thread(_serve_original, real_disk, db_path, quality, sequence_kind)
 
 
 def _serve_original(real_disk: str, db_path: str, quality: int,
@@ -390,6 +395,7 @@ async def api_recalculate(
 
     Runs the same logic as ``python facet.py --recompute-average``.
     """
+    refuse_while_gallery_index_build_runs()
     try:
         config_path = str(_CONFIG_PATH)
 
@@ -422,7 +428,7 @@ async def api_recalculate(
             raise HTTPException(
                 status_code=500,
                 detail=f'Recalculation failed: {stderr or stdout}',
-            )
+            ) from library_lock_held_error(proc.returncode)
 
     except HTTPException:
         raise
@@ -447,7 +453,10 @@ async def api_update_weights(
 
         # A loose full-config backup is only needed when non-weight config
         # (modifiers/filters) changes -- the snapshot table is weights-only.
-        backup_path = update_category_weights(
+        # Off the event loop: it waits on CONFIG_WRITE_LOCK and writes the config
+        # file and a snapshot row.
+        backup_path = await asyncio.to_thread(
+            update_category_weights,
             config_path, body.category, 'auto:edit', get_db,
             not_found_detail=f'Category "{body.category}" not found in config',
             weights=body.weights,
@@ -456,7 +465,7 @@ async def api_update_weights(
             backup=body.modifiers is not None or body.filters is not None,
         )
 
-        reload_config()
+        await asyncio.to_thread(reload_config)  # re-reads the config and secret files
         invalidate_stats_cache()
 
         result = {

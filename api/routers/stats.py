@@ -22,7 +22,10 @@ from api.config import (
     _CONFIG_PATH, reload_config, server_scoring_config,
 )
 from api.database import get_async_db, get_db
-from api.db_helpers import get_visibility_clause, to_exif_date, to_iso_date
+from api.db_helpers import (
+    get_visibility_clause, library_lock_held_error, refuse_while_gallery_index_build_runs,
+    to_exif_date, to_iso_date,
+)
 from api.config_writes import update_category_weights
 from api.models.stats import (
     StatsCategoryCorrelationsResponse, StatsCategoryOverlapResponse,
@@ -168,10 +171,13 @@ async def api_stats_overview(
                 from api.db_helpers import is_manual_tags_available, is_photo_tags_available
                 # Distinct union of AI and manual tags: a manual tag equal to an AI
                 # tag is one tag, and a manual-only library still counts its tags.
+                # Cached probes whose miss queries a sync connection: off the event loop.
+                photo_tags_ready, manual_ready = await asyncio.to_thread(
+                    lambda: (is_photo_tags_available(), is_manual_tags_available()))
                 tag_sources = []
-                if is_photo_tags_available(conn):
+                if photo_tags_ready:
                     tag_sources.append('SELECT tag FROM photo_tags')
-                if is_manual_tags_available(conn):
+                if manual_ready:
                     tag_sources.append('SELECT tag FROM photo_manual_tags')
                 if tag_sources:
                     cur = await conn.execute(
@@ -278,6 +284,35 @@ async def api_stats_top_cameras(
     return await _get_stats_cached_async(cache_key, compute)
 
 
+# Mean f-stop over the finite values only. Older EXIF writers stored +Inf in
+# ``f_stop``; ``AVG`` over such a row is +Inf, ``_sanitize_stats`` turns that into
+# None, and ``avg_f_stop: Union[int, float]`` rejects None -- a 500 raised after the
+# (minutes-long) compute. A group without a non-finite row averages exactly as
+# ``AVG(f_stop)`` does; an all-non-finite group yields NULL, which the callers'
+# ``or 0`` turns into 0. Reads only ``f_stop``, so it stays inside
+# ``idx_stats_categories``.
+_FINITE_AVG_F_STOP = 'ROUND(AVG(CASE WHEN f_stop BETWEEN -1e308 AND 1e308 THEN f_stop END), 1)'
+
+# The categories averages statement, with a ``{vis}`` placeholder for the
+# ``_stats_filter_where`` clause. A module constant so the plan test reads the real text.
+CATEGORY_AVERAGES_SQL = f'''
+                SELECT category, COUNT(*) as cnt,
+                       ROUND(AVG(aggregate), 2),
+                       ROUND(AVG(aesthetic), 2),
+                       ROUND(AVG(comp_score), 2),
+                       ROUND(AVG(tech_sharpness), 2),
+                       ROUND(AVG(color_score), 2),
+                       ROUND(AVG(exposure_score), 2),
+                       ROUND(AVG(ISO), 0),
+                       {_FINITE_AVG_F_STOP},
+                       ROUND(AVG(COALESCE(focal_length_35mm, focal_length)), 0),
+                       ROUND(AVG(face_quality), 2),
+                       ROUND(AVG(contrast_score), 2)
+                FROM photos WHERE 1=1{{vis}}
+                GROUP BY category ORDER BY cnt DESC
+            '''
+
+
 @router.get('/api/stats/categories', response_model=list[StatsCategoryStat],
             response_model_exclude_unset=True)
 async def api_stats_categories(
@@ -291,22 +326,7 @@ async def api_stats_categories(
 
     async def compute():
         async with get_async_db() as conn:
-            cur = await conn.execute(f'''
-                SELECT category, COUNT(*) as cnt,
-                       ROUND(AVG(aggregate), 2),
-                       ROUND(AVG(aesthetic), 2),
-                       ROUND(AVG(comp_score), 2),
-                       ROUND(AVG(tech_sharpness), 2),
-                       ROUND(AVG(color_score), 2),
-                       ROUND(AVG(exposure_score), 2),
-                       ROUND(AVG(ISO), 0),
-                       ROUND(AVG(f_stop), 1),
-                       ROUND(AVG(COALESCE(focal_length_35mm, focal_length)), 0),
-                       ROUND(AVG(face_quality), 2),
-                       ROUND(AVG(contrast_score), 2)
-                FROM photos WHERE 1=1{vis}
-                GROUP BY category ORDER BY cnt DESC
-            ''', vp)
+            cur = await conn.execute(CATEGORY_AVERAGES_SQL.format(vis=vis), vp)
             rows = await cur.fetchall()
             await cur.close()
             total = sum(r[1] for r in rows) or 1
@@ -315,7 +335,8 @@ async def api_stats_categories(
             cur = await conn.execute(f'''
                 SELECT category, camera_model FROM (
                     SELECT category, camera_model, COUNT(*) as cnt,
-                           ROW_NUMBER() OVER (PARTITION BY category ORDER BY COUNT(*) DESC) as rn
+                           ROW_NUMBER() OVER (PARTITION BY category
+                                              ORDER BY COUNT(*) DESC, camera_model) as rn
                     FROM photos
                     WHERE camera_model IS NOT NULL AND camera_model != ''{vis}
                     GROUP BY category, camera_model
@@ -328,7 +349,8 @@ async def api_stats_categories(
             cur = await conn.execute(f'''
                 SELECT category, lens_model FROM (
                     SELECT category, lens_model, COUNT(*) as cnt,
-                           ROW_NUMBER() OVER (PARTITION BY category ORDER BY COUNT(*) DESC) as rn
+                           ROW_NUMBER() OVER (PARTITION BY category
+                                              ORDER BY COUNT(*) DESC, lens_model) as rn
                     FROM photos
                     WHERE lens_model IS NOT NULL AND lens_model != ''{vis}
                     GROUP BY category, lens_model
@@ -368,7 +390,7 @@ async def api_stats_categories(
 # by key. They were read as r[2]..r[13] off three separate copies of this SELECT,
 # where inserting a column silently shifted every field after it onto the wrong
 # key -- a wrong number the UI cannot distinguish from a real one.
-_GEAR_AGGREGATES = """COUNT(*) AS cnt,
+_GEAR_AGGREGATES = f"""COUNT(*) AS cnt,
                    ROUND(AVG(aggregate),2) AS avg_aggregate,
                    ROUND(AVG(aesthetic),2) AS avg_aesthetic,
                    ROUND(AVG(tech_sharpness),2) AS avg_sharpness,
@@ -376,7 +398,7 @@ _GEAR_AGGREGATES = """COUNT(*) AS cnt,
                    ROUND(AVG(exposure_score),2) AS avg_exposure,
                    ROUND(AVG(color_score),2) AS avg_color,
                    ROUND(AVG(ISO),0) AS avg_iso,
-                   ROUND(AVG(f_stop),1) AS avg_f_stop,
+                   {_FINITE_AVG_F_STOP} AS avg_f_stop,
                    ROUND(AVG(COALESCE(focal_length_35mm, focal_length)),0) AS avg_focal_length,
                    ROUND(AVG(face_count),2) AS avg_face_count,
                    ROUND(AVG(is_monochrome),3) AS avg_monochrome,
@@ -524,7 +546,7 @@ async def api_stats_settings(
 
             # Aperture usage
             cur = await conn.execute(f'''SELECT ROUND(f_stop, 1) as ap, COUNT(*) as cnt
-                           FROM photos WHERE f_stop IS NOT NULL AND f_stop > 0{vis}
+                           FROM photos WHERE f_stop IS NOT NULL AND f_stop > 0 AND f_stop < 1e308{vis}
                            GROUP BY ap ORDER BY ap''', vp)
             aperture = [{'value': r[0], 'count': r[1]} for r in await cur.fetchall()]
             await cur.close()
@@ -1085,6 +1107,7 @@ async def api_stats_categories_recompute(
     if not body.category:
         raise HTTPException(status_code=400, detail='Missing category')
 
+    refuse_while_gallery_index_build_runs()
     try:
         config_path = str(_CONFIG_PATH)
         proc = await asyncio.create_subprocess_exec(
@@ -1118,7 +1141,7 @@ async def api_stats_categories_recompute(
             raise HTTPException(
                 status_code=500,
                 detail=stderr or stdout,
-            )
+            ) from library_lock_held_error(proc.returncode)
 
     except HTTPException:
         raise

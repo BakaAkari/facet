@@ -1038,6 +1038,14 @@ python database.py --refresh-stats   # Precompute aggregations
 python database.py --optimize        # Defragment database
 ```
 
+### Índices de la galería y caché de recuentos
+
+El recuento de la galería, su resumen de fotos ocultas y cada página leen las mismas columnas de visibilidad en sus cláusulas de ocultación (parpadeos, ráfagas, duplicados, brackets, panorámicas, rechazadas, basura). Ocho índices de cobertura (`idx_gallery_aggregate`, `idx_gallery_date_desc`, `idx_gallery_date_asc`, `idx_gallery_category`, `idx_gallery_camera`, `idx_star_rating_path`, `idx_gallery_iaa_asc` e `idx_stats_categories`, definidos en `db/schema.py`) guardan esas columnas junto a la columna de ordenación, de modo que estas consultas se responden desde el índice en lugar de recorrer toda la tabla `photos`. En una biblioteca de 130k fotos, esto redujo la página predeterminada de la galería de unos 1,2 s a unos 30 ms.
+
+- **Se construyen una sola vez, en segundo plano al iniciar el visor.** El primer inicio tras una actualización construye cada índice que falte en un hilo en segundo plano mientras el visor ya sirve: en una biblioteca de 130k fotos, solo `idx_gallery_aggregate` tardó 45,6 s y 54,1 s en dos ejecuciones medidas, con unos 106 a 111 MB de tamaño adicional de la base de datos (medido). Mientras se escribe un índice, los guardados se rechazan con 503 `library_busy` y un mensaje de «inténtelo de nuevo en un momento». Si se ejecuta primero un escaneo (`python facet.py`) o `python database.py`, este los construye. Para las escrituras durante la construcción, el apagado, el bloqueo de biblioteca, `--workers N` y Docker, consulta [DEPLOYMENT.md](DEPLOYMENT.md#arranque-del-visor-e-índices-de-la-galería).
+- **Escrituras algo más lentas.** La actualización de una columna que contienen estos índices, como `is_burst_lead` o `aggregate`, cuesta unos 0,5 a 0,7 ms más por fila; el guardado de una fila completa durante un escaneo no mostró diferencia más allá de la dispersión entre ejecuciones, de hasta 1 ms por foto aproximadamente (medido en una copia de 50.000 filas de la misma biblioteca).
+- **Caché de recuentos.** Los recuentos y los resúmenes de fotos ocultas se almacenan en caché durante 5 minutos. La clave de la caché incluye un token de cambio de la base de datos, de modo que un commit de cualquier conexión de cualquier proceso del mismo equipo (incluidos los comandos `--detect-junk` y `--recompute-*`) la invalida. Un commit hecho desde otra máquina a través de un recurso de red no se detecta hasta que la entrada caduca.
+
 ### SQLite asíncrono (opcional, para rutas de lectura de alta concurrencia)
 
 `api.database.get_async_db()` es un gestor de contexto asíncrono respaldado por aiosqlite,

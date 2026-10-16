@@ -6,10 +6,12 @@ Replaces Flask viewer — serves JSON API + Angular static files.
 
 import logging
 import os
+import sqlite3
 import sys
 import time
 import warnings
 from contextlib import asynccontextmanager
+from typing import cast
 
 # Ensure the project root is in Python path for local imports
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,15 +25,56 @@ warnings.filterwarnings(
     message=r".*estimate.*deprecated.*", module=r"insightface\..*",
 )
 
-from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.encoders import jsonable_encoder  # noqa: E402
+from fastapi.exception_handlers import http_exception_handler  # noqa: E402
 from fastapi.exceptions import RequestValidationError  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
+from starlette.exceptions import HTTPException as StarletteHTTPException  # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# Set by viewer.py for the server it starts. uvicorn runs the app in processes it
+# spawns (every --workers N worker, and the --reload child), which never run
+# viewer.py's own setup, so the factory configures logging there itself.
+CONFIGURE_LOGGING_ENV = "FACET_VIEWER_CONFIGURE_LOGGING"
+
+
+def configure_logging():
+    """Set up structured logging. Level comes from (in priority order):
+    1. FACET_LOG_LEVEL env var
+    2. scoring_config.json log_level field
+    3. Default: INFO
+
+    The config comes from ``config_resolve`` rather than a ``ScoringConfig``:
+    ``config/__init__.py`` imports ``config.percentile_normalizer``, which imports
+    ``db`` -- the whole database layer, pulled in to read one string.
+    ``config_resolve`` is stdlib-only and reads the shipped defaults too, so a log
+    level left at its default is still found in an install whose own config file
+    only overrides three keys. A no-op on a process whose root logger already has a
+    handler.
+    """
+    from config_resolve import load_resolved
+    level_name = os.environ.get("FACET_LOG_LEVEL")
+    if not level_name:
+        try:
+            level_name = load_resolved().get("log_level")
+        except Exception:
+            pass
+    level_name = (level_name or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    # Quiet noisy third-party loggers
+    for name in ("urllib3", "PIL", "matplotlib", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -131,6 +174,66 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 
 
+def _locked_error_in_chain(exc):
+    """The SQLite busy/locked error ``exc`` is or was raised from, else None."""
+    from api.db_helpers import is_locked_error
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if is_locked_error(exc):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def _library_busy_response(request: Request, exc) -> JSONResponse:
+    """503 ``library_busy`` + Retry-After: the write is possible, just not now.
+
+    This logs one WARNING line and no traceback: the lock is held by another writer
+    (most often the gallery index build after an upgrade, or a scan), not a fault.
+    A route that logged the error itself before raising its HTTPException(500)
+    has already logged it, traceback included; only the response changes.
+    """
+    from api.db_helpers import LIBRARY_BUSY_DETAIL, LIBRARY_BUSY_RETRY_AFTER_SECONDS
+    logger.warning("503 %s on %s %s: %s", LIBRARY_BUSY_DETAIL, request.method,
+                   request.url.path, exc)
+    return JSONResponse(
+        status_code=503, content={"detail": LIBRARY_BUSY_DETAIL},
+        headers={"Retry-After": str(LIBRARY_BUSY_RETRY_AFTER_SECONDS)},
+    )
+
+
+async def sqlite_operational_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A busy/locked database escaping any route is a 503 ``library_busy``.
+
+    SQLite reports it once the connection's ``busy_timeout`` has run out while
+    another connection held the write lock. Registered for
+    ``sqlite3.OperationalError`` rather than handled in the catch-all below,
+    because Starlette re-raises whatever reaches the catch-all, which logs an
+    "Exception in ASGI application" traceback for every refused write. Any other
+    OperationalError is still a 500, logged like the catch-all logs it.
+    """
+    if _locked_error_in_chain(exc) is not None:
+        return _library_busy_response(request, exc)
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+async def http_error_handler(request: Request, exc: Exception) -> Response:
+    """FastAPI's HTTPException handler, except that a 5xx raised from a busy/locked
+    database is answered 503 ``library_busy``.
+
+    Many write handlers catch ``sqlite3.Error`` and raise ``HTTPException(500)``;
+    the lock error they caught is still on the exception's chain.
+    """
+    http_exc = cast(StarletteHTTPException, exc)  # registered for that class only
+    if http_exc.status_code >= 500:
+        locked = _locked_error_in_chain(http_exc)
+        if locked is not None:
+            return _library_busy_response(request, locked)
+    return await http_exception_handler(request, http_exc)
+
+
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catch-all for unhandled errors.
 
@@ -179,6 +282,37 @@ def _flush_pending_rating_syncs():
         )
 
 
+# How long shutdown waits for the background gallery index build to stop after
+# interrupting it; the index in progress is rolled back and the next start resumes.
+INDEX_BUILD_STOP_TIMEOUT_SECONDS = 30.0
+
+
+def _wal_checkpoint():
+    """``PRAGMA wal_checkpoint(TRUNCATE)`` on a fresh read-write connection. Raises on failure.
+
+    Shared by the periodic thread and the shutdown checkpoint, which each log a
+    failure their own way.
+    """
+    from api.database import get_db_connection
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _final_wal_checkpoint():
+    """Truncate the WAL on a read-write connection, which is then the last closer.
+
+    Best-effort: a failure is logged and never raised, so it cannot block shutdown.
+    """
+    try:
+        _wal_checkpoint()
+    except Exception:
+        logger.warning("Final WAL checkpoint on shutdown failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan — startup/shutdown hooks."""
@@ -188,12 +322,16 @@ async def lifespan(app: FastAPI):
     # photo_scores_pro.db missing newer columns (similarity_reviewed,
     # burst_group_id, gps_*, caption, ...) causes runtime 500s on the
     # culling, capsules, and similar-photos endpoints.
+    # Only the migration runs here. The gallery covering indexes are minutes of
+    # write-locked work per index on a large library, so they are built on a
+    # background thread under facet.LibraryLock while the viewer already serves
+    # (api/schema_startup.py); shutdown interrupts and joins it. Failures are logged
+    # inside the helpers.
     from api.database import DEFAULT_DB_PATH
-    from db.schema import init_database
-    try:
-        init_database(DEFAULT_DB_PATH)
-    except Exception:
-        logger.warning("Schema migration on startup failed", exc_info=True)
+    from api.schema_startup import PhotoIndexBuild, migrate_schema_at_startup
+    migrate_schema_at_startup(DEFAULT_DB_PATH)
+    index_build = PhotoIndexBuild(DEFAULT_DB_PATH).start()
+    app.state.index_build = index_build
 
     # init_database may have ALTERed columns onto the photos table — clear the
     # cache before warming it so the new column set is reflected. Without this,
@@ -218,6 +356,11 @@ async def lifespan(app: FastAPI):
 
     def _repair_dimensions():
         try:
+            # Its full-table walk and marker write compete with the index build:
+            # wait for it (returns at once when none runs), skip if shutdown ended it.
+            from api.schema_startup import INTERRUPTED
+            if index_build.wait() == INTERRUPTED:
+                return
             repair_thumbnail_dimensions()
         except Exception:
             logger.warning("Thumbnail-dimension repair failed", exc_info=True)
@@ -231,6 +374,11 @@ async def lifespan(app: FastAPI):
         import threading
         def _precompute_capsules():
             try:
+                # Two full-library scans at once slow both: wait for the index build
+                # (returns at once when none runs), and skip it if shutdown ended it.
+                from api.schema_startup import INTERRUPTED
+                if index_build.wait() == INTERRUPTED:
+                    return
                 from api.database import get_db_connection
                 from api.routers.capsules import _set_cached_capsules
                 from analyzers.capsule_generator import generate_all_capsules
@@ -255,16 +403,10 @@ async def lifespan(app: FastAPI):
         wal_stop = threading.Event()
 
         def _wal_checkpoint_loop():
-            from api.database import get_db_connection
             interval = max(60, wal_minutes * 60)
             while not wal_stop.wait(interval):
                 try:
-                    conn = get_db_connection()
-                    try:
-                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                        conn.commit()
-                    finally:
-                        conn.close()
+                    _wal_checkpoint()
                 except Exception:
                     # Broad except: the loop must survive any transient error
                     # (sqlite lock contention, extension load issues, OSError
@@ -283,6 +425,9 @@ async def lifespan(app: FastAPI):
 
     logger.info("Facet API ready")
     yield
+    # First: the index build holds the write lock for minutes per index, which every
+    # shutdown step below that writes (rating flush, checkpoint) would wait on.
+    index_build.stop(INDEX_BUILD_STOP_TIMEOUT_SECONDS)
     if wal_stop is not None:
         wal_stop.set()
     if wal_thread is not None:
@@ -295,6 +440,12 @@ async def lifespan(app: FastAPI):
     # competing for the write lock) and before the final checkpoint, so the rows
     # it commits are checkpointed into the main DB file.
     _flush_pending_rating_syncs()
+    # Close the change-token sentinels (read-only connections kept open for the life
+    # of the process) before the final checkpoint: a reader that is still open when
+    # the last read-write connection closes would leave the -wal behind, holding
+    # commits the .db file alone does not have.
+    from api.change_token import close_change_token_sentinels
+    close_change_token_sentinels()
     # Disarm any ranker retrain waiting out its idle window: starting a
     # multi-minute train as the process goes away helps nobody, and the pending
     # counter is persisted, so the comparisons survive to trigger the next one.
@@ -303,19 +454,10 @@ async def lifespan(app: FastAPI):
     if cancelled_retrains:
         logger.info("Cancelled %d armed ranker retrain(s) on shutdown", cancelled_retrains)
     # One-time WAL checkpoint on clean shutdown so the next start doesn't
-    # inherit a bloated -wal file. Best-effort: a failure here is logged but
-    # never blocks shutdown.
-    if wal_minutes > 0:
-        try:
-            from api.database import get_db_connection
-            conn = get_db_connection()
-            try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning("Final WAL checkpoint on shutdown failed", exc_info=True)
+    # inherit a bloated -wal file. Always runs: wal_checkpoint_minutes governs only
+    # the periodic thread above. Best-effort: a failure here is logged but never
+    # blocks shutdown.
+    _final_wal_checkpoint()
     # Shutdown: clean up plugin thread pool
     from plugins import get_plugin_manager
     _plugin_mgr = get_plugin_manager()
@@ -325,6 +467,10 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """FastAPI application factory."""
+    if os.environ.get(CONFIGURE_LOGGING_ENV) == "1":
+        configure_logging()
+
+    from api.db_helpers import warm_schema_caches
     app = FastAPI(
         title="Facet API",
         description="Multi-dimensional photo analysis engine API",
@@ -332,6 +478,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
+        # Before every route: the cached schema probes that handlers read
+        # synchronously are filled on a worker thread, never on the event loop.
+        dependencies=[Depends(warm_schema_caches)],
     )
 
     from api.config import _FULL_CONFIG
@@ -370,6 +519,8 @@ def create_app() -> FastAPI:
 
     # Exception handlers — uniform JSON error responses + server-side logging.
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(StarletteHTTPException, http_error_handler)
+    app.add_exception_handler(sqlite3.OperationalError, sqlite_operational_error_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
     # Register routers
