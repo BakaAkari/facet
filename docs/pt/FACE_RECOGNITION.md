@@ -192,14 +192,14 @@ O agrupamento em CPU com um `algorithm` fixo é determinístico para a mesma ent
 
 ### Reagrupamento e pessoas já nomeadas
 
-Todos os modos exceto `--cluster-faces-force` preservam os registos de pessoas, mas todos limpam as atribuições rosto→pessoa e reconstroem-nas. Um grupo reconstruído é devolvido a uma pessoa quando:
+Todos os modos exceto `--cluster-faces-force` preservam os registos de pessoas, mas todos voltam a derivar do zero cada atribuição rosto→pessoa. Só são escritos os rostos cuja pessoa realmente muda, e toda a atualização é uma única transação, pelo que uma execução interrompida deixa o banco de dados como estava. Um rosto que reatribua no visualizador enquanto a fase de banco de dados da execução está a escrever mantém a sua atribuição (a escrita é compare-and-set); a execução regista quantos desses rostos deixou intactos. Uma alteração feita antes na execução, enquanto o clustering ainda calcula, é sobrescrita, como antes. Um grupo reconstruído é devolvido a uma pessoa quando:
 
 1. o seu embedding médio está dentro de `merge_threshold` (0,6 de cosseno por omissão para ArcFace, 0,65 para SFace) do centroide armazenado dessa pessoa, **ou**
 2. pelo menos metade dos seus rostos pertencia a essa pessoa antes da execução.
 
 A segunda regra pesa mais do que parece. O centroide de uma pessoa é um único vetor médio: quem foi fotografado ao longo de anos cobre uma região ampla, e o HDBSCAN divide-o corretamente em subgrupos compactos que ficam longe dessa média e falham a regra 1. Na biblioteca acima, a regra 1 sozinha devolvia 38% dos rostos ligados a pessoas nomeadas; com a regra 2 chega-se a 96%.
 
-Como a regra 2 se apoia na atribuição anterior, um erro antigo é arrastado em vez de corrigido. Esse é o contrato de um modo cujo objetivo é preservar as pessoas existentes — use `--cluster-faces-force` para recalcular tudo do zero.
+Como a regra 2 se apoia na atribuição anterior, um erro antigo é arrastado em vez de corrigido. Esse é o contrato de um modo cujo objetivo é preservar as pessoas existentes — use `--cluster-faces-force` para recalcular tudo do zero. Quando os rostos de um grupo se dividem exatamente por igual entre duas pessoas, o desempate faz-se pela ordem dos ids de rosto: fica a pessoa que possui o rosto já atribuído de menor número do grupo. Os embeddings são carregados com `ORDER BY id`; as versões anteriores deixavam essa ordem por especificar, pelo que num empate destes o id da pessoa mantida pode diferir do de uma execução antiga.
 
 ## Detecção de piscadas
 

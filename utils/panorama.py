@@ -122,12 +122,26 @@ SETTING_BOUNDS = {
 assert set(SETTING_BOUNDS) == set(DEFAULTS), (
     f"panorama settings drifted: {set(SETTING_BOUNDS) ^ set(DEFAULTS)}")
 
-WATERMARK_KEY = 'panorama_detection:watermark'
-
 # Everything that changes what the geometry answers. `enabled` and `workers`
 # only decide whether and how fast the pass runs, so a change to either must not
-# invalidate labels that are still correct.
+# invalidate a cached run result that is still correct.
 _COST_ONLY_SETTINGS = ('enabled', 'workers')
+
+# Identity of the descriptor matcher `_sift_and_matcher` builds. Part of the
+# settings fingerprint, so a future change of matcher invalidates the cached run
+# results (they are that matcher's output) without a config edit.
+_MATCHER_ID = 'bf-l2'
+
+# Revision of the detection logic whose output the run cache stores. Bump it when
+# a change to `_analyse`, `find_segments` or `classify_kind` can alter a run's
+# result: the cache holds their output, so an old row would otherwise be served
+# as the answer to the new question. A change of matcher is covered by
+# `_MATCHER_ID`.
+_DETECTOR_REV = 1
+
+# The `stats_cache` key the retired whole-library watermark lived under. Only
+# ever deleted now (orphan cleanup), never read.
+_RETIRED_WATERMARK_KEY = 'panorama_detection:watermark'
 
 
 def _sift_and_matcher(settings):
@@ -138,10 +152,18 @@ def _sift_and_matcher(settings):
     """
     import cv2
     sift = cv2.SIFT_create(nfeatures=settings['sift_features'])
-    # FLANN over float descriptors: brute-force knn is the per-pair hot spot and
-    # the inlier margins (300-700 against a floor of 25) leave ample room for an
-    # approximate index.
-    matcher = cv2.FlannBasedMatcher(dict(algorithm=1, trees=4), dict(checks=32))
+    # Exact brute-force matching, on purpose. The randomized kd-tree FLANN this
+    # used to build (`algorithm=1, trees=4`) draws from a process-global RNG, so
+    # identical descriptors returned a different match set from call to call --
+    # measured at 400 descriptors a side, six calls with a fresh matcher gave
+    # five distinct result digests -- and which pool worker saw which run, in
+    # what order, changed from one pass to the next. Two passes over an unchanged
+    # library therefore disagreed on a borderline set. The "approximate index is
+    # faster" rationale does not hold at the shipped feature count either:
+    # measured at 400x400 descriptors BFMatcher costs 2.3 ms a pair against
+    # 5.2-5.5 ms for FLANN. It is quadratic in `sift_features` (about 0.12 s a
+    # pair at 3000), so raising that setting well above the default costs time.
+    matcher = cv2.BFMatcher(cv2.NORM_L2)
     return sift, matcher
 
 
@@ -303,6 +325,20 @@ def find_segments(paths, steps, settings):
     return segments
 
 
+# The candidate read. Every column it names is in `idx_date_asc_cover`
+# (db/schema.py), including the `length(thumbnail)` expression, so the 16 GB
+# table -- and the thumbnail BLOB inline in each row -- is never touched. That
+# index's column list IS the contract: a column added here without being added
+# there turns this back into a multi-minute table scan. `render_version` and the
+# thumbnail's byte length are not read for their own sake but as the two staleness
+# witnesses of `run_signature`. Without an ORDER BY on purpose: the rows are
+# sorted below on a total key, so the result does not depend on the plan.
+_LOAD_CANDIDATES_SQL = (
+    "SELECT path, date_taken, camera_model, focal_length, f_stop, shutter_speed, iso, "
+    "scanned_at, render_version, length(thumbnail) AS thumbnail_bytes "
+    "FROM photos WHERE date_taken IS NOT NULL AND focal_length IS NOT NULL")
+
+
 def _load_candidates(conn, settings):
     """Runs of consecutive frames that could hold a sweep.
 
@@ -310,10 +346,7 @@ def _load_candidates(conn, settings):
     `max_gap_seconds`. Cheap, EXIF only, and it is what keeps the geometry off
     the vast majority of the library.
     """
-    rows = conn.execute(
-        "SELECT path, date_taken, camera_model, focal_length, f_stop, shutter_speed, iso, "
-        "scanned_at FROM photos WHERE date_taken IS NOT NULL AND focal_length IS NOT NULL"
-    ).fetchall()
+    rows = conn.execute(_LOAD_CANDIDATES_SQL).fetchall()
     photos = []
     for row in rows:
         captured_at = parse_date(row['date_taken'])
@@ -326,6 +359,14 @@ def _load_candidates(conn, settings):
             'focal_length': row['focal_length'],
             'ev': exposure_value(row['f_stop'], row['shutter_speed'], row['iso']),
             'scanned_at': row['scanned_at'],
+            # Raw columns, kept only so `run_signature` can hash exactly what
+            # the candidate query read.
+            'date_taken': row['date_taken'],
+            'f_stop': row['f_stop'],
+            'shutter_speed': row['shutter_speed'],
+            'iso': row['iso'],
+            'render_version': row['render_version'],
+            'thumbnail_bytes': row['thumbnail_bytes'],
         })
     photos.sort(key=lambda p: (p['camera_model'] or '', p['captured_at'], p['path']))
 
@@ -349,119 +390,142 @@ def _load_candidates(conn, settings):
 
 
 def _settings_fingerprint(settings):
-    """Digest of the settings that decide what the geometry answers."""
+    """Digest of everything that decides what the geometry answers.
+
+    The geometry-affecting settings plus the matcher identity and the detector
+    revision: a cached run result is the output of all three, so changing any of
+    them must read as a cache miss without a config edit.
+    """
     material = {k: v for k, v in settings.items() if k not in _COST_ONLY_SETTINGS}
+    material['_matcher'] = _MATCHER_ID
+    material['_detector_rev'] = _DETECTOR_REV
     return hashlib.sha256(
         json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def read_watermark(conn, settings):
-    """The `scanned_at` this pass last measured the library through, if reusable.
+def run_signature(run):
+    """Content key of a candidate run: 32 hex characters (128 bits) of SHA-256.
 
-    None means "measure everything": either no pass has recorded a watermark, or
-    a threshold has been edited since, which makes every stored label a stale
-    answer to a different question.
+    A run's geometry depends on nothing outside its own frames, so the detector's
+    answer for it is a pure function of the frames' content. The signature covers
+    every column the candidate query reads, in run order, plus the two staleness
+    witnesses `render_version` and the stored thumbnail's byte length -- a
+    signature that omits an input cannot notice that input changing. Known limit
+    (documented, not hidden): a thumbnail rewritten to a DIFFERENT image of the
+    SAME length, with `scanned_at` and `render_version` unchanged, is not seen; a
+    rescan rewrites `scanned_at`, and the explicit `--detect-panoramas` always
+    re-measures everything.
     """
-    row = conn.execute(
-        "SELECT value FROM stats_cache WHERE key = ?", (WATERMARK_KEY,)).fetchone()
-    if row is None or not row[0]:
-        return None
-    try:
-        stored = json.loads(row[0])
-    except (TypeError, ValueError):
-        return None
-    if stored.get('fingerprint') != _settings_fingerprint(settings):
-        return None
-    return stored.get('scanned_through')
+    material = [[photo['path'], photo['date_taken'], photo['camera_model'],
+                 photo['focal_length'], photo['f_stop'], photo['shutter_speed'],
+                 photo['iso'], photo['scanned_at'], photo['render_version'],
+                 photo['thumbnail_bytes']] for photo in run]
+    return hashlib.sha256(json.dumps(material, default=str).encode()).hexdigest()[:32]
 
 
-def write_watermark(conn, settings, scanned_through):
-    """Record how far a full-coverage pass measured, and under which thresholds."""
-    conn.execute(
-        "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-        (WATERMARK_KEY,
-         json.dumps({'scanned_through': scanned_through,
-                     'fingerprint': _settings_fingerprint(settings)}),
-         time.time()))
+def _segment_record(segment):
+    """A detector segment reduced to what the cache stores: plain JSON types.
+
+    Both a freshly measured segment and a cached one go through this, so the two
+    are interchangeable downstream.
+    """
+    return {'paths': [str(path) for path in segment['paths']],
+            'kind': segment['kind'],
+            'axis': segment['axis'],
+            'drift': float(segment['drift']),
+            'ortho': float(segment['ortho'])}
 
 
-def split_runs(runs, watermark):
+def _valid_segments(value):
+    """Whether a decoded cache payload has the shape `_segment_record` writes."""
+    if not isinstance(value, list):
+        return False
+    for segment in value:
+        if not isinstance(segment, dict):
+            return False
+        paths = segment.get('paths')
+        if (not isinstance(paths, list) or len(paths) < 2
+                or not all(isinstance(path, str) for path in paths)):
+            return False
+        if segment.get('kind') not in KINDS or segment.get('axis') not in ('x', 'y'):
+            return False
+        if not all(isinstance(segment.get(key), (int, float))
+                   for key in ('drift', 'ortho')):
+            return False
+    return True
+
+
+def read_run_cache(conn, settings):
+    """Cached raw detector results: `{signature: segments}` for this fingerprint.
+
+    A row measured under different thresholds, a different matcher or a different
+    detector revision does not match, and a row whose JSON does not parse or does
+    not have the stored shape is skipped. Neither raises: the worst case is a
+    re-measure, never a wrong label.
+    """
+    fingerprint = _settings_fingerprint(settings)
+    cached = {}
+    for signature, stored_fingerprint, payload in conn.execute(
+            "SELECT signature, fingerprint, segments FROM panorama_run_cache"):
+        if stored_fingerprint != fingerprint:
+            continue
+        try:
+            segments = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if _valid_segments(segments):
+            cached[signature] = segments
+    return cached
+
+
+def write_run_cache(conn, settings, measured):
+    """Upsert newly measured runs: `measured` is `{signature: segments}`.
+
+    Does not commit; the caller commits it as its own short transaction, before
+    any label is touched, so a pass killed while labelling loses no measuring.
+    """
+    fingerprint = _settings_fingerprint(settings)
+    now = time.time()
+    conn.executemany(
+        "INSERT OR REPLACE INTO panorama_run_cache "
+        "(signature, fingerprint, segments, measured_at) VALUES (?, ?, ?, ?)",
+        [(signature, fingerprint, json.dumps([_segment_record(s) for s in segments]), now)
+         for signature, segments in measured.items()])
+
+
+def prune_run_cache(conn, signatures):
+    """Delete the cache rows no candidate run of this pass references.
+
+    A row nothing references is unreachable (its signature can only come back if
+    the same content does, and then it is simply re-measured), so a failed prune
+    is harmless; it is a separate transaction for that reason.
+    """
+    keep = set(signatures)
+    stale = [(signature,) for (signature,) in conn.execute(
+        "SELECT signature FROM panorama_run_cache") if signature not in keep]
+    conn.executemany("DELETE FROM panorama_run_cache WHERE signature = ?", stale)
+    return len(stale)
+
+
+def split_runs(runs, cached):
     """Candidate runs split into the ones to re-measure and the ones to reuse.
 
     A run's geometry depends on nothing outside its own frames, so a run whose
-    every frame was already scanned before the last pass cannot have changed its
+    content signature already has a cached raw result cannot have changed its
     answer. That is what keeps a ten-photo import off a whole-library CV pass:
-    the candidate gate above is EXIF arithmetic over stored columns and costs
-    about a second, while measuring every run costs minutes.
+    the candidate gate is EXIF arithmetic over stored columns and costs about a
+    second, while measuring every run costs minutes.
+
+    `cached` is `None` when the caller wants everything re-measured. A NULL
+    `scanned_at` is just another signature component: it does not mean "unknown,
+    measure it".
     """
-    if watermark is None:
+    if cached is None:
         return list(runs), []
     fresh, settled = [], []
     for run in runs:
-        # A NULL `scanned_at` is unknown, not old -- measure it.
-        changed = any(photo['scanned_at'] is None or photo['scanned_at'] > watermark
-                      for photo in run)
-        (fresh if changed else settled).append(run)
+        (settled if run_signature(run) in cached else fresh).append(run)
     return fresh, settled
-
-
-def snapshot_panorama_labels(db_path):
-    """Every panorama-kind label as it stands right now: path -> (kind, group_id).
-
-    `detect_all_sequences` runs the bracket pass before this one, and that pass
-    rewrites `sequence_kind`/`sequence_group_id` by path on every run it finds --
-    including rows currently labelled a panorama kind, when a settled HDR
-    panorama's every position also reads as a bracket (it always does: an HDR
-    panorama's frames ARE a bracket at each position). `stored_segments` used to
-    read that live column back for a "settled" run it is not re-measuring, so
-    the bracket pass's rewrite made the settled panorama vanish before this pass
-    ever looked. Taking this snapshot before the bracket pass runs, and reading
-    it here instead of the live columns, is what lets the reuse survive.
-    """
-    with sqlite3.connect(db_path) as conn:
-        apply_pragmas(conn)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT path, sequence_kind, sequence_group_id FROM photos "
-            "WHERE sequence_kind IN (?, ?) AND sequence_group_id IS NOT NULL",
-            KINDS).fetchall()
-    return {row['path']: (row['sequence_kind'], row['sequence_group_id']) for row in rows}
-
-
-def stored_segments(conn, runs, label_snapshot=None):
-    """The sets already labelled on runs this pass is not re-measuring.
-
-    Read back rather than recomputed, so reusing a run costs one indexed lookup
-    instead of its geometry. Only `paths` and `kind` are persisted; the geometry
-    fields are reporting-only and are not reconstructed.
-
-    `label_snapshot`, when given, is read instead of the live `photos` columns
-    -- see `snapshot_panorama_labels` for why the live columns cannot be trusted
-    once the bracket pass has run.
-    """
-    segments = []
-    for run in runs:
-        paths = [photo['path'] for photo in run]
-        groups = defaultdict(list)
-        if label_snapshot is not None:
-            for path in paths:
-                label = label_snapshot.get(path)
-                if label is not None:
-                    groups[label].append(path)
-        else:
-            placeholders = ','.join('?' * len(paths))
-            rows = conn.execute(
-                "SELECT path, sequence_group_id, sequence_kind FROM photos "
-                f"WHERE path IN ({placeholders}) AND sequence_kind IN (?, ?) "
-                "AND sequence_group_id IS NOT NULL",
-                (*paths, *KINDS)).fetchall()
-            for row in rows:
-                groups[(row['sequence_kind'], row['sequence_group_id'])].append(row['path'])
-        order = {path: position for position, path in enumerate(paths)}
-        for (kind, _), members in sorted(groups.items()):
-            segments.append({'paths': sorted(members, key=order.__getitem__),
-                             'kind': kind, 'axis': 'x', 'drift': 0.0, 'ortho': 0.0})
-    return segments
 
 
 def classify_kind(evs, settings):
@@ -579,7 +643,10 @@ def _analyse_in_worker(run):
 
 
 def _analyse_runs(db_path, runs, sift, matcher, settings):
-    """Geometry over every candidate run, in parallel when it is worth it.
+    """Geometry over every given run, in parallel when it is worth it.
+
+    Returns one segment list per run, aligned with `runs` (`pool.map` preserves
+    order), so each run's raw answer can be cached under its own signature.
 
     Each run is independent, so this is embarrassingly parallel. It scales well
     short of the core count rather than with it: the cost is dominated by
@@ -594,7 +661,7 @@ def _analyse_runs(db_path, runs, sift, matcher, settings):
         apply_pragmas(conn)
         conn.row_factory = sqlite3.Row
         try:
-            return [seg for run in runs for seg in _analyse(conn, run, sift, matcher, settings)]
+            return [_analyse(conn, run, sift, matcher, settings) for run in runs]
         finally:
             conn.close()
 
@@ -607,33 +674,90 @@ def _analyse_runs(db_path, runs, sift, matcher, settings):
     context = multiprocessing.get_context('spawn')
     with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker,
                              initargs=(db_path, settings), mp_context=context) as pool:
-        for segments in pool.map(_analyse_in_worker, runs, chunksize=8):
-            found.extend(segments)
+        found.extend(pool.map(_analyse_in_worker, runs, chunksize=8))
     return found
 
 
-def detect_panoramas(db_path, config_path=None, incremental=False, label_snapshot=None):
+def _canonical_order(found):
+    """Resolved sets in a total order independent of how they were obtained.
+
+    Ordered by each set's smallest member path (a path belongs to at most one
+    resolved set, so the key is unique), which is what makes a pass that reused
+    cached runs number its sets exactly as a full re-measure does.
+    """
+    return sorted(found, key=lambda segment: min(segment['paths']))
+
+
+def _apply_labels(conn, found):
+    """Write `found` (resolved, canonically ordered) over the panorama labels.
+
+    One transaction's worth of statements -- the caller commits -- so a failure
+    anywhere leaves the previous labels exactly as they were. Group ids are
+    numbered from 1 across both kinds; the numbering is canonical for a given
+    set of sets but is still renumbered on every run (a new set earlier in path
+    order shifts the later ids), which is why overrides are keyed on paths.
+    """
+    # `sequence_ev_offset` goes too. An HDR panorama's frames were labelled
+    # by the bracket pass first, which wrote an offset the panorama label
+    # then superseded; leaving it behind means the row carries an exposure
+    # offset for a set that has no base exposure, and the bracket pass's own
+    # kind-scoped clear will never reach it again.
+    conn.execute(
+        "UPDATE photos SET sequence_group_id = NULL, sequence_kind = NULL, "
+        "sequence_ev_offset = NULL, is_sequence_lead = 0 "
+        "WHERE sequence_kind IN (?, ?)", KINDS)
+    for group_id, segment in enumerate(found, start=1):
+        paths = segment['paths']
+        conn.executemany(
+            "UPDATE photos SET sequence_group_id = ?, sequence_kind = ?, "
+            "sequence_ev_offset = NULL, is_sequence_lead = 0 WHERE path = ?",
+            [(group_id, segment['kind'], path) for path in paths])
+        # The middle frame stands for the set: a sweep has no best frame, and
+        # the middle one is the likeliest to hold the subject. Marked here so
+        # the gallery's hide clause is an indexed equality rather than a
+        # window function run over every row of every query.
+        conn.execute("UPDATE photos SET is_sequence_lead = 1 WHERE path = ?",
+                     (paths[len(paths) // 2],))
+    # The labels now reflect every stored correction *of this pass's own
+    # kinds*, so none of those is waiting on a run any more. Scoped to
+    # `KINDS OR NULL` (this pass's own forced/suppressed rows) rather than
+    # every unstamped row: an unscoped stamp here would incidentally mark a
+    # pending bracket override as applied whenever this pass runs after the
+    # bracket one in the same call, even though the bracket pass has not
+    # touched it. Stamped rather than deleted: the row is what keeps the
+    # correction applied on later passes, and it is only its *pending*
+    # status that ends here.
+    conn.execute(
+        "UPDATE photo_sequence_overrides SET applied_at = ? "
+        "WHERE applied_at IS NULL AND (sequence_kind IN (?, ?) OR sequence_kind IS NULL)",
+        (datetime.now().isoformat(),) + KINDS)
+    # Orphan cleanup of the retired whole-library watermark, not a fallback:
+    # nothing reads it any more.
+    conn.execute("DELETE FROM stats_cache WHERE key = ?", (_RETIRED_WATERMARK_KEY,))
+
+
+def detect_panoramas(db_path, config_path=None, incremental=False):
     """Label panorama sets across the library.
 
     Whole-library by nature: a set is defined by its chronological neighbours, so
-    a photo cannot be classified without them. `incremental` keeps that coverage
-    -- every run is still resolved and every label still rewritten -- while
-    measuring only the runs that hold a photo scanned since the last pass, which
-    is what makes this affordable on the scan path (see `split_runs`). The
-    explicit re-run entry points pass False and re-measure everything, because
-    that is what a user asks for after editing a threshold.
+    a photo cannot be classified without them. Every pass resolves every candidate
+    run and rewrites every label; `incremental` only decides how many runs are
+    MEASURED. What is cached is the detector's RAW answer for a run, keyed by the
+    run's content signature (`run_signature`) and the settings fingerprint, in
+    `panorama_run_cache`. Labels are never read back from `photos`: they are
+    always re-derived from the cached or freshly measured segments plus the
+    CURRENT overrides, so clearing a forced override un-forces its set, clearing
+    a suppression brings the detector's set back, and a pass killed after the
+    bracket pass has rewritten the columns loses nothing.
+
+    The explicit re-run entry points pass False and re-measure everything,
+    because that is what a user asks for after editing a threshold.
 
     Args:
         db_path: Path to the SQLite database
         config_path: Path to scoring_config.json (optional)
-        incremental: Reuse stored labels for runs no photo has touched
-        label_snapshot: Pre-bracket-pass panorama labels from
-            `snapshot_panorama_labels`, read by `stored_segments` instead of the
-            live columns. `detect_all_sequences` is the only caller that can
-            supply one -- it is the only caller that runs the bracket pass
-            first. Callers that reach this directly (the CLI's explicit re-run,
-            the API's `/detect_panoramas` job) pass `incremental=False`, which
-            never consults it.
+        incremental: Reuse the cached raw result of every run whose signature has
+            one, measuring only the rest
     """
     from config import ScoringConfig
 
@@ -654,60 +778,41 @@ def detect_panoramas(db_path, config_path=None, incremental=False, label_snapsho
         apply_pragmas(conn)
         conn.row_factory = sqlite3.Row
         runs = _load_candidates(conn, settings)
-        scanned_through = max(
-            (photo['scanned_at'] for run in runs for photo in run
-             if photo['scanned_at'] is not None), default=None)
-        watermark = read_watermark(conn, settings) if incremental else None
-        fresh, settled = split_runs(runs, watermark)
+        signatures = [run_signature(run) for run in runs]
+        cached = read_run_cache(conn, settings) if incremental else None
+        fresh, settled = split_runs(runs, cached)
         logger.info(
             "Panorama detection over %d candidate runs (%d reused, gap<=%ss, "
             ">=%d frames, drift>=%.2f frame widths)...",
             len(runs), len(settled), settings['max_gap_seconds'],
             settings['min_frames'], settings['min_drift'])
 
-        found = _analyse_runs(db_path, fresh, sift, matcher, settings)
-        found.extend(stored_segments(conn, settled, label_snapshot=label_snapshot))
+        signature_of = {id(run): signature for run, signature in zip(runs, signatures)}
+        measured = {}
+        if fresh:
+            for run, segments in zip(
+                    fresh, _analyse_runs(db_path, fresh, sift, matcher, settings)):
+                measured[signature_of[id(run)]] = [_segment_record(s) for s in segments]
+            # Its own short transaction, committed before any label is touched: a
+            # kill while labelling then loses no measuring work, and a kill before
+            # this commit changes nothing.
+            write_run_cache(conn, settings, measured)
+            conn.commit()
+
+        found = []
+        for signature in signatures:
+            found.extend(measured[signature] if signature in measured
+                         else cached[signature])
 
         suppressed, forced = load_overrides(conn)
-        found = resolve_segments(found, suppressed, forced)
+        found = _canonical_order(resolve_segments(found, suppressed, forced))
 
-        # `sequence_ev_offset` goes too. An HDR panorama's frames were labelled
-        # by the bracket pass first, which wrote an offset the panorama label
-        # then superseded; leaving it behind means the row carries an exposure
-        # offset for a set that has no base exposure, and the bracket pass's own
-        # kind-scoped clear will never reach it again.
-        conn.execute(
-            "UPDATE photos SET sequence_group_id = NULL, sequence_kind = NULL, "
-            "sequence_ev_offset = NULL, is_sequence_lead = 0 "
-            "WHERE sequence_kind IN (?, ?)", KINDS)
-        for group_id, segment in enumerate(found, start=1):
-            paths = segment['paths']
-            conn.executemany(
-                "UPDATE photos SET sequence_group_id = ?, sequence_kind = ?, "
-                "sequence_ev_offset = NULL, is_sequence_lead = 0 WHERE path = ?",
-                [(group_id, segment['kind'], path) for path in paths])
-            # The middle frame stands for the set: a sweep has no best frame, and
-            # the middle one is the likeliest to hold the subject. Marked here so
-            # the gallery's hide clause is an indexed equality rather than a
-            # window function run over every row of every query.
-            conn.execute("UPDATE photos SET is_sequence_lead = 1 WHERE path = ?",
-                         (paths[len(paths) // 2],))
-        # The labels now reflect every stored correction *of this pass's own
-        # kinds*, so none of those is waiting on a run any more. Scoped to
-        # `KINDS OR NULL` (this pass's own forced/suppressed rows) rather than
-        # every unstamped row: an unscoped stamp here would incidentally mark a
-        # pending bracket override as applied whenever this pass runs after the
-        # bracket one in the same call, even though the bracket pass has not
-        # touched it. Stamped rather than deleted: the row is what keeps the
-        # correction applied on later passes, and it is only its *pending*
-        # status that ends here.
-        conn.execute(
-            "UPDATE photo_sequence_overrides SET applied_at = ? "
-            "WHERE applied_at IS NULL AND (sequence_kind IN (?, ?) OR sequence_kind IS NULL)",
-            (datetime.now().isoformat(),) + KINDS)
-        # Written only once the labels are committed alongside it, so a pass that
-        # dies part-way leaves the previous watermark and the next one re-measures.
-        write_watermark(conn, settings, scanned_through)
+        _apply_labels(conn, found)
+        conn.commit()
+
+        # Separate from the label transaction: an unreferenced row is unreachable,
+        # so a failed prune costs a few kilobytes, never a wrong label.
+        prune_run_cache(conn, signatures)
         conn.commit()
 
     frames = sum(len(segment['paths']) for segment in found)

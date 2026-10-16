@@ -192,14 +192,14 @@ Il raggruppamento su CPU con un `algorithm` fisso è deterministico a parità di
 
 ### Riraggruppamento e persone già nominate
 
-Tutte le modalità tranne `--cluster-faces-force` conservano i record delle persone, ma tutte cancellano le assegnazioni volto→persona e le ricostruiscono. Un gruppo ricostruito viene restituito a una persona quando:
+Tutte le modalità tranne `--cluster-faces-force` conservano i record delle persone, ma tutte ricavano da zero ogni assegnazione volto→persona. Vengono scritti solo i volti la cui persona cambia davvero, e l'intero aggiornamento è un'unica transazione, quindi un'esecuzione interrotta lascia il database com'era. Un volto che riassegni nel viewer mentre la fase di database dell'esecuzione sta scrivendo mantiene la tua assegnazione (la scrittura è compare-and-set); l'esecuzione registra quanti di questi volti ha lasciato intatti. Una modifica fatta prima nell'esecuzione, mentre il clustering sta ancora calcolando, viene sovrascritta, come prima. Un gruppo ricostruito viene restituito a una persona quando:
 
 1. il suo embedding medio rientra in `merge_threshold` (0,6 coseno per impostazione predefinita per ArcFace, 0,65 per SFace) rispetto al centroide memorizzato di quella persona, **oppure**
 2. almeno metà dei suoi volti apparteneva a quella persona prima dell'esecuzione.
 
 La seconda regola pesa più di quanto sembri. Il centroide di una persona è un singolo vettore medio: chi è stato fotografato per anni copre una regione ampia, e HDBSCAN lo divide correttamente in sottogruppi compatti che finiscono lontano da quella media e falliscono la regola 1. Nella libreria sopra, la sola regola 1 restituiva il 38% dei volti collegati a persone nominate; con la regola 2 si arriva al 96%.
 
-Poiché la regola 2 si affida all'assegnazione precedente, un errore passato viene riportato anziché corretto. È il contratto di una modalità il cui scopo è preservare le persone esistenti: usa `--cluster-faces-force` per ricalcolare tutto da zero.
+Poiché la regola 2 si affida all'assegnazione precedente, un errore passato viene riportato anziché corretto. È il contratto di una modalità il cui scopo è preservare le persone esistenti: usa `--cluster-faces-force` per ricalcolare tutto da zero. Quando i volti di un gruppo si dividono esattamente a metà tra due persone, il pareggio si risolve in base all'ordine degli id dei volti: viene mantenuta la persona che possiede il volto già assegnato con il numero più basso del gruppo. Gli embedding vengono caricati con `ORDER BY id`; le versioni precedenti lasciavano quell'ordine non specificato, quindi in un pareggio simile l'id della persona mantenuta può differire da quello di un'esecuzione più vecchia.
 
 ## Qualità del volto OFIQ opzionale (modalità commerciale)
 

@@ -1250,14 +1250,14 @@ Die Schwellenwerte wurden an 26 Panoramen und 8 Nicht-Panoramen kalibriert, die 
 | `step_ortho_abs` | `0.02` | Seitliche Bewegung in einem Schritt, bevor er als Neuausrichtung gilt |
 | `step_ortho_ratio` | `0.5` | Dieselbe Grenze als Anteil der Schrittgröße |
 | `hdr_min_span_stops` | `1.5` | Belichtungsspanne, ab der ein Schwenk ein HDR-Panorama ist. Einfache Schwenks umfassen 0,0-0,7 Blenden, HDR 2,0-4,4 |
-| `sift_features` | `400` | Merkmale je Vorschaubild. Das Korpus wird auch mit 250 erkannt; 400 lässt Spielraum |
+| `sift_features` | `400` | Merkmale je Vorschaubild. Das Korpus wird auch mit 250 erkannt; 400 lässt Spielraum. Der Abgleichsaufwand wächst mit dem Quadrat dieses Werts. Pro Paar gemessen braucht der exakte Abgleich bei den standardmäßigen 400 Merkmalen etwa 2,3 ms (der frühere Näherungs-Abgleich: etwa 5,2 bis 5,5 ms), bei 3000 aber etwa 0,12 s (früher: 0,047 s); ein Wert weit über dem Standard macht den Messlauf daher langsamer als zuvor. Ein Kreuzungspunkt wurde nicht gemessen. |
 | `match_ratio` | `0.75` | Lowe-Verhältnis, das eine Übereinstimmung unterschreiten muss |
 | `workers` | `0` | Parallele Prozesse; `0` wählt nach Kernanzahl. Skaliert unterhalb der Kernanzahl — die Kosten dominieren zufällige Vorschaubild-Lesezugriffe |
 | `probe_stride` | `8` | Bilder zwischen den günstigen Stichproben, die gewöhnliche Serien aussortieren |
 | `probe_min_drift` | `0.05` | Bewegung, unterhalb derer eine Stichprobe die Folge als unbewegt einstuft |
 | `max_run_frames` | `500` | Längste gemessene Folge. Ein Schwenk braucht nie so viele Bilder, und die Obergrenze begrenzt den Merkmals-Cache pro Folge (~220 KB pro Bild und Prozess) |
 
-Diese Werte zu ändern bewirkt für sich genommen nichts — die Erkennung ist ein Stapellauf: Führen Sie `--detect-panoramas` erneut aus (oder die Schaltfläche im Viewer), damit die Änderung Galerie und Auswahl erreicht. Eine Änderung entwertet außerdem die inkrementelle Marke: Der nächste Lauf vermisst die gesamte Bibliothek neu, statt Etiketten aus den alten Schwellenwerten wiederzuverwenden.
+Diese Werte zu ändern bewirkt für sich genommen nichts — die Erkennung ist ein Stapellauf: Führen Sie `--detect-panoramas` erneut aus (oder die Schaltfläche im Viewer), damit die Änderung Galerie und Auswahl erreicht. Eine Änderung entwertet außerdem die zwischengespeicherten Messergebnisse je Folge: Der nächste Lauf vermisst die gesamte Bibliothek neu, statt Ergebnisse wiederzuverwenden, die unter den alten Schwellenwerten gemessen wurden. Zwischen zwei Änderungen vermisst ein Scan nur die Folgen, deren Bilder sich geändert haben: Die Messung einer Folge wird wiederverwendet, wenn die genaue Liste ihrer Bilder, deren Aufnahme- und Belichtungsdaten und die Größe jedes gespeicherten Vorschaubilds mit dem übereinstimmen, was der letzte Lauf gemessen hat. Etiketten werden stets aus der zwischengespeicherten Messung und Ihren aktuellen Korrekturen neu abgeleitet; eine Korrektur zu setzen oder zu löschen wirkt daher im nächsten Lauf, ohne dass etwas neu gemessen wird. Der Abgleich ist exakt, deshalb etikettieren zwei Läufe über dieselbe Bibliothek sie identisch und mit denselben Gruppennummern.
 
 ---
 

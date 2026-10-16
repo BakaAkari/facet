@@ -39,20 +39,48 @@ Recorded in `utils/panorama.py` for the same reason:
    33-frame sweep recovered focals ranging from 22 to 2461 px.
 3. **Exposure lock** — one confirmed set was auto-exposed.
 
-## Cost: whole-library coverage, incremental measurement
+## Cost: whole-library coverage, cached measurement
 
 The scan tail, `--recompute-average` and `--recompute-burst` call
 `detect_all_sequences(..., incremental=True)`. Every candidate run is still resolved and
-every label still rewritten — coverage is unchanged — but only runs holding a photo scanned
-since the last pass are re-measured; the rest are read back from stored labels
-(`utils.panorama.split_runs` / `stored_segments`).
+every label still rewritten — coverage is unchanged — but only runs whose **content
+signature** has no cached result are re-measured (`utils.panorama.run_signature` /
+`split_runs`).
 
 Measuring every run costs **~7 min on a 126k library**, which `--watch` would otherwise pay
-per settled batch. The watermark lives in `stats_cache` under `panorama_detection:watermark`
-and carries a fingerprint of the geometry-affecting settings, so editing any threshold
-invalidates it. The explicit `--detect-panoramas` / `POST /api/scan/detect_panoramas` always
+per settled batch. What is cached is the detector's **raw** answer for a run (before
+overrides), one row per run in the `panorama_run_cache` side table, keyed by a SHA-256 of the
+run's members' `path, date_taken, camera_model, focal_length, f_stop, shutter_speed, iso,
+scanned_at, render_version` and the stored thumbnail's byte length (`length(thumbnail)`, read
+from `idx_date_asc_cover`, never the BLOB). A row also carries the settings fingerprint —
+the geometry-affecting thresholds plus `_MATCHER_ID` and `_DETECTOR_REV` — so editing a
+threshold, changing the matcher, or bumping `_DETECTOR_REV` (do, whenever a change to
+`_analyse`, `find_segments` or `classify_kind` can alter a run's result) re-measures
+everything. The explicit `--detect-panoramas` / `POST /api/scan/detect_panoramas` always
 measure everything, and that entry point alone reports a panorama failure rather than
 containing it (`contain_failure=False`).
+
+**Labels are never read back from `photos`.** They are re-derived on every pass from the
+cached (or freshly measured) segments plus the **current** overrides and bracket state. That
+is the whole point of caching the raw result rather than the labels: reading labels back (what
+the old `stored_segments` did) meant a cleared forced override or suppression never took
+effect on the scan path, and a settled HDR panorama vanished when the bracket pass had
+rewritten its frames and the panorama pass then died. A new cache-reading shortcut that
+consults `photos.sequence_*` brings both bugs back.
+
+**Group ids are canonical**: after overrides are resolved, sets are ordered by their smallest
+member path and numbered from 1 with one counter across both kinds, so an incremental pass and
+a full re-measure agree on every id. They are still **renumbered on every run** (a new set
+earlier in path order shifts the later ids), so overrides stay keyed on paths and a set's
+identity stays `(sequence_kind, sequence_group_id)`.
+
+**The matcher is exact on purpose** (`cv2.BFMatcher`). The randomized kd-tree FLANN it
+replaced returned different match sets for identical descriptors from call to call, so two
+passes over an unchanged library disagreed on a borderline set (244-249 sets across five
+runs on a 129k library). Do not put an approximate matcher back to save time: at the shipped
+400 features it is not faster. A known limit of the signature: a thumbnail rewritten to a
+different image of the *same byte length*, with `scanned_at` and `render_version` unchanged,
+is not seen (a rescan rewrites `scanned_at`).
 
 ## Overrides: the two fields that must never be conflated
 

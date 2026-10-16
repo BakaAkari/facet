@@ -192,14 +192,14 @@ CPU-Clustering mit festem `algorithm` ist für dieselbe Eingabe deterministisch.
 
 ### Erneutes Clustern und bereits benannte Personen
 
-Alle Modi außer `--cluster-faces-force` behalten die Personendatensätze, löschen aber sämtliche Gesicht→Person-Zuordnungen und bauen sie neu auf. Ein neu gebildeter Cluster wird einer Person zurückgegeben, wenn entweder:
+Alle Modi außer `--cluster-faces-force` behalten die Personendatensätze, leiten aber sämtliche Gesicht→Person-Zuordnungen von Grund auf neu ab. Geschrieben werden nur die Gesichter, deren Person sich tatsächlich ändert, und die gesamte Aktualisierung ist eine einzige Transaktion; ein unterbrochener Lauf lässt die Datenbank daher unverändert. Ein Gesicht, das Sie im Viewer neu zuordnen, während die Datenbankphase des Laufs schreibt, behält Ihre Zuordnung (der Schreibvorgang ist ein Compare-and-Set); der Lauf protokolliert, wie viele solcher Gesichter er unangetastet gelassen hat. Eine frühere Änderung im selben Lauf, während das Clustering noch rechnet, wird wie bisher überschrieben. Ein neu gebildeter Cluster wird einer Person zurückgegeben, wenn entweder:
 
 1. sein mittleres Embedding innerhalb von `merge_threshold` (Standard 0,6 Kosinus für ArcFace, 0,65 für SFace) zum gespeicherten Zentroid dieser Person liegt, **oder**
 2. mindestens die Hälfte seiner Gesichter vor dem Lauf zu dieser Person gehörte.
 
 Die zweite Regel wiegt schwerer, als sie klingt. Das Zentroid einer Person ist ein einzelner Mittelwertvektor; wer über Jahre fotografiert wurde, deckt einen weiten Bereich ab, und HDBSCAN teilt ihn korrekt in enge Untercluster, die weit von diesem Mittelwert entfernt liegen und an Regel 1 scheitern. In der oben genannten Bibliothek lieferte Regel 1 allein 38 % der Gesichter an benannte Personen zurück; mit Regel 2 sind es 96 %.
 
-Da Regel 2 der früheren Zuordnung folgt, wird ein alter Fehler fortgeschrieben statt korrigiert. Das ist der Zweck eines Modus, der bestehende Personen bewahren soll — mit `--cluster-faces-force` wird alles von Grund auf neu berechnet.
+Da Regel 2 der früheren Zuordnung folgt, wird ein alter Fehler fortgeschrieben statt korrigiert. Das ist der Zweck eines Modus, der bestehende Personen bewahren soll — mit `--cluster-faces-force` wird alles von Grund auf neu berechnet. Verteilen sich die Gesichter eines Clusters genau gleichmäßig auf zwei Personen, entscheidet die Reihenfolge der Gesichts-IDs: Die Person, der das niedrigstnummerierte bereits zugeordnete Gesicht des Clusters gehört, bleibt erhalten. Die Embeddings werden mit `ORDER BY id` geladen; ältere Versionen ließen diese Reihenfolge unbestimmt, sodass die erhaltene Personen-ID bei einem solchen Gleichstand von einem älteren Lauf abweichen kann.
 
 ## Blinzelerkennung
 

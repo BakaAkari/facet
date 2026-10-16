@@ -136,9 +136,15 @@ class FaceClusterer:
 
         with get_connection(self.db_path, row_factory=False) as conn:
             match_sql, match_params = model_filter_sql(self.embedding_model)
+            # ORDER BY id: cluster discovery order -- and with it the ids of newly
+            # created persons and the float summation order of their centroids --
+            # follows load order. The rowid scan is already in id order (no sort),
+            # so this costs nothing today and pins the order against any index
+            # added later that would serve the scan in another one.
             cursor = conn.execute(f"""
                 SELECT id, embedding FROM faces
                 WHERE embedding IS NOT NULL AND {match_sql}
+                ORDER BY id
             """, match_params)
 
             for row in cursor.fetchall():
@@ -393,8 +399,11 @@ class FaceClusterer:
         person_id, count = owners.most_common(1)[0]
         return person_id if count >= self.PRESERVED_MAJORITY * len(cluster_face_ids) else None
 
-    def _restore_noise_faces(self, conn, face_to_cluster, preserved_assignments):
+    def _restore_noise_faces(self, new_owner, face_to_cluster, preserved_assignments):
         """Re-attach noise (label -1) faces to their previously preserved person.
+
+        Records the owners in ``new_owner`` (face id -> person id); the database
+        is written once, afterwards, by ``_apply_owner_changes``.
 
         Returns the number of faces restored.
         """
@@ -405,9 +414,33 @@ class FaceClusterer:
             if label < 0:
                 person_id = preserved_assignments.get(face_id)
                 if person_id is not None:
-                    conn.execute("UPDATE faces SET person_id = ? WHERE id = ?", (person_id, face_id))
+                    new_owner[face_id] = person_id
                     restored += 1
         return restored
+
+    def _apply_owner_changes(self, conn, changes):
+        """Write ``changes`` -- ``(new_owner, face_id, old_owner)`` -- as a compare-and-set.
+
+        A face is updated only while it still has the owner this run READ for it
+        (``person_id IS ?``, so a NULL old owner matches NULL). A viewer merge or
+        assign committed since the read therefore wins: that face is left as the
+        viewer set it and counted as a conflict. Nothing here holds a lock from
+        before the read; the write lock is taken by this statement and released
+        by the caller's commit.
+
+        Returns the number of conflicts (changes that matched no row).
+        """
+        if not changes:
+            return 0
+        cursor = conn.executemany(
+            "UPDATE faces SET person_id = ? WHERE id = ? AND person_id IS ?", changes)
+        # For executemany, rowcount is the sum over the statements.
+        conflicts = len(changes) - cursor.rowcount
+        if conflicts:
+            logger.warning(
+                "  %s face owner change(s) skipped: the face's owner changed after this run "
+                "read it (conflict with a concurrent edit); the newer owner was kept", conflicts)
+        return conflicts
 
     def _update_person_centroids(self, conn, person_ids):
         """Recompute face counts and centroids for existing persons.
@@ -457,22 +490,29 @@ class FaceClusterer:
             face_match_sql, face_match_params = model_filter_sql(self.embedding_model)
             person_match_sql, person_match_params = model_filter_sql(
                 self.embedding_model, 'centroid_model')
+            # Who owns each face of the re-matched space BEFORE this run (faces with
+            # no owner are simply absent). The phase used to blanket-NULL these and
+            # rewrite each one; it now builds the wanted owner map in memory
+            # (`new_owner`) and writes only the difference at the end. A face absent
+            # from `new_owner` is left with no owner, as the blanket reset left it.
+            if force:
+                old_owner = dict(conn.execute(
+                    "SELECT id, person_id FROM faces WHERE person_id IS NOT NULL").fetchall())
+            else:
+                old_owner = dict(conn.execute(
+                    f"SELECT id, person_id FROM faces WHERE person_id IS NOT NULL AND {face_match_sql}",
+                    face_match_params).fetchall())
+            new_owner = {}
+
             if force:
                 # Full reset - delete everything
-                conn.execute("UPDATE faces SET person_id = NULL")
                 conn.execute("DELETE FROM persons")
             elif preserve_named_only:
-                # Delete unnamed persons, clear face assignments for re-matching
-                conn.execute(f"UPDATE faces SET person_id = NULL WHERE {face_match_sql}",
-                             face_match_params)
+                # Delete unnamed persons; their faces are re-matched below
                 deleted = conn.execute(
                     f"DELETE FROM persons WHERE name IS NULL AND {person_match_sql}",
                     person_match_params).rowcount
                 logger.info("  Deleted %s unnamed auto-clustered person(s)", deleted)
-            else:
-                # Clear face assignments for re-matching, but keep all persons
-                conn.execute(f"UPDATE faces SET person_id = NULL WHERE {face_match_sql}",
-                             face_match_params)
 
             # Group faces by cluster label
             clusters = {}
@@ -487,12 +527,8 @@ class FaceClusterer:
             # ...and how many of those the centroid rule would have dropped
             restored_by_history = 0
 
-            # Process clusters in chunks with progress reporting
             cluster_items = list(clusters.items())
-            total_clusters = len(cluster_items)
-            chunk_size = max(1, total_clusters // 10)  # 10% chunks
-
-            logger.info("  Processing %s clusters...", total_clusters)
+            logger.info("  Processing %s clusters...", len(cluster_items))
             thumbnails_to_generate = []  # Defer thumbnail generation
 
             # Row position of every face id, built once. This loop visits every
@@ -503,8 +539,16 @@ class FaceClusterer:
             # itself had finished, on CPU and GPU alike.
             index_of = {fid: i for i, fid in enumerate(face_ids)}
 
+            # The preserved persons that can be matched by similarity, stacked once.
+            # Centroid-less preserved persons (API-created) can only be matched by
+            # the history rule below, not by similarity.
+            match_pids = [pid for pid, pdata in existing_persons.items()
+                          if pdata['centroid'] is not None]
+            match_matrix = (np.stack([existing_persons[pid]['centroid'] for pid in match_pids])
+                            if match_pids else None)
+
             # Create person records for each cluster
-            for i, (label, cluster_face_ids) in enumerate(tqdm(cluster_items, desc="  Assigning clusters")):
+            for label, cluster_face_ids in tqdm(cluster_items, desc="  Assigning clusters"):
                 # Get embeddings for this cluster
                 cluster_indices = [index_of[fid] for fid in cluster_face_ids if fid in index_of]
                 if not cluster_indices:
@@ -519,17 +563,16 @@ class FaceClusterer:
 
                 # Check if this cluster matches an existing person
                 matched_person_id = None
-                if existing_persons:
-                    best_similarity = merge_threshold
-                    for pid, pdata in existing_persons.items():
-                        # Centroid-less preserved persons (API-created) can only be
-                        # matched by the history rule below, not by similarity.
-                        if pdata['centroid'] is None:
-                            continue
-                        similarity = float(np.dot(centroid, pdata['centroid']))
-                        if similarity > best_similarity:
-                            best_similarity = similarity
-                            matched_person_id = pid
+                if match_matrix is not None:
+                    # One matrix-vector product instead of a dot per person. HEAD's
+                    # scan kept the FIRST strict maximum above the threshold, which
+                    # is argmax (first maximum) plus the threshold test. The test
+                    # compares as a Python float: a float32 against the float64
+                    # threshold would round the threshold and flip a near-tie.
+                    sims = match_matrix @ centroid
+                    best = int(np.argmax(sims))
+                    if float(sims[best]) > merge_threshold:
+                        matched_person_id = match_pids[best]
 
                 # Centroid similarity alone loses the people it should protect
                 # most. A person is represented by one averaged vector, but
@@ -562,9 +605,7 @@ class FaceClusterer:
                 if matched_person_id is not None:
                     # Merge faces into existing person
                     for face_id in cluster_face_ids:
-                        conn.execute("""
-                            UPDATE faces SET person_id = ? WHERE id = ?
-                        """, (matched_person_id, face_id))
+                        new_owner[face_id] = matched_person_id
                     merged_to_named += len(cluster_face_ids)
                 else:
                     # Create new auto-clustered person
@@ -596,38 +637,22 @@ class FaceClusterer:
                               self.embedding_model))
                     person_id = cursor.lastrowid
 
-                    # Update faces with person_id
+                    # Faces get person_id when the difference is written below
                     for face_id in cluster_face_ids:
-                        conn.execute("""
-                            UPDATE faces SET person_id = ? WHERE id = ?
-                        """, (person_id, face_id))
+                        new_owner[face_id] = person_id
 
-                # Commit every 10% of clusters to allow interruption
-                if (i + 1) % chunk_size == 0:
-                    conn.commit()
-
-            # Commit cluster assignments before thumbnail generation
-            conn.commit()
-
-            # Batch generate thumbnails only for legacy faces without stored thumbnails
-            if thumbnails_to_generate:
-                logger.info("  Generating %s thumbnails (legacy faces without stored thumbnails)...", len(thumbnails_to_generate))
-                thumb_chunk_size = max(1, len(thumbnails_to_generate) // 10)
-                for j, face_id in enumerate(tqdm(thumbnails_to_generate, desc="  Thumbnails")):
-                    thumbnail = self._generate_face_thumbnail(conn, face_id)
-                    if thumbnail:
-                        conn.execute("""
-                            UPDATE persons SET face_thumbnail = ?
-                            WHERE representative_face_id = ?
-                        """, (thumbnail, face_id))
-
-                    # Commit every 10% to allow interruption
-                    if (j + 1) % thumb_chunk_size == 0:
-                        conn.commit()
-
-            restored_noise = self._restore_noise_faces(conn, face_to_cluster, preserved_assignments)
+            restored_noise = self._restore_noise_faces(new_owner, face_to_cluster, preserved_assignments)
             if restored_noise:
                 logger.info("  Restored %s face(s) reclassified as noise to their preserved person(s)", restored_noise)
+
+            # Write only the faces whose owner changed, compare-and-set. This must
+            # land before the centroid/count update and the representative repair,
+            # which read `faces.person_id`.
+            all_ids = old_owner.keys() | new_owner.keys()
+            changes = [(new_owner.get(fid), fid, old_owner.get(fid))
+                       for fid in sorted(all_ids) if old_owner.get(fid) != new_owner.get(fid)]
+            self._apply_owner_changes(conn, changes)
+            logger.info("  Face assignment: %s of %s faces changed owner", len(changes), len(all_ids))
 
             # Update face counts and centroids for existing persons
             if existing_persons:
@@ -646,6 +671,10 @@ class FaceClusterer:
                 if deleted_empty:
                     logger.info("  Removed %s empty auto-clustered person(s)", deleted_empty)
 
+            # ONE commit for the whole phase: the person inserts, the owner write,
+            # the centroid/count update and the husk delete land together. The
+            # connection closes without committing on an exception, so an interrupt
+            # anywhere above changes nothing.
             conn.commit()
 
             if merged_to_named > 0:
@@ -654,6 +683,36 @@ class FaceClusterer:
                 logger.info("  %s of those were handed back on their previous assignment, "
                             "which the centroid rule alone would have orphaned",
                             restored_by_history)
+
+            # Legacy faces without a stored thumbnail: decode the ORIGINAL photo
+            # (RAW included, read-only) with no transaction open, then write each
+            # batch in a short one. An interrupt here loses only thumbnails, which
+            # the next run regenerates.
+            if thumbnails_to_generate:
+                self._write_legacy_thumbnails(conn, thumbnails_to_generate)
+
+    def _write_legacy_thumbnails(self, conn, representative_face_ids):
+        """Generate and store thumbnails for new persons whose representative face has none.
+
+        ``conn`` must have no open transaction. Each 10% batch is decoded first,
+        with the connection idle, and only then written and committed, so the write
+        lock is never held across the read of an original file.
+        """
+        logger.info("  Generating %s thumbnails (legacy faces without stored thumbnails)...",
+                    len(representative_face_ids))
+        batch_size = max(1, len(representative_face_ids) // 10)
+        decoded = []
+        for j, face_id in enumerate(tqdm(representative_face_ids, desc="  Thumbnails")):
+            thumbnail = self._generate_face_thumbnail(conn, face_id)
+            if thumbnail:
+                decoded.append((thumbnail, face_id))
+            if (j + 1) % batch_size == 0 or j + 1 == len(representative_face_ids):
+                if decoded:
+                    conn.executemany(
+                        "UPDATE persons SET face_thumbnail = ? WHERE representative_face_id = ?",
+                        decoded)
+                    conn.commit()
+                    decoded = []
 
     def match_face_to_person(self, embedding_bytes, threshold=None):
         """

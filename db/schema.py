@@ -467,7 +467,40 @@ INDEXES = [
      f'aggregate DESC, path, {_GALLERY_COVER_SQL}, category, camera_model, lens_model, '
      'face_ratio, aesthetic, comp_score, face_quality'),
     ('idx_gallery_date_desc', 'photos', f'date_taken DESC, path, {_GALLERY_COVER_SQL}'),
-    ('idx_gallery_date_asc', 'photos', f'date_taken ASC, path, {_GALLERY_COVER_SQL}'),
+    # Date-ascending gallery page AND the post-scan reads that walk the library in
+    # date order. It supersedes the narrower idx_gallery_date_asc (see the stale
+    # drop in init_database): both lead with `date_taken ASC, path`, so one wider
+    # B-tree serves them instead of a near-duplicate that every date/path update
+    # would also have to maintain. The column list IS the contract. Everything
+    # after the cover columns is read by a post-scan statement, and a column
+    # added to one of those SELECTs without being added here silently turns it
+    # back into a multi-minute table scan:
+    #   * utils.sequence._load_photos: camera_model, f_stop, shutter_speed, iso,
+    #     phash, shadow_clipped, highlight_clipped (ordered by date_taken, path,
+    #     which the index order satisfies with no temp B-tree);
+    #   * utils.panorama._load_candidates: focal_length, scanned_at;
+    #   * the panorama run signature: scanned_at, render_version and
+    #     length(thumbnail) (the expression, so the thumbnail BLOB is never read).
+    # `date_taken` leads so `date_taken IS NOT NULL` is a seekable `date_taken > ?`.
+    # junk_kind rides in the cover tuple on purpose (see GALLERY_COVER_COLUMNS).
+    ('idx_date_asc_cover', 'photos',
+     f'date_taken ASC, path, {_GALLERY_COVER_SQL}, camera_model, focal_length, f_stop, '
+     'shutter_speed, iso, phash, shadow_clipped, highlight_clipped, scanned_at, '
+     'render_version, length(thumbnail)'),
+    # Covering index for the post-scan phases that read the whole library by
+    # perceptual hash: process_bursts (phash, date_taken, aggregate, face_count,
+    # eyes_open_score, expression_score, tech_sharpness, is_burst_lead,
+    # burst_group_id) and detect_duplicates (phash, aggregate, face_count,
+    # eyes_open_score, expression_score, tech_sharpness, duplicate_group_id,
+    # is_duplicate_lead). `path` is last so it adds no ordering. The column list IS
+    # the contract: a column added to either SELECT without being added here
+    # silently turns the read back into a scan of the 16 GB table. The precedent
+    # for this tone is idx_shoot_type_evidence above. No other index leads with
+    # phash, so it overlaps none of the gallery indexes.
+    ('idx_post_scan', 'photos',
+     'phash, date_taken, aggregate, face_count, eyes_open_score, expression_score, '
+     'tech_sharpness, is_burst_lead, burst_group_id, duplicate_group_id, '
+     'is_duplicate_lead, path'),
     # Category / type dropdown (the most common filter).
     ('idx_gallery_category', 'photos', f'category, aggregate DESC, path, {_GALLERY_COVER_SQL}'),
     # Camera filter (and the camera+lens pair). `camera_model = ?` is the only
@@ -817,6 +850,18 @@ PHOTO_SEQUENCE_OVERRIDES_COLUMNS = [
     ('applied_at', 'TEXT'),
 ]
 
+# Cache of the panorama detector's RAW per-run measurements, keyed by a content
+# signature of the candidate run. Derived data: one panorama pass rebuilds it, so
+# it is neither merged nor exported. `segments` is the detector's output before
+# overrides are applied (labels are always re-derived from it plus the current
+# overrides); `fingerprint` is the settings fingerprint it was measured under.
+PANORAMA_RUN_CACHE_COLUMNS = [
+    ('signature', 'TEXT PRIMARY KEY'),
+    ('fingerprint', 'TEXT NOT NULL'),
+    ('segments', 'TEXT NOT NULL'),
+    ('measured_at', 'REAL'),
+]
+
 # FTS5 full-text search virtual table and sync triggers.
 #
 # Covering schema: every field the gallery free-text search ever scanned via
@@ -958,6 +1003,7 @@ _MIGRATED_TABLES = [
     ('user_preferences', USER_PREFERENCES_COLUMNS),
     ('photo_scoring_overrides', PHOTO_SCORING_OVERRIDES_COLUMNS),
     ('photo_sequence_overrides', PHOTO_SEQUENCE_OVERRIDES_COLUMNS),
+    ('panorama_run_cache', PANORAMA_RUN_CACHE_COLUMNS),
     ('face_reextract_snapshot', FACE_REEXTRACT_SNAPSHOT_COLUMNS),
     ('scan_runs', SCAN_RUNS_COLUMNS),
     ('scan_failures', SCAN_FAILURES_COLUMNS),
@@ -1215,6 +1261,11 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
             'photo_sequence_overrides', PHOTO_SEQUENCE_OVERRIDES_COLUMNS
         ))
 
+        # Create panorama_run_cache table (derived; rebuilt by one panorama pass)
+        conn.execute(_build_create_table_sql(
+            'panorama_run_cache', PANORAMA_RUN_CACHE_COLUMNS
+        ))
+
         conn.execute(_build_create_table_sql(
             'face_reextract_snapshot', FACE_REEXTRACT_SNAPSHOT_COLUMNS
         ))
@@ -1278,7 +1329,12 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
         # single- or multi-column shape on render_version is sargable for it —
         # EXPLAIN QUERY PLAN shows a full `SCAN photos` with or without the
         # index. Dropped rather than reshaped.
-        for stale_idx in ('idx_burst_moment', 'idx_burst_learned', 'idx_qalign_score', 'idx_render_version'):
+        # idx_gallery_date_asc is superseded by the wider idx_date_asc_cover (same
+        # leading `date_taken ASC, path`, plus the columns the post-scan reads need),
+        # so a library the first gallery-index release already upgraded drops its
+        # narrow copy instead of maintaining two near-identical B-trees.
+        for stale_idx in ('idx_burst_moment', 'idx_burst_learned', 'idx_qalign_score',
+                          'idx_render_version', 'idx_gallery_date_asc'):
             conn.execute(f'DROP INDEX IF EXISTS {stale_idx}')
 
         # Create every remaining index group (photo_tags, comparisons,
@@ -1346,6 +1402,14 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
 # before it already has the moment index analyzed.
 ANALYZE_KEY_INDEXES = ('idx_moment_confidence', 'idx_gallery_aggregate')
 
+# Indexes that get their own single-index ``ANALYZE <name>`` in the transaction that
+# builds them. ANALYZE_KEY_INDEXES does not cover them: a library the gallery
+# indexes already analyzed never refires that gate when these are added later, and
+# without a sqlite_stat1 row for the new index the planner ignores it next to
+# stale partial stats. A one-index ANALYZE scans the small covering index, not the
+# 16 GB table, so it costs seconds where ``ANALYZE photos`` costs the whole file.
+ANALYZE_ON_BUILD_INDEXES = ('idx_post_scan', 'idx_date_asc_cover')
+
 
 def missing_photo_indexes(conn):
     """The ``INDEXES`` entries (name, table, column_expr) the database does not have."""
@@ -1358,7 +1422,8 @@ def create_photo_indexes(conn, should_stop=None, on_built=None):
     """Build every missing ``INDEXES`` entry, each its own autocommit statement.
 
     Logs one INFO line before each index and one after it. Each CREATE INDEX
-    holds the write lock only for itself, and a run killed or interrupted
+    holds the write lock only for itself (an ``ANALYZE_ON_BUILD_INDEXES`` entry
+    together with its single-index ANALYZE, in one transaction), and a run killed or interrupted
     (``sqlite3.Connection.interrupt``) mid-build keeps every index it finished.
     ``should_stop`` is checked before each index; when it returns True the build
     stops there. ``on_built(done, total)`` is called after each finished index.
@@ -1374,7 +1439,22 @@ def create_photo_indexes(conn, should_stop=None, on_built=None):
         logger.info("Creating index %s (%d of %d; a large library can take minutes)",
                     idx_name, position, len(missing))
         started = time.monotonic()
-        conn.execute(f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({column_expr})')
+        # A stats-on-build index is built and analyzed in ONE transaction: an
+        # interrupt between the two would otherwise leave an index the next start
+        # takes for finished (it is no longer missing) and the planner ignores.
+        analyze_now = (idx_name in ANALYZE_ON_BUILD_INDEXES
+                       and conn.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() is not None)
+        try:
+            if analyze_now:
+                conn.execute('BEGIN')
+            conn.execute(f'CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({column_expr})')
+            if analyze_now:
+                conn.execute(f'ANALYZE {idx_name}')
+                conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
         logger.info("Created index %s in %.1f s", idx_name, time.monotonic() - started)
         built.append(idx_name)
         if on_built is not None:

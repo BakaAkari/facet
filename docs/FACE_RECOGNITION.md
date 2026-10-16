@@ -192,14 +192,14 @@ CPU clustering with a fixed `algorithm` is deterministic for the same input.
 
 ### Re-clustering and curated people
 
-Every mode except `--cluster-faces-force` preserves existing person records, but all of them clear face→person assignments and rebuild them. A rebuilt cluster is returned to a person when either:
+Every mode except `--cluster-faces-force` preserves existing person records, but all of them re-derive every face→person assignment from scratch. Only the faces whose person actually changes are written, and the whole update is a single transaction, so a run that is interrupted leaves the database as it was. A face you reassign in the viewer while the run's database phase is writing keeps your assignment (the write is compare-and-set); the run logs how many such faces it left alone. An edit made earlier in the run, while clustering is still computing, is overwritten, as it was before. A rebuilt cluster is returned to a person when either:
 
 1. its mean embedding is within `merge_threshold` (default 0.6 cosine for ArcFace, 0.65 for SFace) of that person's stored centroid, **or**
 2. at least half of its faces belonged to that person before the run.
 
 The second rule matters more than it sounds. A person's centroid is a single averaged vector, so someone photographed across years spans a broad region — HDBSCAN correctly splits them into tight sub-clusters that each sit far from that average and fail rule 1. On the library above, rule 1 alone returned 38% of the faces attached to named people; adding rule 2 returns 96%.
 
-Because rule 2 defers to the previous assignment, an earlier mis-assignment is carried forward rather than corrected. That is the intended contract for a mode whose purpose is preserving existing persons — use `--cluster-faces-force` to re-derive everything from scratch.
+Because rule 2 defers to the previous assignment, an earlier mis-assignment is carried forward rather than corrected. That is the intended contract for a mode whose purpose is preserving existing persons — use `--cluster-faces-force` to re-derive everything from scratch. When a cluster's faces split exactly evenly between two people, the tie is broken by face id order: the person who owns the cluster's lowest-numbered previously assigned face is kept. Embeddings are loaded `ORDER BY id`; older versions left that order unspecified, so in such a tie the kept person id can differ from an older run.
 
 ## Blink Detection
 

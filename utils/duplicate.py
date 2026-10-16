@@ -21,9 +21,50 @@ def _hex_to_uint64(hex_str):
     return int(hex_str, 16)
 
 
+# np.bitwise_count (a native popcount ufunc) arrived in numpy 2.0, and the declared pin is
+# numpy>=1.24, so the byte-table loop below stays as the capability fallback. Both paths
+# return the same int32 distances.
+_HAS_BITWISE_COUNT = hasattr(np, "bitwise_count")
+
+# The scalar read of detect_duplicates. Every column is in ``idx_post_scan``, which leads
+# with ``phash``, so ``phash IS NOT NULL`` is a seek and the read never touches the table
+# (the learned_scores subquery probes its own autoindex). There is deliberately NO
+# ORDER BY: it made the planner walk the path autoindex plus a table row per photo, so
+# the sort happens in Python. If a column is added here it MUST also be added to
+# ``idx_post_scan`` (db/schema.py), or this read silently goes back to the 16 GB table.
+_DUP_ROWS_SQL = (
+    "SELECT path, phash, aggregate, face_count, eyes_open_score, expression_score, "
+    "tech_sharpness, duplicate_group_id, is_duplicate_lead, "
+    "(SELECT ls.learned_score FROM learned_scores ls "
+    " WHERE ls.photo_path = photos.path AND ls.user_id IS NULL "
+    " AND ls.category IS NULL) AS learned_score "
+    "FROM photos WHERE phash IS NOT NULL"
+)
+
+# The stored markings of the rows that take no part in grouping. HEAD reset them with a
+# blanket UPDATE; the diff needs to know which of them are stale. Also covered by
+# ``idx_post_scan`` (``phash IS NULL`` is a seek on its leading column).
+_DUP_NULL_PHASH_SQL = (
+    "SELECT path, duplicate_group_id, is_duplicate_lead FROM photos WHERE phash IS NULL"
+)
+
+# The embeddings, in a read of their own: the BLOB is not in any index, so this one is a
+# table scan, kept apart so the scalar read above stays index-only.
+_DUP_EMBEDDINGS_SQL = (
+    "SELECT path, clip_embedding FROM photos "
+    "WHERE phash IS NOT NULL AND clip_embedding IS NOT NULL"
+)
+
+_DUP_WRITE_SQL = "UPDATE photos SET duplicate_group_id = ?, is_duplicate_lead = ? WHERE path = ?"
+
+
 def _hamming_to_all(query_hash, hashes):
     """Vectorized Hamming distance of one uint64 hash against an array of hashes."""
     xor_result = np.bitwise_xor(query_hash, hashes)
+    if _HAS_BITWISE_COUNT:
+        # int32 keeps this function's contract: the table path below returns int32, and a
+        # uint8 result would wrap on any later subtraction.
+        return np.bitwise_count(xor_result).astype(np.int32, copy=False)
     distances = np.zeros(len(hashes), dtype=np.int32)
     for byte_idx in range(8):
         byte_vals = (xor_result >> np.uint64(byte_idx * 8)) & np.uint64(0xFF)
@@ -131,23 +172,26 @@ def detect_duplicates(db_path, config_path=None):
         max_distance, similarity_pct, prefilter_hamming, cosine_threshold,
     )
 
-    # Load all photos with pHash (+ embedding for the cosine gate)
+    # Load all photos with pHash (+ embedding for the cosine gate) in one read snapshot.
     with sqlite3.connect(db_path) as conn:
         apply_pragmas(conn)
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
-            "SELECT path, phash, aggregate, clip_embedding, "
-            "face_count, eyes_open_score, expression_score, tech_sharpness, "
-            "(SELECT ls.learned_score FROM learned_scores ls "
-            " WHERE ls.photo_path = photos.path AND ls.user_id IS NULL "
-            " AND ls.category IS NULL) AS learned_score "
-            "FROM photos WHERE phash IS NOT NULL ORDER BY path"
-        )
-        rows = cursor.fetchall()
+        conn.execute("BEGIN")
+        rows = conn.execute(_DUP_ROWS_SQL).fetchall()
+        if rows:
+            null_phash_rows = conn.execute(_DUP_NULL_PHASH_SQL).fetchall()
+            embeddings = {r['path']: r['clip_embedding']
+                          for r in conn.execute(_DUP_EMBEDDINGS_SQL)}
+        conn.rollback()
 
     if not rows:
         logger.info("No photos with pHash found.")
         return
+
+    # The read has no ORDER BY (it would defeat the covering index); sort here. SQLite's
+    # BINARY collation on UTF-8 orders exactly as Python orders code points, and ``path``
+    # is unique, so this is the order HEAD's ``ORDER BY path`` produced.
+    rows.sort(key=lambda r: r['path'])
 
     paths = [r['path'] for r in rows]
     # Per-row dicts for composite lead selection (aggregate + eyes/expression/sharpness).
@@ -166,7 +210,8 @@ def detect_duplicates(db_path, config_path=None):
 
     # Convert hex hashes to uint64 numpy array for vectorized comparison
     hashes = np.array([_hex_to_uint64(r['phash']) for r in rows], dtype=np.uint64)
-    matrix, has_emb = _build_embedding_matrix([r['clip_embedding'] for r in rows])
+    matrix, has_emb = _build_embedding_matrix([embeddings.get(p) for p in paths])
+    del embeddings  # the raw blobs are decoded into ``matrix``; do not hold both
     logger.info("Comparing %d photos (%d with embeddings)...", n, int(has_emb.sum()))
 
     uf = _two_stage_union(hashes, matrix, has_emb, max_distance, prefilter_hamming, cosine_threshold)
@@ -182,23 +227,17 @@ def detect_duplicates(db_path, config_path=None):
     # Filter to groups with 2+ members
     dup_groups = {root: members for root, members in groups.items() if len(members) >= 2}
 
+    # The state every row should end in: a group member gets ``(group_id, is_lead)``, every
+    # other row ``(NULL, 0)`` (where HEAD's blanket reset left it). The write below touches
+    # only the rows whose stored pair differs.
+    wanted = {}
+
     if not dup_groups:
         logger.info("No duplicates found.")
-        # Clear any existing duplicate markings
-        with sqlite3.connect(db_path) as conn:
-            apply_pragmas(conn)
-            conn.execute("UPDATE photos SET duplicate_group_id = NULL, is_duplicate_lead = 0")
-            conn.commit()
-        return
-
-    # Assign group IDs and determine leads
-    logger.info("Found %d duplicate groups (%d photos total)",
-                len(dup_groups), sum(len(m) for m in dup_groups.values()))
-
-    # Clear existing markings
-    with sqlite3.connect(db_path) as conn:
-        apply_pragmas(conn)
-        conn.execute("UPDATE photos SET duplicate_group_id = NULL, is_duplicate_lead = 0")
+    else:
+        # Assign group IDs and determine leads
+        logger.info("Found %d duplicate groups (%d photos total)",
+                    len(dup_groups), sum(len(m) for m in dup_groups.values()))
 
         from utils.selection import composite_lead_score
 
@@ -209,15 +248,28 @@ def detect_duplicates(db_path, config_path=None):
             best_idx = max(members, key=lambda idx: composite_lead_score(lead_data[idx]))
 
             for idx in members:
-                is_lead = 1 if idx == best_idx else 0
-                conn.execute(
-                    "UPDATE photos SET duplicate_group_id = ?, is_duplicate_lead = ? "
-                    "WHERE path = ?",
-                    (group_id, is_lead, paths[idx])
-                )
+                wanted[paths[idx]] = (group_id, 1 if idx == best_idx else 0)
             group_id += 1
 
-        conn.commit()
+    # Stored state of EVERY row: the pHash rows from the first read, the rest from a read of
+    # their own (HEAD's blanket reset also cleared those).
+    stored = {r['path']: (r['duplicate_group_id'], r['is_duplicate_lead']) for r in rows}
+    stored.update((r['path'], (r['duplicate_group_id'], r['is_duplicate_lead']))
+                  for r in null_phash_rows)
+    changed = []
+    for path, current in stored.items():
+        group, lead = wanted.get(path, (None, 0))
+        if current != (group, lead):
+            changed.append((group, lead, path))
+    logger.info("Duplicate state: %d rows changed", len(changed))
+    if changed:
+        with sqlite3.connect(db_path) as conn:
+            apply_pragmas(conn)
+            conn.executemany(_DUP_WRITE_SQL, changed)
+            conn.commit()
+
+    if not dup_groups:
+        return
 
     total_dups = sum(len(m) for m in dup_groups.values())
     hidden = total_dups - len(dup_groups)  # non-lead duplicates

@@ -13,7 +13,9 @@ from datetime import datetime, timedelta
 import pytest
 
 from db.sequence_overrides import set_sequence_overrides
+from tests.test_post_scan_indexes import IDX_DATE_ASC_COVER, MIN_COVERING_SQLITE
 from utils.sequence import (
+    _LOAD_PHOTOS_SQL,
     DEFAULTS,
     _base_frame,
     _compensation_offset,
@@ -966,3 +968,135 @@ class TestBracketOverrides:
         assert labelled == 0
         # ...and never left pending forever for a row that will never come back.
         assert pending == 0
+
+
+# ---------------------------------------------------------------------------
+# Step 3 of the post-scan speed work: `_load_photos` reads through
+# `idx_date_asc_cover` and the plan never changes the answer
+# ---------------------------------------------------------------------------
+
+def _plan_lines(db_path, sql):
+    with sqlite3.connect(db_path) as conn:
+        return [r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql)]
+
+
+def _covers(plan):
+    return any("COVERING INDEX idx_date_asc_cover" in line for line in plan)
+
+
+def _analyzed_library(tmp_path, name):
+    from db.schema import init_database
+    db_path = str(tmp_path / name)
+    init_database(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO photos (path, filename, date_taken, camera_model, f_stop, "
+            "shutter_speed, iso, phash, scanned_at, thumbnail) VALUES (?,?,?,?,?,?,?,?,?,zeroblob(2500))",
+            [(f"/p/{i:04d}.jpg", f"{i:04d}.jpg", f"2024:05:{1 + i % 28:02d} 10:00:00",
+              "Canon EOS R6", 4.0, "0.01", 100, f"{i:016x}", "2026-01-01 00:00:00")
+             for i in range(300)])
+        conn.execute("ANALYZE photos")
+        conn.commit()
+    return db_path
+
+
+@pytest.mark.skipif(
+    sqlite3.sqlite_version_info < MIN_COVERING_SQLITE,
+    reason=f"SQLite {sqlite3.sqlite_version} is older than {MIN_COVERING_SQLITE}: "
+           "idx_date_asc_cover is not planned as covering")
+def test_load_photos_sql_is_an_index_only_read_with_no_sorter(tmp_path):
+    db_path = _analyzed_library(tmp_path, "plan.db")
+
+    plan = _plan_lines(db_path, _LOAD_PHOTOS_SQL)
+    assert _covers(plan), plan
+    assert not any("TEMP B-TREE" in line for line in plan), plan
+
+    # Control, and the stated fault: the same index without `phash` (a column the
+    # statement names) can no longer answer the read, so the assertion above flips.
+    cols = ", ".join(c if c is not None else "length(thumbnail)"
+                     for c in IDX_DATE_ASC_COVER if c != "phash")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP INDEX idx_date_asc_cover")
+        conn.execute(f"CREATE INDEX idx_date_asc_cover ON photos({cols})")
+        conn.execute("ANALYZE photos")
+        conn.commit()
+    degraded = _plan_lines(db_path, _LOAD_PHOTOS_SQL)
+    assert not _covers(degraded), degraded
+
+
+def _parity_rows():
+    """Brackets of 3 and 5 frames, two brackets whose frames share a timestamp (the
+    `path` tie-break decides their order), a burst, singles, a photo with no date,
+    one with no exposure triplet, and a panorama-labelled row that must survive."""
+    rows = []
+
+    def add(path, taken, f_stop, shutter, phash='ff00ff00ff00ff00', burst=None, lead=0, agg=5.0):
+        rows.append((path, path.lstrip('/'), taken, 'Canon EOS R6', f_stop, shutter, 100,
+                     phash, agg, burst, lead))
+
+    for i, (shutter, agg, lead) in enumerate([('0.005', 5.0, 0), ('0.01', 6.0, 0), ('0.02', 9.0, 1)]):
+        add(f'/a{i}.jpg', f'2025:04:15 19:59:{5 + i:02d}', 4.0, shutter, burst=1, lead=lead, agg=agg)
+    for i, shutter in enumerate(['0.002', '0.004', '0.008', '0.016', '0.032']):
+        add(f'/b{i}.jpg', f'2025:04:15 20:30:{i:02d}', 5.6, shutter, phash='0f0f0f0f0f0f0f0f')
+    # Four-rung ladders whose two middle frames (`x1`, `x2`) share a timestamp, so the
+    # `path` tie-break decides which of them the run chain sees first, and that changes
+    # the answer: the pHashes are laid out so that x1-then-x2 chains all four frames
+    # (every step <= 6 bits) while x2-then-x1 breaks at the last step (12 bits > 10) and
+    # leaves a three-frame set. Set `c` is inserted in descending path order and set `d`
+    # in ascending order, so whichever way a plan walks the ties (rowid ascending or
+    # descending), one of the two sets would come out as the three-frame one.
+    base, near, far = 0x0, 0x3F, 0xFFF
+    for prefix, minute, inserted in (('c', 0, ('x2', 'x1')), ('d', 10, ('x1', 'x2'))):
+        frames = {
+            'x0': (f'2025:04:15 21:{minute:02d}:00', '0.01', base),
+            'x1': (f'2025:04:15 21:{minute:02d}:01', '0.02', base),
+            'x2': (f'2025:04:15 21:{minute:02d}:01', '0.04', near),
+            'x3': (f'2025:04:15 21:{minute:02d}:02', '0.08', far),
+        }
+        for key in ('x0', *inserted, 'x3'):
+            taken, shutter, phash = frames[key]
+            add(f'/{prefix}_{key}.jpg', taken, 8.0, shutter, phash=f'{phash:016x}')
+    for i in range(6):
+        add(f'/s{i}.jpg', f'2025:04:16 09:{i * 7:02d}:00', 4.0, '0.01',
+            phash=f'{(i + 1) * 0x1111111111111111 & 0xFFFFFFFFFFFFFFFF:016x}')
+    add('/nodate.jpg', None, 4.0, '0.01')
+    rows.append(('/noev.jpg', 'noev.jpg', '2025:04:16 10:00:00', 'Canon EOS R6', None, None, None,
+                 'ff00ff00ff00ff00', 5.0, None, 0))
+    add('/pano.jpg', '2025:04:17 08:00:00', 8.0, '0.01')
+    return rows
+
+
+_PARITY_COLUMNS = ("path, sequence_group_id, sequence_kind, sequence_ev_offset, "
+                   "is_sequence_lead, burst_group_id, is_burst_lead")
+
+
+def _run_parity_library(tmp_path, name, drop_indexes):
+    db = tmp_path / name
+    _seed(db, _parity_rows())
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE photos SET sequence_group_id = 7, sequence_kind = 'panorama' "
+                     "WHERE path = '/pano.jpg'")
+        if drop_indexes:
+            conn.execute("DROP INDEX idx_post_scan")
+            conn.execute("DROP INDEX idx_date_asc_cover")
+        conn.commit()
+    result = detect_sequences(str(db))
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT {_PARITY_COLUMNS} FROM photos ORDER BY path")]
+    return result, rows, names
+
+
+def test_dropping_the_covering_indexes_changes_the_plan_never_the_answer(tmp_path):
+    with_idx, rows_with, names_with = _run_parity_library(tmp_path, "with.db", drop_indexes=False)
+    without, rows_without, names_without = _run_parity_library(tmp_path, "without.db", drop_indexes=True)
+
+    assert {"idx_post_scan", "idx_date_asc_cover"} <= names_with
+    assert not {"idx_post_scan", "idx_date_asc_cover"} & names_without
+    # The fixture must actually bite: four sets, and the panorama row left alone.
+    assert with_idx['sets'] == 4 and with_idx['frames'] == 3 + 5 + 4 + 4
+    assert any(r['sequence_kind'] == 'panorama' and r['sequence_group_id'] == 7 for r in rows_with)
+    assert with_idx == without
+    assert rows_with == rows_without
