@@ -19,10 +19,10 @@ Les photos sont classées dans une catégorie, puis notées avec les poids de ce
 | Priorité | Catégorie | Méthode de détection |
 |----------|----------|------------------|
 | 8 | `art` | Tags : painting, statue, drawing, cartoon, anime |
-| 10 | `astro` | Tags : aurora, astrophotography, stars, milky way |
+| 10 | `astro` | Étiquettes : aurora, astrophotography, stars, milky way, ET luminance moyenne ≤ 0.30 |
 | 15 | `concert` | Tags : concert |
 | 35 | `group_portrait` | Ratio visage ≥ 5 % ET is_group_portrait |
-| 42 | `silhouette` | Présence d'un visage ET is_silhouette |
+| 42 | `silhouette` | A un visage ET `is_silhouette` (le plus grand visage est sombre sur un environnement plus clair) |
 | 45 | `portrait` | Ratio visage ≥ 5 %, ni silhouette/groupe/mono |
 | 46 | `portrait_bw` | Portrait monochrome (visage ≥ 5 %) |
 | 55 | `macro` | Tags : macro, insect, butterfly, dewdrop, ... |
@@ -36,6 +36,12 @@ Les photos sont classées dans une catégorie, puis notées avec les poids de ce
 | 999 | `default` | Repli (aucun filtre) |
 
 Les autres catégories basées sur les tags incluent `aerial`, `food`, `sports`, `vehicle`, `travel`, `fashion`, `candid`, `product`, `architecture`, `urban`, `golden_hour`, `blue_hour`, `cinematic`, `vintage`, `abstract`, `minimalist`, `dramatic` et `weather`.
+
+Sur les profils à étiquetage CLIP (`legacy`/`8gb`, et `16gb`/`24gb` quand le tagger VLM n'est pas planifié), un scan multi-passes étiquette la photo pendant la passe d'embeddings, avant le calcul de sa catégorie et de son agrégat : la catégorie du scan voit donc les étiquettes comme `--recompute-average` ; l'étape d'étiquetage après scan n'est qu'un repli pour les photos encore sans étiquette. Une exécution avec un seul `--pass NAME` n'étiquette pas.
+
+**Silhouette.** `is_silhouette` est une règle de pixels fondée sur le visage (voir le tableau des filtres ci-dessous), pas une étiquette ni un test d'histogramme. Le drapeau stocké pilote à la fois l'agrégat et la catégorie : une silhouette ignore la pénalité d'écrêtage dans `aggregate` (`exposure.silhouette_detection`), tandis qu'un scan stocke `exposure_score` avec la pénalité d'écrêtage, mais que `--recompute-average` le recalcule sans elle pour toute photo dont `is_silhouette` stocké est activé, quelle que soit la valeur de `exposure.silhouette_detection`. Recalculez les drapeaux stockés avec `python facet.py --recompute-silhouette`, puis `--recompute-average`.
+
+**Astro.** Une photo doit avoir une étiquette astro *et* une luminance moyenne d'au plus 0.30 (`luminance_max`) : une scène lumineuse que CLIP étiquette `aurora` ou `stars` n'est pas astro, et une photo sans luminance stockée ne correspond jamais. Un `scoring_config.json` avec son propre tableau `categories` garde sa propre entrée `astro` et ne reçoit pas cette garde tant que vous n'ajoutez pas `"luminance_max": 0.30` à `astro.filters` ; `python facet.py --doctor` indique si la vôtre en manque.
 
 ## Contextes de notation
 
@@ -138,7 +144,7 @@ Chaque catégorie dans `scoring_config.json` comporte ces composants :
 |--------|-------------|
 | `has_face` | Au moins un visage détecté |
 | `is_monochrome` | Saturation < 5 % |
-| `is_silhouette` | Contre-jour avec ombres/hautes lumières marquées |
+| `is_silhouette` | Le plus grand visage est sombre et son environnement clair : la luma moyenne des 60 % centraux du cadre du visage est inférieure à 0.12 et la bande autour du cadre (de 0.2 à 0.75 largeur de cadre vers l'extérieur, rognée à l'image) est plus claire de plus de 0.20. Une mesure de pixels fondée sur le visage ; ni l'étiquette CLIP `silhouette` ni l'histogramme de l'image entière ne le définissent plus. Une photo sans visage n'est jamais une silhouette |
 | `is_group_portrait` | face_count >= `min_faces_for_group` (configurable, défaut : 4) |
 
 ### Filtres de tags
@@ -156,7 +162,7 @@ Tous les poids utilisent le suffixe `_percent`. Ils sont normalisés par `get_we
 | Clé | Métrique | Source | Idéale pour |
 |-----|--------|--------|----------|
 | `aesthetic_percent` | Attrait visuel | TOPIQ ou CLIP+MLP | Toutes |
-| `quality_percent` | Qualité (héritée) | Redistribuée dans `aesthetic` (pas de signal distinct) | — |
+| `quality_percent` | Qualité héritée | Ajouté à `aesthetic_percent` avant le calcul (pas de signal distinct) | — |
 | `face_quality_percent` | Netteté du visage | InsightFace | Portraits |
 | `eye_sharpness_percent` | Netteté des yeux | Points de repère InsightFace | Portraits |
 | `tech_sharpness_percent` | Netteté globale | Variance laplacienne | Paysages |
@@ -179,6 +185,8 @@ Tous les poids utilisent le suffixe `_percent`. Ils sont normalisés par `get_we
 | `subject_placement_percent` | Règle des tiers du sujet | BiRefNet | Toutes |
 | `bg_separation_percent` | Séparation de l'arrière-plan | BiRefNet | Portraits, macro |
 
+**`quality_percent` compte comme `aesthetic`.** La métrique de qualité n'a pas de score propre : le `quality_percent` d'une catégorie est donc ajouté à son `aesthetic_percent` avant le calcul — le poids esthétique effectif est `aesthetic_percent + quality_percent` et les poids totalisent toujours 100. Avant la correction, la part `quality` notait une métrique toujours égale à 0 et disparaissait de l'agrégat ; une bibliothèque agrégée avec l'ancien code monte légèrement (sans changer aucune catégorie) au prochain `--recompute-average`.
+
 ## Modificateurs
 
 Ajustent le comportement de scoring par catégorie :
@@ -187,9 +195,6 @@ Ajustent le comportement de scoring par catégorie :
 |----------|------|-------------|
 | `bonus` | float | Ajouté au score final (ex. 0.5) |
 | `noise_tolerance_multiplier` | float | Échelle de la pénalité de bruit (0.5 = moitié) |
-| `iso_tolerance_multiplier` | float | Échelle de la pénalité ISO |
-| `min_saturation_bonus` | float | Bonus pour une saturation élevée |
-| `contrast_bonus` | float | Bonus pour un contraste élevé |
 | `_skip_clipping_penalty` | bool | Ignore la pénalité d'écrêtage de l'exposition |
 | `_skip_oversaturation_penalty` | bool | Ignore la pénalité de sursaturation |
 | `_clipping_multiplier` | float | Échelle de la pénalité d'écrêtage |
@@ -207,6 +212,8 @@ Quatre dimensions dérivées de la segmentation du sujet par BiRefNet :
 | `bg_separation_percent` | Séparation de l'arrière-plan | Différence de gradient de contour à la frontière du sujet (qualité du bokeh). |
 
 Utilisez `subject_sharpness_percent` et `bg_separation_percent` pour le portrait/la faune ; `subject_prominence_percent` pour la macro.
+
+**Pas de sujet, pas de nombre.** Quand aucun sujet n'est trouvé, `subject_sharpness`, `subject_placement` et `bg_separation` sont stockés NULL (tout comme `power_point_score` quand il n'y a pas de cadre de sujet), `subject_prominence` vaut 0.0 et `subject_bbox` est NULL ; les versions antérieures stockaient un 5.0 neutre. Les filtres de plage min/max de la galerie ignorent un NULL sur ces métriques (`min_subject_sharpness=0` ne renvoie plus une photo sans sujet), les moyennes SQL l'ignorent et l'interface l'affiche comme absent. L'agrégat compte toujours un NULL comme le 5.0 neutre : aucun agrégat ne change. Les lignes existantes gardent leur 5.0 jusqu'à ce que `--recompute-saliency` et `--recompute-composition-cpu` les réécrivent.
 
 **Quand la saillance échoue.** Sur CUDA, la taille de lot de saillance est déduite de la VRAM libre (environ 2,4 GiB par image à 1024 px, entre 1 et 8 images) et divisée par deux après une erreur de mémoire insuffisante, jusqu'à une seule image. Une photo dont la saillance échoue malgré tout journalise une ERROR et ne stocke rien : une photo jamais notée garde NULL dans les cinq colonnes de saillance (`subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation`, `subject_bbox`), et `--recompute-saliency` et `--pass saliency` conservent les valeurs stockées d'une photo quand sa saillance échoue. Un nouveau scan complet de la photo (par exemple avec `--force`) stocke NULL pour elle, comme pour une photo jamais notée. Facet n'écrit jamais un nombre neutre à la place d'un résultat en échec. Dans l'agrégat, un NULL compte comme neutre (5,0), exactement comme une photo scannée avant l'existence de la saillance : il n'aide ni ne pénalise le score. `--recompute-saliency` resélectionne une telle photo (voir [Saillance du sujet](COMMANDS.md#saillance-du-sujet)).
 
@@ -383,19 +390,20 @@ Au-delà des votes A/B explicites, deux autres flux d'étiquettes alimentent l'o
    synthétiques avec `python facet.py --sync-label-comparisons` (`source='rating'`).
    Une nouvelle exécution resynchronise à partir des étiquettes actuelles, de sorte que les notes retirées disparaissent.
 
-L'optimiseur pondère chaque source selon sa fiabilité (vote 1.0, rating 0.7,
-culling 0.5) lors de la maximisation de la vraisemblance de Bradley-Terry. Il s'entraîne sur le
-vecteur de métriques 0-10 exact utilisé par le scorer (y compris `liqe`, `aesthetic_iaa`,
-`face_quality_iqa` et les métriques de saillance du sujet), de sorte que les poids optimisés correspondent
-directement au scoring de production.
+L'optimiseur pondère chaque source par sa fiabilité (vote 1.0, rating 0.7, culling 0.5) en maximisant la vraisemblance de Bradley-Terry. Une **égalité** compte comme une demi-victoire plus une demi-défaite : c'est la preuve que deux photos obtiennent un score proche, avec le même poids qu'un vote décisif (`include_ties` les écarte toujours). L'ajustement est **ancré sur les poids actuels** par un a priori L2 (`l2_regularization`, force 100) : avec peu de comparaisons, la suggestion reste proche de vos poids et s'en éloigne à mesure que les votes s'accumulent. Il s'entraîne sur chaque photo telle que le scoreur la sert : le même vecteur de métriques 0-10 que lit l'agrégat (y compris `liqe`, `aesthetic_iaa`, `face_quality_iqa` et les métriques de saillance du sujet), avec netteté des yeux, netteté technique et couleur normalisées par percentiles, le score d'exposition reconstruit et le drapeau de portrait de groupe. Les percentiles viennent de l'instantané que `--recompute-average` a persisté ; avant le premier `--recompute-average`, ce sont les colonnes stockées qui sont lues. Il part des poids **servis** et écrit ces mêmes poids : `quality_percent` est replié dans `aesthetic` comme le fait le scoreur, et l'application écrit `quality_percent: 0` dans les catégories qui le portent.
 
-Les poids ne sont **appliqués que s'ils généralisent** : les poids finaux sont ajustés sur
-toutes les comparaisons, mais la décision de les écrire est conditionnée à la précision en
-validation croisée k-fold tenue à l'écart, et non à la précision d'entraînement. Si le gain tenu à l'écart par rapport aux poids actuels
-est inférieur au seuil (défaut 2 pp), l'exécution rapporte les chiffres et n'écrit
-rien — passez `--optimize-force` pour passer outre. L'optimisation est par catégorie et
-nécessite des comparaisons étiquetées **pour cette catégorie** ; les catégories sans vote
-ne peuvent pas être réglées à partir des données.
+Les poids **ne sont appliqués que s'ils se généralisent**. Les poids finaux sont ajustés sur toutes les comparaisons, mais la décision de les écrire repose sur une barrière réservée : validation croisée à 5 plis avec des **plis groupés par photo** (aucune photo n'est à la fois dans les paires d'entraînement et dans les paires réservées d'un pli), agrégée sur les plis et comparée aux poids actuels sur les mêmes paires réservées par un **test exact de McNemar unilatéral**. Ils ne sont appliqués que si `p < 0.05` **et** que le gain réservé est d'au moins 2 pp (`min_improvement`) ; sinon l'exécution consigne les chiffres et n'écrit rien — passez `--optimize-force` pour passer outre. Si la barrière ne peut pas s'exécuter (trop peu de groupes de photos indépendants), la CLI ne se rabat pas sur la précision d'entraînement : elle n'applique rien sauf si vous forcez. L'optimisation est par catégorie et exige des comparaisons étiquetées **décisives** (A ou B a gagné) **pour cette catégorie** : `min_comparisons` compte celles-ci ; les égalités et les autres catégories n'y satisfont pas ; les catégories sans votes ne peuvent pas être ajustées à partir des données. Le journal affiche par exemple :
+
+```
+Held-out accuracy:      69.2% +/- 4.0 (5-fold, photo-grouped) - the honest estimate
+Held-out gain:          +8.5 pp over the current weights on the same 389 pairs
+McNemar (one-sided):    p = 0.0006 (only the fit right: 66, only the current weights right: 33)
+NOT applying: the held-out gate needs p < 0.05 and a gain of at least 2.0 pp. ...   (logged when the gate fails)
+```
+
+Appliquer un résultat avec `--optimize-weights` change la façon dont les photos de la catégorie se classent entre elles, pas la place de la catégorie face aux autres : dans la même écriture de configuration que les poids, `modifiers.bonus` est décalé de l'opposé du décalage moyen projeté du score des photos de la catégorie (borné à [-5, 5] ; une borne atteinte est consignée comme résidu), si bien que l'agrégat moyen de la catégorie reste stable. Une catégorie sans entrée dans `categories[]` (`others`) n'a pas de bonus et n'est pas recentrée. L'instantané de poids pris avant l'écriture porte le bonus, et restaurer un instantané restaure poids **et** bonus (les instantanés enregistrés avant ce changement, par `calibrate.py` ou pour `others` n'en portent aucun et laissent le bonus intact). Résidu documenté : le visualiseur écrit les poids via `POST /api/config/update_weights` — pour son bouton **Appliquer** comme pour une modification manuelle dans l'onglet Poids —, et cette route ne recentre pas le bonus (seul `--optimize-weights` le fait).
+
+**Après une mise à jour, ré-entraînez le classeur personnel et les têtes keeper, puis lancez `--recompute-average`.** L'optimiseur, le classeur et les têtes keeper partagent un vecteur de caractéristiques qui est désormais celui qui est servi (métriques des yeux, techniques et de couleur normalisées) ; un modèle enregistré ne peut pas détecter le changement.
 
 Cadence recommandée :
 
@@ -413,7 +421,7 @@ python facet.py --recompute-average      # appliquer + persister l'instantané d
 3. Cliquez sur « Suggérer les poids » pour les valeurs optimisées
 4. Mettez à jour la config manuellement
 
-**Suggérer les poids** répond aussi à une question plus précise que la porte de validation croisée ci-dessus : dans quelle mesure les poids *actuellement en vigueur* de cette catégorie sont-ils déjà d'accord avec vos propres comparaisons ? Cliquer dessus renvoie `accuracy_before` — le pourcentage des paires étiquetées de cette catégorie (votes A/B, tri et paires dérivées des notes) dont les poids en vigueur prédisent correctement le gagnant — à côté d'`accuracy_after`, le même chiffre pour les poids suggérés. Les deux sont affichés côte à côte dans l'onglet Suggestions de poids et dans le panneau latéral de l'onglet Comparaison A/B à chaque exécution (`GET /api/comparison/learned_weights`, `optimization/weight_optimizer.py:optimize_weights_direct`). Comme la porte de la CLI, cela nécessite `min_comparisons_for_optimization` (30 par défaut) paires étiquetées pour cette catégorie — en dessous, le bouton signale le manque plutôt qu'un chiffre.
+**Suggérer des poids** répond aussi à une question plus précise que l'ancienne barrière réservée : dans quelle mesure les poids *actuellement utilisés* de cette catégorie concordent-ils déjà avec vos propres comparaisons ? Il renvoie `accuracy_before` — le pourcentage des paires étiquetées de cette catégorie (votes A/B, rejets et paires dérivées des notes) dont les poids en vigueur prédisent correctement le gagnant — à côté de `accuracy_after`, le même chiffre pour les poids suggérés ; ce sont des chiffres sur l'échantillon d'entraînement. Ils s'affichent côte à côte dans l'onglet Suggestions de poids et dans la barre latérale de l'onglet Comparaison A/B à chaque exécution (`GET /api/comparison/learned_weights`, `optimization/weight_optimizer.py:optimize_weights_direct`). L'offre d'**Appliquer** suit la même barrière réservée de McNemar que la CLI, pas le gain sur l'échantillon : `suggest_changes` n'est vrai que si la barrière est franchie (la requête n'exécute la validation croisée que lorsque le gain sur l'échantillon atteint déjà 2 pp ; `?use_cv=true` l'exécute toujours). Comme la CLI, il exige `min_comparisons_for_optimization` (50 par défaut) comparaisons A/B décisives de cette catégorie — en dessous, le bouton signale le manque (« Need at least N decisive comparisons (have K) ») au lieu d'un nombre.
 
 ## Ajouter des catégories personnalisées
 

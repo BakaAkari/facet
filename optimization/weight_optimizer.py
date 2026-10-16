@@ -3,20 +3,28 @@ Weight Optimizer for Pairwise Comparison Feedback System.
 
 Directly optimizes weights to maximize the likelihood that the weighted
 component scores correctly predict comparison outcomes. Uses the
-Bradley-Terry probability model with Davidson extension for ties.
+Bradley-Terry probability model; a tie counts as half a win plus half a
+loss, and a Gaussian prior (``l2_regularization``) pulls the fit toward the
+current weights. One objective (:func:`_pairwise_objective`) serves the
+direct fit, the cross-validation folds and the bootstrap.
+
+Whether a fit may be applied is decided by one held-out gate,
+:meth:`WeightOptimizer.optimize_weights_with_cv`: photo-grouped folds, pooled
+held-out predictions over the decisive pairs, and a one-sided exact McNemar
+test on the pairs the fitted and the current weights disagree about.
 
 Usage::
 
     optimizer = WeightOptimizer(db_path)
 
-    # Single-shot direct optimization
-    result = optimizer.optimize_weights_direct(category='others')
+    # Single-shot direct optimization (suggest_changes = the held-out gate)
+    result = optimizer.optimize_weights_direct(category='portrait')
 
-    # With cross-validation for robustness
-    result = optimizer.optimize_weights_with_cv(category='others')
+    # The held-out gate on its own
+    result = optimizer.optimize_weights_with_cv(category='portrait')
 
     # Apply optimized weights to config
-    optimizer.apply_optimized_weights(result['new_weights'], category='others')
+    optimizer.apply_optimized_weights(result['new_weights'], category='portrait')
 
 CLI::
 
@@ -25,17 +33,179 @@ CLI::
 
 import json
 import logging
-from typing import Dict, List, Optional
+import os
+import sqlite3
+import time
+from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 from scipy.optimize import minimize
+from scipy.special import expit
+from scipy.stats import binom
 from db import DEFAULT_DB_PATH, get_connection
 from config import ScoringConfig
-from config.category_filter import with_face_defaults
+from config.percentile_normalizer import PercentileNormalizer
 from config.scoring_config import resolve_scoring_config_path
 from config_resolve import load_resolved
-from processing.scorer import build_metric_vector, SCORING_METRIC_KEYS
+from db.scoring_overrides import get_photo_scoring_overrides
+from processing.scorer import (
+    Facet, SCORING_METRIC_KEYS, SERVED_ROW_COLUMNS, build_metric_vector,
+    fold_quality_weight, unavailable_for_config,
+)
 
 logger = logging.getLogger("facet.optimizer")
+
+# Strength of the Gaussian prior toward the current weights, shared by every fit
+# (direct, CV folds, bootstrap) so the gate scores the model that ships. Fixed
+# and independent of the number of pairs: with a per-pair curvature of 0.25 it
+# is worth ~0.23 per pair on a 400-pair category, so it binds hardest on small
+# categories, where an unconstrained fit is least trustworthy.
+DEFAULT_L2_REGULARIZATION = 100.0
+
+# Every weight is bounded so no single metric can take the whole aggregate.
+_WEIGHT_UPPER_BOUND = 0.60
+
+# One-sided significance level of the held-out McNemar test.
+_GATE_ALPHA = 0.05
+
+# How long the percentile snapshot an optimizer instance read stays current. A
+# per-request optimizer never reaches it; the long-lived one the burst-culling
+# router keeps would otherwise score on the snapshot of its first call forever.
+_NORMALIZER_TTL_SECONDS = 300.0
+
+# Range the viewer accepts for a category's ``modifiers.bonus``.
+_BONUS_MIN, _BONUS_MAX = -5.0, 5.0
+
+
+def _pairwise_objective(w, D, y, rw, w0, lam):
+    """Penalised Bradley-Terry negative log-likelihood and its gradient.
+
+    ``D`` holds one row ``X_a - X_b`` per pair, ``y`` is +1 when A won, -1 when
+    B won and 0 for a tie, ``rw`` is each pair's likelihood weight (see
+    ``WeightOptimizer.SOURCE_WEIGHTS``), ``w0`` the prior's centre (the current
+    weights) and ``lam`` its strength::
+
+        loss = sum_i rw_i * l_i(D_i @ u) + lam * ||w - w0||^2,   u = w / sum(w)
+
+    A decisive pair costs ``softplus(-y * d)``. A tie costs half a win plus
+    half a loss, ``(softplus(d) + softplus(-d)) / 2``: minimal at ``d = 0``
+    with the curvature of a decisive pair (0.25) and only linear growth, so a
+    tie between two very different photos cannot outweigh the decisive votes.
+
+    Returns ``(loss, grad)`` for ``scipy.optimize.minimize(..., jac=True)``.
+    """
+    k = len(w)
+    s = w.sum()
+    u = w / s if s > 1e-8 else np.full(k, 1.0 / k)
+    d = D @ u
+    decisive = y != 0
+    yd = y * d
+    loss_i = np.where(decisive, np.logaddexp(0.0, -yd),
+                      0.5 * (np.logaddexp(0.0, d) + np.logaddexp(0.0, -d)))
+    dloss_dd = np.where(decisive, -y * expit(-yd), expit(d) - 0.5)
+    delta = w - w0
+    loss = float(rw @ loss_i) + lam * float(delta @ delta)
+    g_u = (rw * dloss_dd) @ D
+    g_w = (g_u - g_u @ u) / s if s > 1e-8 else np.zeros(k)
+    return loss, g_w + 2.0 * lam * delta
+
+
+def _fit_weights(D, y, rw, w0, lam, starts, maxiter, ftol=1e-6) -> Tuple[np.ndarray, float]:
+    """Minimise :func:`_pairwise_objective` from each start; keep the best.
+
+    Bounds ``[0, 0.6]`` per weight, weights summing to 1, SLSQP. Returns the
+    normalised weights and the objective at them (``w0`` when every start
+    fails).
+    """
+    k = D.shape[1]
+    bounds = [(0.0, _WEIGHT_UPPER_BOUND)] * k
+    constraint = {'type': 'eq', 'fun': lambda w: w.sum() - 1.0, 'jac': lambda w: np.ones_like(w)}
+    best, best_loss = None, float('inf')
+    for start in starts:
+        try:
+            result = minimize(
+                _pairwise_objective, start, args=(D, y, rw, w0, lam), jac=True,
+                method='SLSQP', bounds=bounds, constraints=constraint,
+                options={'maxiter': maxiter, 'ftol': ftol},
+            )
+        except (ValueError, ArithmeticError, np.linalg.LinAlgError):
+            continue
+        if result.fun < best_loss:
+            best_loss, best = float(result.fun), result.x.copy()
+    if best is None:
+        best = w0.copy()
+        best_loss = _pairwise_objective(best, D, y, rw, w0, lam)[0]
+    w = np.maximum(best, 0.0)
+    w = w / w.sum() if w.sum() > 0 else np.full(k, 1.0 / k)
+    return w, best_loss
+
+
+def _decisive_correct(w, D, y) -> np.ndarray:
+    """Per decisive pair: does ``w`` score the winner strictly higher?"""
+    m = y != 0
+    d = D[m] @ w
+    return np.where(y[m] == 1, d > 0, d < 0)
+
+
+def _decisive_accuracy(w, D, y) -> float:
+    """Percentage of decisive pairs ``w`` ranks right (ties do not count)."""
+    correct = _decisive_correct(w, D, y)
+    return float(correct.mean() * 100) if correct.size else 0.0
+
+
+def _photo_folds(
+    photo_a: Sequence, photo_b: Sequence, n_folds: int,
+) -> Tuple[np.ndarray, np.ndarray, int]:
+    """Assign both photos of every pair to folds so no photo straddles a split.
+
+    Pairs are grouped into photo-connected components (union-find over
+    ``photo_a``/``photo_b``); the components, in sorted order, are permuted
+    with ``RandomState(42)`` and component *i* goes to fold ``i % n_folds``.
+    Every pair then sits inside one fold. A component holding more than
+    ``1/n_folds`` of the pairs (a densely compared set) would leave its own
+    fold nothing to train on, so its photos are assigned individually instead;
+    a pair whose two photos land in different folds is then held out by
+    neither and trains only the folds that hold neither photo.
+
+    Fold ``f`` tests the pairs with both photos in ``f`` and trains on the
+    pairs with neither photo in ``f``.
+
+    Returns ``(fold_a, fold_b, n_folds_used)``.
+    """
+    photo_a = [str(p) for p in photo_a]
+    photo_b = [str(p) for p in photo_b]
+    parent: Dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in zip(photo_a, photo_b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    roots = [find(a) for a in photo_a]
+    pair_count: Dict[str, int] = {}
+    for r in roots:
+        pair_count[r] = pair_count.get(r, 0) + 1
+    big = {r for r, c in pair_count.items() if c > len(roots) / n_folds}
+
+    # A unit is a whole component, or one photo of an over-sized component;
+    # find() makes every root the component's smallest path, so the keys are
+    # deterministic and never collide.
+    unit_of = {p: (find(p) if find(p) not in big else p) for p in parent}
+    units = sorted(set(unit_of.values()))
+    n_used = min(n_folds, len(units))
+    if n_used == 0:
+        return np.zeros(0, dtype=int), np.zeros(0, dtype=int), 0
+    fold_of_unit: Dict[str, int] = {}
+    for i, j in enumerate(np.random.RandomState(42).permutation(len(units))):
+        fold_of_unit[units[j]] = i % n_used
+    fold_a = np.array([fold_of_unit[unit_of[p]] for p in photo_a], dtype=int)
+    fold_b = np.array([fold_of_unit[unit_of[p]] for p in photo_b], dtype=int)
+    return fold_a, fold_b, n_used
 
 
 class WeightOptimizer:
@@ -62,23 +232,65 @@ class WeightOptimizer:
         self.db_path = db_path
         self.config_path = resolve_scoring_config_path(config_path)
         self._cfg: Optional[ScoringConfig] = None
+        self._normalizer: Optional[PercentileNormalizer] = None
+        self._normalizer_read_at: Optional[float] = None
 
     @property
     def cfg(self) -> ScoringConfig:
-        """Lazily-loaded scoring config (for metric-vector construction)."""
+        """Lazily-loaded scoring config (for metric-vector construction).
+
+        Read-only: ``validate=False``, because validation can rewrite the
+        config file, and this runs inside viewer request handlers that do not
+        hold ``CONFIG_WRITE_LOCK``.
+        """
         if self._cfg is None:
-            self._cfg = ScoringConfig(self.config_path)
+            self._cfg = ScoringConfig(self.config_path, validate=False)
         return self._cfg
 
-    def _metric_vector(self, row: dict, category: Optional[str]) -> List[float]:
-        """Build the production metric vector for one photo, in component order.
+    def _get_normalizer(self, conn=None) -> Optional[PercentileNormalizer]:
+        """The percentile normalizer the last ``--recompute-average`` scored with.
 
-        Uses the photo's own determined category when none is supplied so the
-        category-dependent terms (leading-lines blend, isolation) match scoring.
-        Values are clamped to 0-10 exactly as the scorer clamps them.
+        Rebuilt from the persisted ``percentiles_snapshot`` (a fresh compute
+        over a large library takes over a minute) and cached for a few minutes.
+        None when no snapshot exists or the database does not: the stored
+        columns are then what is served. ``conn`` reuses a caller's open
+        connection.
         """
-        cat = category or self.cfg.determine_category(with_face_defaults(row))
-        vec = build_metric_vector(row, self.cfg, cat, weights=self.cfg.get_weights(cat))
+        now = time.monotonic()
+        if self._normalizer_read_at is not None and now - self._normalizer_read_at < _NORMALIZER_TTL_SECONDS:
+            return self._normalizer
+        settings = self.cfg.get_normalization_settings()
+        normalizer = None
+        try:
+            if conn is not None:
+                normalizer = PercentileNormalizer.from_snapshot(conn, settings)
+            elif os.path.exists(self.db_path):
+                with get_connection(self.db_path) as own:
+                    normalizer = PercentileNormalizer.from_snapshot(own, settings)
+        except sqlite3.Error:
+            logger.warning("Could not read the percentile snapshot; features use stored columns",
+                           exc_info=True)
+        self._normalizer, self._normalizer_read_at = normalizer, now
+        return normalizer
+
+    def _metric_vector(self, row: dict, category: Optional[str]) -> List[float]:
+        """Build the metric vector the scorer serves for one photo, in component order.
+
+        The row is first rewritten exactly as ``update_all_aggregates`` rewrites
+        it (``Facet.prepare_scoring_row``: percentile-normalized sharpness,
+        colour and eye sharpness, group-portrait flag, histogram exposure),
+        in ``category`` when one is supplied, so the optimizer trains on what
+        production weights. The photo's own category (override and scoring
+        context honoured) is used when none is supplied, so the
+        category-dependent terms (leading-lines blend, isolation) match scoring.
+        Values are clamped to 0-10 exactly as the scorer clamps them. The
+        ranker and keeper inference paths come through here too, so they build
+        the features they were trained on.
+        """
+        cfg = self.cfg
+        prepared = Facet.prepare_scoring_row(dict(row), cfg, self._get_normalizer(), category=category)
+        cat = category or Facet._determine_photo_category(prepared, cfg)
+        vec = build_metric_vector(prepared, cfg, cat, unavailable=unavailable_for_config(cfg))
         return [max(0.0, min(10.0, vec.get(c, 0.0))) for c in self.SCORE_COMPONENTS]
 
     def _fetch_comparison_data(
@@ -149,6 +361,17 @@ class WeightOptimizer:
             ph = ','.join('?' * len(chunk))
             for pr in conn.execute(f"SELECT * FROM photos WHERE path IN ({ph})", chunk):
                 photos[pr['path']] = dict(pr)
+        # A sticky per-photo category / scoring context decides how a photo is
+        # served when no comparison category pins it (pooled runs)
+        try:
+            overrides = get_photo_scoring_overrides(conn, path_list)
+        except sqlite3.OperationalError:  # a database from before the table existed
+            overrides = {}
+        for path, override in overrides.items():
+            if path in photos:
+                photos[path]['category_override'] = override['category_override']
+                photos[path]['scoring_context'] = override['scoring_context']
+        self._get_normalizer(conn)
 
         comparisons = []
         features_a, features_b, winners, row_weights = [], [], [], []
@@ -178,220 +401,122 @@ class WeightOptimizer:
             np.array(row_weights),
         )
 
+    def _prior(self, category: Optional[str]):
+        """The current weights as a dict and as the prior's normalised vector."""
+        old_weights = self._load_current_weights(category)
+        n = len(self.SCORE_COMPONENTS)
+        w0 = np.array([old_weights.get(c, 1.0 / n) for c in self.SCORE_COMPONENTS])
+        w0 = w0 / w0.sum() if w0.sum() > 0 else np.full(n, 1.0 / n)
+        return old_weights, w0
+
+    @staticmethod
+    def _too_few_decisive(winners, total: int, min_comparisons: int) -> Optional[Dict]:
+        """The guard every path shares: ties carry no ranking evidence."""
+        decisive = int(np.count_nonzero(winners))
+        if decisive >= min_comparisons:
+            return None
+        return {
+            'error': f'Need at least {min_comparisons} decisive comparisons (have {decisive})',
+            'comparison_count': total,
+        }
+
     def optimize_weights_direct(
         self,
         category: Optional[str] = None,
         min_comparisons: int = 30,
         include_ties: bool = True,
-        tie_sensitivity: float = 0.1,
         min_improvement_threshold: float = 2.0,
-        l2_regularization: float = 0.01,
+        l2_regularization: float = DEFAULT_L2_REGULARIZATION,
         sources: Optional[List[str]] = None,
     ) -> Dict:
         """
         Directly optimize weights to maximize comparison agreement.
 
-        Uses Bradley-Terry probability model:
+        Uses the Bradley-Terry probability model::
+
             P(A > B) = sigmoid(score_A - score_B)
 
-        With Davidson extension for ties:
-            P(tie) = 2 * theta * sqrt(P(A) * P(B)) / (P(A) + P(B) + 2*theta*sqrt(P(A)*P(B)))
+        with a tie counting as half a win plus half a loss, plus a Gaussian
+        prior toward the current weights (see :func:`_pairwise_objective`).
 
-        This approach is superior to the two-stage method because:
-        - Uses raw comparison data directly (no information loss)
-        - Optimizes for actual prediction accuracy, not MSE to arbitrary scores
-        - Handles ties properly with Davidson model
-        - More data-efficient (works with fewer comparisons)
+        ``suggest_changes`` is the held-out gate of
+        :meth:`optimize_weights_with_cv`, never the in-sample gain. The gate is
+        run only when the in-sample improvement already reaches
+        ``min_improvement_threshold``: a fit that cannot beat the current
+        weights on the very pairs it was trained on does not pass held out
+        either, so the common "nothing to suggest" answer costs one fit.
 
         Args:
             category: Optimize weights for specific category (or all if None)
-            min_comparisons: Minimum comparisons required before optimization
+            min_comparisons: Minimum DECISIVE comparisons required (ties do not count)
             include_ties: Whether to include tie comparisons in optimization
-            tie_sensitivity: Davidson theta parameter (higher = more ties expected)
-            min_improvement_threshold: Only suggest changes if accuracy improves by this %
-            l2_regularization: L2 penalty on weight changes from current weights
+            min_improvement_threshold: Minimum accuracy gain (pp), in sample to
+                run the gate and held out to pass it
+            l2_regularization: Strength of the prior toward the current weights
 
         Returns:
             Dict with:
             - old_weights, new_weights: weight dictionaries
-            - accuracy_before, accuracy_after: % of comparisons predicted correctly
-            - log_likelihood: final negative log-likelihood
-            - suggest_changes: whether to apply the new weights
+            - accuracy_before, accuracy_after: % of decisive comparisons predicted correctly (in sample)
+            - log_likelihood: final penalised log-likelihood
+            - suggest_changes: whether the held-out gate passed
+            - gate: the optimize_weights_with_cv result, or None when it was not run
             - per_comparison: list of (photo_a, photo_b, winner, predicted_correct)
         """
         with get_connection(self.db_path) as conn:
             comparisons, X_a, X_b, winners, row_weights = self._fetch_comparison_data(
                 conn, category=category, include_ties=include_ties, sources=sources,
             )
+        too_few = self._too_few_decisive(winners, len(comparisons), min_comparisons)
+        if too_few:
+            return too_few
 
-            if len(comparisons) < min_comparisons:
-                return {
-                    'error': f'Need at least {min_comparisons} comparisons (have {len(comparisons)})',
-                    'comparison_count': len(comparisons),
-                }
+        n_features = len(self.SCORE_COMPONENTS)
+        old_weights, old_w = self._prior(category)
+        D = X_a - X_b
 
-            n_features = len(self.SCORE_COMPONENTS)
+        accuracy_before = _decisive_accuracy(old_w, D, winners)
 
-            # Load current weights
-            old_weights = self._load_current_weights(category)
-            old_w = np.array([old_weights.get(c, 1.0/n_features) for c in self.SCORE_COMPONENTS])
-            if old_w.sum() > 0:
-                old_w = old_w / old_w.sum()
+        rng = np.random.RandomState(42)
+        starts = [old_w.copy(), np.full(n_features, 1.0 / n_features)]
+        starts += [rng.dirichlet(np.ones(n_features)) for _ in range(3)]
+        new_w, best_nll = _fit_weights(
+            D, winners, row_weights, old_w, l2_regularization, starts, maxiter=500, ftol=1e-9,
+        )
+        accuracy_after = _decisive_accuracy(new_w, D, winners)
+
+        diff = D @ new_w
+        per_comparison = []
+        for comp, d, winner in zip(comparisons, diff, winners):
+            if winner == 1:
+                predicted_correct = bool(d > 0)
+            elif winner == -1:
+                predicted_correct = bool(d < 0)
             else:
-                old_w = np.ones(n_features) / n_features
+                predicted_correct = bool(abs(d) < 0.5)  # a tie: scores close
+            per_comparison.append({
+                'photo_a': comp['photo_a'],
+                'photo_b': comp['photo_b'],
+                'winner': comp['winner'],
+                'predicted_correct': predicted_correct,
+            })
 
-            theta = tie_sensitivity
+        accuracy_improvement = accuracy_after - accuracy_before
+        gate = None
+        if accuracy_improvement >= min_improvement_threshold:
+            gate = self.optimize_weights_with_cv(
+                category=category,
+                min_comparisons=min_comparisons,
+                include_ties=include_ties,
+                sources=sources,
+                l2_regularization=l2_regularization,
+                min_improvement=min_improvement_threshold,
+            )
+        suggest_changes = bool(gate is not None and gate.get('passed', False))
 
-            def neg_log_likelihood(weights, return_predictions=False):
-                """Compute negative log-likelihood of comparison outcomes."""
-                # Normalize weights
-                w_sum = weights.sum()
-                if w_sum > 1e-8:
-                    w = weights / w_sum
-                else:
-                    w = np.ones(n_features) / n_features
+        new_weights = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, new_w)}
 
-                # Compute weighted scores
-                scores_a = X_a @ w
-                scores_b = X_b @ w
-                diff = scores_a - scores_b
-
-                total_nll = 0.0
-                predictions = []
-
-                for i, (d, winner) in enumerate(zip(diff, winners)):
-                    if winner == 1:  # A wins
-                        # Log P(A > B) = log(sigmoid(diff)) = -log(1 + exp(-diff))
-                        if d > 20:
-                            nll = 0.0
-                        elif d < -20:
-                            nll = -d
-                        else:
-                            nll = np.log1p(np.exp(-d))
-                        pred_correct = d > 0
-                    elif winner == -1:  # B wins
-                        # Log P(B > A) = log(sigmoid(-diff)) = -log(1 + exp(diff))
-                        if d < -20:
-                            nll = 0.0
-                        elif d > 20:
-                            nll = d
-                        else:
-                            nll = np.log1p(np.exp(d))
-                        pred_correct = d < 0
-                    else:  # Tie - Davidson model approximation
-                        # For ties, we use a simpler model: higher probability near diff=0
-                        # -log P(tie) ≈ (diff/theta)^2 for small theta
-                        # This encourages equal scores for ties
-                        nll = (d / (theta + 0.1)) ** 2
-                        pred_correct = abs(d) < 0.5  # Consider "correct" if scores close
-
-                    # Down-weight noisier comparison sources (rating/culling)
-                    total_nll += row_weights[i] * nll
-
-                    if return_predictions:
-                        predictions.append(pred_correct)
-
-                # Add L2 regularization to discourage large changes from current weights
-                l2_penalty = l2_regularization * np.sum((weights - old_w) ** 2)
-                total_nll += l2_penalty
-
-                if return_predictions:
-                    return total_nll, predictions
-                return total_nll
-
-            def compute_accuracy(weights):
-                """Compute prediction accuracy for given weights."""
-                w_sum = weights.sum()
-                if w_sum > 1e-8:
-                    w = weights / w_sum
-                else:
-                    w = np.ones(n_features) / n_features
-
-                scores_a = X_a @ w
-                scores_b = X_b @ w
-                diff = scores_a - scores_b
-
-                correct = 0
-                total = 0
-                for d, winner in zip(diff, winners):
-                    if winner == 1:  # A should win
-                        if d > 0:
-                            correct += 1
-                        total += 1
-                    elif winner == -1:  # B should win
-                        if d < 0:
-                            correct += 1
-                        total += 1
-                    # Ties don't count toward accuracy
-
-                return (correct / total * 100) if total > 0 else 0.0
-
-            # Calculate accuracy with old weights
-            accuracy_before = compute_accuracy(old_w)
-
-            # Optimization bounds and constraints
-            bounds = [(0.0, 0.60) for _ in range(n_features)]
-            constraints = {'type': 'eq', 'fun': lambda w: w.sum() - 1.0}
-
-            # Multiple random restarts
-            best_result = None
-            best_nll = float('inf')
-            n_restarts = 5
-
-            starting_points = [old_w.copy(), np.ones(n_features) / n_features]
-            np.random.seed(42)
-            for _ in range(n_restarts - 2):
-                starting_points.append(np.random.dirichlet(np.ones(n_features)))
-
-            for start in starting_points:
-                try:
-                    result = minimize(
-                        neg_log_likelihood,
-                        start,
-                        method='SLSQP',
-                        bounds=bounds,
-                        constraints=constraints,
-                        options={'maxiter': 500, 'ftol': 1e-9}
-                    )
-
-                    if result.fun < best_nll:
-                        best_nll = result.fun
-                        best_result = result.x.copy()
-                except Exception:
-                    continue
-
-            if best_result is None:
-                best_result = old_w.copy()
-
-            # Ensure valid weights
-            new_w = np.maximum(best_result, 0.0)
-            if new_w.sum() > 0:
-                new_w = new_w / new_w.sum()
-            else:
-                new_w = np.ones(n_features) / n_features
-
-            # Calculate metrics with new weights
-            accuracy_after = compute_accuracy(new_w)
-            _, predictions = neg_log_likelihood(new_w, return_predictions=True)
-
-            # Build per-comparison breakdown
-            per_comparison = []
-            for i, (comp, pred_correct) in enumerate(zip(comparisons, predictions)):
-                per_comparison.append({
-                    'photo_a': comp['photo_a'],
-                    'photo_b': comp['photo_b'],
-                    'winner': comp['winner'],
-                    'predicted_correct': pred_correct,
-                })
-
-            # Determine if we should suggest changes
-            accuracy_improvement = accuracy_after - accuracy_before
-            suggest_changes = accuracy_improvement >= min_improvement_threshold
-
-            # Convert to dicts
-            new_weights = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, new_w)}
-
-            # Log the run
+        with get_connection(self.db_path) as conn:
             conn.execute("""
                 INSERT INTO weight_optimization_runs
                 (category, comparisons_used, old_weights, new_weights, mse_before, mse_after)
@@ -406,24 +531,25 @@ class WeightOptimizer:
             ))
             conn.commit()
 
-            source_counts: Dict[str, int] = {}
-            for comp in comparisons:
-                source_counts[comp['source']] = source_counts.get(comp['source'], 0) + 1
+        source_counts: Dict[str, int] = {}
+        for comp in comparisons:
+            source_counts[comp['source']] = source_counts.get(comp['source'], 0) + 1
 
-            return {
-                'old_weights': old_weights,
-                'new_weights': new_weights,
-                'accuracy_before': round(accuracy_before, 1),
-                'accuracy_after': round(accuracy_after, 1),
-                'improvement': round(accuracy_improvement, 1),
-                'log_likelihood': round(-best_nll, 4),
-                'suggest_changes': suggest_changes,
-                'comparisons_used': len(comparisons),
-                'ties_included': sum(1 for c in comparisons if c['winner'] == 'tie'),
-                'source_counts': source_counts,
-                'per_comparison': per_comparison,
-                'method': 'direct_preference_optimization',
-            }
+        return {
+            'old_weights': old_weights,
+            'new_weights': new_weights,
+            'accuracy_before': round(accuracy_before, 1),
+            'accuracy_after': round(accuracy_after, 1),
+            'improvement': round(accuracy_improvement, 1),
+            'log_likelihood': round(-best_nll, 4),
+            'suggest_changes': suggest_changes,
+            'gate': gate,
+            'comparisons_used': len(comparisons),
+            'ties_included': sum(1 for c in comparisons if c['winner'] == 'tie'),
+            'source_counts': source_counts,
+            'per_comparison': per_comparison,
+            'method': 'direct_preference_optimization',
+        }
 
     def optimize_weights_with_cv(
         self,
@@ -432,178 +558,115 @@ class WeightOptimizer:
         min_comparisons: int = 30,
         include_ties: bool = True,
         sources: Optional[List[str]] = None,
-        l2_regularization: float = 0.01,
+        l2_regularization: float = DEFAULT_L2_REGULARIZATION,
+        min_improvement: float = 2.0,
     ) -> Dict:
         """
-        K-fold cross-validation for robust weight optimization.
+        The held-out apply gate: photo-grouped k-fold CV plus a McNemar test.
 
-        Splits comparisons into k folds, trains on k-1 folds, and evaluates
-        on the held-out fold. Returns average weights and CV accuracy.
+        Folds come from :func:`_photo_folds`, so no photo is on both sides of
+        a split. Each fold is fitted with the SAME objective and prior that
+        ``optimize_weights_direct`` ships, started at the current weights.
+        Every held-out decisive pair is then predicted by its fold's fit and by
+        the current weights; with ``b`` = pairs only the fit gets right and
+        ``c`` = pairs only the current weights get right, the one-sided exact
+        McNemar p-value is ``binom.sf(b - 1, b + c, 0.5)``.
 
-        Each fold is trained with the SAME L2-regularized objective (anchored
-        to the current live weights) that ``optimize_weights_direct`` actually
-        ships — otherwise the CV accuracy this method reports as a deploy gate
-        would be scoring a different, unregularized/uniform-start model than
-        the one that goes live, understating (or overstating) the real
-        held-out accuracy.
+        ``passed`` = ``p < 0.05`` AND pooled held-out gain >= ``min_improvement``
+        pp. Under random winners it passes about 5% of the time or less, where
+        the former "mean fold accuracy - full-set accuracy >= 2 pp" rule passed
+        30-45% of the time.
 
         Args:
             category: Category to optimize
             n_folds: Number of cross-validation folds
-            min_comparisons: Minimum comparisons required
-            include_ties: Whether to include ties
-            l2_regularization: L2 penalty on weight changes from current weights
+            min_comparisons: Minimum DECISIVE comparisons required
+            include_ties: Whether to include ties (in training; only decisive
+                pairs are scored)
+            l2_regularization: Strength of the prior toward the current weights
                 (must match ``optimize_weights_direct`` for the gate to be valid)
+            min_improvement: Minimum pooled held-out gain (pp) to pass
 
         Returns:
             Dict with:
-            - average_weights: ensemble weights from all folds
-            - cv_accuracy: mean accuracy on held-out comparisons
-            - cv_std: standard deviation of accuracy across folds
-            - fold_results: per-fold accuracy scores
+            - new_weights / average_weights: mean of the fold weights
+            - cv_accuracy: pooled held-out accuracy of the fold fits (%)
+            - cv_std: standard deviation of the per-fold accuracies
+            - fold_results: per-fold held-out accuracy
+            - heldout_gain_pp: pooled held-out accuracy minus the current weights'
+            - discordant_new / discordant_old: McNemar's b and c
+            - p_value, passed, suggest_changes (= passed)
         """
         with get_connection(self.db_path) as conn:
             all_data, X_a, X_b, winners, row_weights = self._fetch_comparison_data(
                 conn, category=category, include_ties=include_ties, sources=sources,
             )
+        too_few = self._too_few_decisive(winners, len(all_data), min_comparisons)
+        if too_few:
+            return too_few
 
-            if len(all_data) < min_comparisons:
-                return {
-                    'error': f'Need at least {min_comparisons} comparisons (have {len(all_data)})',
-                    'comparison_count': len(all_data),
-                }
+        old_weights, old_w = self._prior(category)
+        D = X_a - X_b
+        fold_a, fold_b, n_used = _photo_folds(
+            [c['photo_a'] for c in all_data], [c['photo_b'] for c in all_data], n_folds,
+        )
 
-            if len(all_data) < n_folds:
-                n_folds = len(all_data)
+        fold_weights, fold_accuracies = [], []
+        new_correct, old_correct = [], []
+        for fold in range(n_used):
+            test = (fold_a == fold) & (fold_b == fold)
+            train = (fold_a != fold) & (fold_b != fold)
+            if train.sum() < 10:
+                continue
+            trained_w, _ = _fit_weights(
+                D[train], winners[train], row_weights[train], old_w, l2_regularization,
+                starts=[old_w.copy()], maxiter=300,
+            )
+            fold_weights.append(trained_w)
+            new_c = _decisive_correct(trained_w, D[test], winners[test])
+            if not new_c.size:
+                continue
+            new_correct.append(new_c)
+            old_correct.append(_decisive_correct(old_w, D[test], winners[test]))
+            fold_accuracies.append(float(new_c.mean() * 100))
 
-            n_features = len(self.SCORE_COMPONENTS)
-
-            # Current live weights: same anchor optimize_weights_direct regularizes
-            # toward, loaded/normalized the same way (see lines ~234-239 above).
-            old_weights = self._load_current_weights(category)
-            old_w = np.array([old_weights.get(c, 1.0 / n_features) for c in self.SCORE_COMPONENTS])
-            if old_w.sum() > 0:
-                old_w = old_w / old_w.sum()
-            else:
-                old_w = np.ones(n_features) / n_features
-
-            # Create fold indices
-            indices = np.arange(len(all_data))
-            np.random.seed(42)
-            np.random.shuffle(indices)
-            folds = np.array_split(indices, n_folds)
-
-            fold_weights = []
-            fold_accuracies = []
-
-            for fold_idx in range(n_folds):
-                # Test set is current fold, train set is all others
-                test_indices = folds[fold_idx]
-                train_indices = np.concatenate([folds[j] for j in range(n_folds) if j != fold_idx])
-
-                if len(train_indices) < 10:
-                    continue
-
-                # Train weights on train set
-                train_X_a = X_a[train_indices]
-                train_X_b = X_b[train_indices]
-                train_winners = winners[train_indices]
-                train_rw = row_weights[train_indices]
-
-                def neg_log_likelihood_train(weights):
-                    w_sum = weights.sum()
-                    if w_sum > 1e-8:
-                        w = weights / w_sum
-                    else:
-                        w = np.ones(n_features) / n_features
-
-                    scores_a = train_X_a @ w
-                    scores_b = train_X_b @ w
-                    diff = scores_a - scores_b
-
-                    total_nll = 0.0
-                    for d, winner, rw in zip(diff, train_winners, train_rw):
-                        if winner == 1:
-                            total_nll += rw * np.log1p(np.exp(-np.clip(d, -20, 20)))
-                        elif winner == -1:
-                            total_nll += rw * np.log1p(np.exp(np.clip(d, -20, 20)))
-                        else:
-                            total_nll += rw * (d / 0.2) ** 2
-                    # Same L2 anchor to old_w as optimize_weights_direct's
-                    # neg_log_likelihood, or this fold trains a different model
-                    # than the one the CV accuracy is meant to gate.
-                    total_nll += l2_regularization * np.sum((weights - old_w) ** 2)
-                    return total_nll
-
-                # Optimize — anchored at old_w, same as optimize_weights_direct.
-                bounds = [(0.0, 0.60) for _ in range(n_features)]
-                constraints = {'type': 'eq', 'fun': lambda w: w.sum() - 1.0}
-                start = old_w.copy()
-
-                try:
-                    result = minimize(
-                        neg_log_likelihood_train,
-                        start,
-                        method='SLSQP',
-                        bounds=bounds,
-                        constraints=constraints,
-                        options={'maxiter': 300}
-                    )
-                    trained_w = np.maximum(result.x, 0.0)
-                    if trained_w.sum() > 0:
-                        trained_w = trained_w / trained_w.sum()
-                    else:
-                        trained_w = np.ones(n_features) / n_features
-                except Exception:
-                    trained_w = np.ones(n_features) / n_features
-
-                fold_weights.append(trained_w)
-
-                # Evaluate on test set
-                test_X_a = X_a[test_indices]
-                test_X_b = X_b[test_indices]
-                test_winners = winners[test_indices]
-
-                test_scores_a = test_X_a @ trained_w
-                test_scores_b = test_X_b @ trained_w
-                test_diff = test_scores_a - test_scores_b
-
-                correct = 0
-                total = 0
-                for d, winner in zip(test_diff, test_winners):
-                    if winner == 1 and d > 0:
-                        correct += 1
-                    elif winner == -1 and d < 0:
-                        correct += 1
-                    if winner != 0:
-                        total += 1
-
-                fold_acc = (correct / total * 100) if total > 0 else 0.0
-                fold_accuracies.append(fold_acc)
-
-            if not fold_weights:
-                return {
-                    'error': 'Cross-validation failed - not enough data per fold',
-                    'comparison_count': len(all_data),
-                }
-
-            # Average weights across folds
-            avg_weights = np.mean(fold_weights, axis=0)
-            avg_weights = avg_weights / avg_weights.sum()
-
-            new_weights = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, avg_weights)}
-
+        if not fold_weights or not new_correct:
             return {
-                'old_weights': old_weights,
-                'new_weights': new_weights,
-                'average_weights': new_weights,
-                'cv_accuracy': round(np.mean(fold_accuracies), 1),
-                'cv_std': round(np.std(fold_accuracies), 1),
-                'fold_results': [round(a, 1) for a in fold_accuracies],
-                'n_folds': len(fold_accuracies),
-                'comparisons_used': len(all_data),
-                'method': 'cross_validated_direct_optimization',
+                'error': 'Cross-validation failed - not enough data per fold',
+                'comparison_count': len(all_data),
             }
+
+        new_c = np.concatenate(new_correct)
+        old_c = np.concatenate(old_correct)
+        only_new = int(np.count_nonzero(new_c & ~old_c))  # McNemar's b
+        only_old = int(np.count_nonzero(old_c & ~new_c))  # McNemar's c
+        discordant = only_new + only_old
+        p_value = float(binom.sf(only_new - 1, discordant, 0.5)) if discordant else 1.0
+        gain = float((new_c.mean() - old_c.mean()) * 100)
+        passed = bool(p_value < _GATE_ALPHA and gain >= min_improvement)
+
+        avg_weights = np.mean(fold_weights, axis=0)
+        avg_weights = avg_weights / avg_weights.sum()
+        new_weights = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, avg_weights)}
+
+        return {
+            'old_weights': old_weights,
+            'new_weights': new_weights,
+            'average_weights': new_weights,
+            'cv_accuracy': round(float(new_c.mean() * 100), 1),
+            'cv_std': round(float(np.std(fold_accuracies)), 1),
+            'fold_results': [round(a, 1) for a in fold_accuracies],
+            'n_folds': len(fold_accuracies),
+            'comparisons_used': len(all_data),
+            'heldout_pairs': int(new_c.size),
+            'heldout_gain_pp': round(gain, 1),
+            'discordant_new': only_new,
+            'discordant_old': only_old,
+            'p_value': round(p_value, 6),
+            'passed': passed,
+            'suggest_changes': passed,
+            'method': 'cross_validated_direct_optimization',
+        }
 
     def compute_weight_confidence(
         self,
@@ -611,17 +674,20 @@ class WeightOptimizer:
         n_bootstrap: int = 100,
         min_comparisons: int = 30,
         sources: Optional[List[str]] = None,
+        l2_regularization: float = DEFAULT_L2_REGULARIZATION,
     ) -> Dict:
         """
         Bootstrap resampling to estimate weight uncertainty.
 
-        Resamples comparisons with replacement and re-optimizes weights
-        to estimate confidence intervals.
+        Resamples comparisons with replacement and re-fits each sample with the
+        same objective and prior as the direct fit, started at the current
+        weights, to estimate confidence intervals for the weights that ship.
 
         Args:
             category: Category to analyze
             n_bootstrap: Number of bootstrap samples
-            min_comparisons: Minimum comparisons required
+            min_comparisons: Minimum DECISIVE comparisons required
+            l2_regularization: Strength of the prior toward the current weights
 
         Returns:
             Dict with:
@@ -635,148 +701,175 @@ class WeightOptimizer:
             all_data, X_a, X_b, winners, row_weights = self._fetch_comparison_data(
                 conn, category=category, include_ties=True, sources=sources,
             )
+        too_few = self._too_few_decisive(winners, len(all_data), min_comparisons)
+        if too_few:
+            return too_few
 
-            if len(all_data) < min_comparisons:
-                return {
-                    'error': f'Need at least {min_comparisons} comparisons (have {len(all_data)})',
-                    'comparison_count': len(all_data),
-                }
+        _, old_w = self._prior(category)
+        D = X_a - X_b
+        rng = np.random.RandomState(42)
+        samples = []
+        for _ in range(n_bootstrap):
+            idx = rng.choice(len(all_data), size=len(all_data), replace=True)
+            boot_w, _ = _fit_weights(
+                D[idx], winners[idx], row_weights[idx], old_w, l2_regularization,
+                starts=[old_w.copy()], maxiter=200,
+            )
+            samples.append(boot_w)
 
-            n_features = len(self.SCORE_COMPONENTS)
-
-            bootstrap_weights = []
-            np.random.seed(42)
-
-            for _ in range(n_bootstrap):
-                # Sample with replacement
-                indices = np.random.choice(len(all_data), size=len(all_data), replace=True)
-                boot_X_a = X_a[indices]
-                boot_X_b = X_b[indices]
-                boot_winners = winners[indices]
-                boot_rw = row_weights[indices]
-
-                def neg_log_likelihood_boot(weights):
-                    w_sum = weights.sum()
-                    if w_sum > 1e-8:
-                        w = weights / w_sum
-                    else:
-                        w = np.ones(n_features) / n_features
-
-                    scores_a = boot_X_a @ w
-                    scores_b = boot_X_b @ w
-                    diff = scores_a - scores_b
-
-                    total_nll = 0.0
-                    for d, winner, rw in zip(diff, boot_winners, boot_rw):
-                        if winner == 1:
-                            total_nll += rw * np.log1p(np.exp(-np.clip(d, -20, 20)))
-                        elif winner == -1:
-                            total_nll += rw * np.log1p(np.exp(np.clip(d, -20, 20)))
-                        else:
-                            total_nll += rw * (d / 0.2) ** 2
-                    return total_nll
-
-                bounds = [(0.0, 0.60) for _ in range(n_features)]
-                constraints = {'type': 'eq', 'fun': lambda w: w.sum() - 1.0}
-                start = np.ones(n_features) / n_features
-
-                try:
-                    result = minimize(
-                        neg_log_likelihood_boot,
-                        start,
-                        method='SLSQP',
-                        bounds=bounds,
-                        constraints=constraints,
-                        options={'maxiter': 200}
-                    )
-                    boot_w = np.maximum(result.x, 0.0)
-                    if boot_w.sum() > 0:
-                        boot_w = boot_w / boot_w.sum()
-                    else:
-                        boot_w = np.ones(n_features) / n_features
-                    bootstrap_weights.append(boot_w)
-                except Exception:
-                    continue
-
-            if len(bootstrap_weights) < 10:
-                return {
-                    'error': 'Bootstrap failed - not enough successful optimizations',
-                    'comparison_count': len(all_data),
-                }
-
-            bootstrap_weights = np.array(bootstrap_weights)
-
-            # Point estimates (median)
-            point_estimates = np.median(bootstrap_weights, axis=0)
-            point_estimates = point_estimates / point_estimates.sum()
-
-            # Confidence intervals (2.5th and 97.5th percentiles)
-            lower_bounds = np.percentile(bootstrap_weights, 2.5, axis=0)
-            upper_bounds = np.percentile(bootstrap_weights, 97.5, axis=0)
-
-            # Identify stable components (CI width < 10%)
-            ci_widths = upper_bounds - lower_bounds
-            stable_threshold = 0.10
-            stable_components = [
-                self.SCORE_COMPONENTS[i]
-                for i, width in enumerate(ci_widths)
-                if width < stable_threshold
-            ]
-
-            weights = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, point_estimates)}
-            lower = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, lower_bounds)}
-            upper = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, upper_bounds)}
-            ci_width = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, ci_widths)}
-
+        if len(samples) < 10:
             return {
-                'weights': weights,
-                'lower_bounds': lower,
-                'upper_bounds': upper,
-                'confidence_intervals': ci_width,
-                'stable_components': stable_components,
-                'n_bootstrap': len(bootstrap_weights),
-                'comparisons_used': len(all_data),
+                'error': 'Bootstrap failed - not enough successful optimizations',
+                'comparison_count': len(all_data),
             }
 
-    def _load_current_weights(self, category: Optional[str]) -> Dict[str, float]:
-        """Load current weights from scoring_config.json.
+        bootstrap_weights = np.array(samples)
 
+        # Point estimates (median)
+        point_estimates = np.median(bootstrap_weights, axis=0)
+        point_estimates = point_estimates / point_estimates.sum()
+
+        # Confidence intervals (2.5th and 97.5th percentiles)
+        lower_bounds = np.percentile(bootstrap_weights, 2.5, axis=0)
+        upper_bounds = np.percentile(bootstrap_weights, 97.5, axis=0)
+
+        # Identify stable components (CI width < 10%)
+        ci_widths = upper_bounds - lower_bounds
+        stable_threshold = 0.10
+        stable_components = [
+            self.SCORE_COMPONENTS[i]
+            for i, width in enumerate(ci_widths)
+            if width < stable_threshold
+        ]
+
+        weights = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, point_estimates)}
+        lower = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, lower_bounds)}
+        upper = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, upper_bounds)}
+        ci_width = {c: float(w) for c, w in zip(self.SCORE_COMPONENTS, ci_widths)}
+
+        return {
+            'weights': weights,
+            'lower_bounds': lower,
+            'upper_bounds': upper,
+            'confidence_intervals': ci_width,
+            'stable_components': stable_components,
+            'n_bootstrap': len(bootstrap_weights),
+            'comparisons_used': len(all_data),
+        }
+
+    @staticmethod
+    def _find_category_entry(config: dict, category: Optional[str]) -> Optional[dict]:
+        """The ``categories[]`` entry named ``category`` (None for the v3 blocks)."""
+        for cat_entry in config.get('categories', []):
+            if cat_entry.get('name') == category:
+                return cat_entry
+        return None
+
+    def _load_current_weights(self, category: Optional[str]) -> Dict[str, float]:
+        """The weights the scorer SERVES for ``category``, from scoring_config.json.
+
+        ``calculate_aggregate_logic`` folds ``quality`` into ``aesthetic`` before
+        weighting (``fold_quality_weight``), so the fold is applied here too and
+        the result is renormalised over the optimizer's components: the
+        optimizer's prior, its accuracy baseline and an apply's bonus shift are
+        then all measured against the weights production scores with.
         Components are config metric keys (see SCORING_METRIC_KEYS), so the
         '<key>_percent' lookup is direct - no DB-column translation.
         """
+        uniform = {c: 1.0 / len(self.SCORE_COMPONENTS) for c in self.SCORE_COMPONENTS}
         try:
             config = load_resolved(self.config_path)
 
             cat = category or 'others'
 
             # Try v4 categories array first, then v3 flat dicts
-            cat_weights = {}
-            for cat_entry in config.get('categories', []):
-                if cat_entry.get('name') == cat:
-                    cat_weights = cat_entry.get('weights', {})
-                    break
+            entry = self._find_category_entry(config, cat)
+            cat_weights = entry.get('weights', {}) if entry else {}
             if not cat_weights:
                 if 'category_weights' in config and cat in config['category_weights']:
                     cat_weights = config['category_weights'][cat]
                 elif 'weights' in config and cat in config['weights']:
                     cat_weights = config['weights'][cat]
 
-            # Convert percent values to decimal weights
-            weights = {}
-            for key in self.SCORE_COMPONENTS:
-                percent_key = f"{key}_percent"
-                weights[key] = cat_weights.get(percent_key, 0.0) / 100.0
+            # Percent values to decimal weights, 'quality' included, then the
+            # scorer's own fold
+            decimal = {key[:-len('_percent')]: value / 100.0
+                       for key, value in cat_weights.items() if key.endswith('_percent')}
+            served = fold_quality_weight(decimal)
+            weights = {key: float(served.get(key, 0.0)) for key in self.SCORE_COMPONENTS}
 
             # If all weights are 0, use uniform distribution
-            if sum(weights.values()) == 0:
-                return {c: 1.0 / len(self.SCORE_COMPONENTS) for c in self.SCORE_COMPONENTS}
+            total = sum(weights.values())
+            if total <= 0:
+                return uniform
 
-            return weights
+            return {key: value / total for key, value in weights.items()}
 
         except Exception as e:
             logger.warning("Could not load weights from config: %s", e)
             # Return default uniform weights
-            return {c: 1.0 / len(self.SCORE_COMPONENTS) for c in self.SCORE_COMPONENTS}
+            return uniform
+
+    @staticmethod
+    def _round_percent_weights(new_weights: Dict[str, float], log: bool = False) -> Dict[str, float]:
+        """``new_weights`` as the config stores them: percent, one decimal, summing to 100.
+
+        Rounding to a tenth of a percent can leave the total a hair off 100, so
+        the largest weight absorbs the difference. Shared by the write and by the
+        bonus projection, so the shift is measured on the weights that land.
+        """
+        percent = {c: round(w * 100, 1) for c, w in new_weights.items()}
+        total = sum(percent.values())
+        if total > 0 and abs(total - 100.0) > 0.01:
+            largest = max(percent, key=lambda c: percent[c])
+            adjustment = 100.0 - total
+            percent[largest] = round(percent[largest] + adjustment, 1)
+            if log:
+                logger.info("Adjusted %s_percent by %+.1f%% to ensure 100%% total", largest, adjustment)
+        return percent
+
+    def _projected_mean_shift(self, new_weights: Dict[str, float], category: Optional[str]) -> Optional[float]:
+        """Mean change of ``category``'s scores if ``new_weights`` replace the served ones.
+
+        ``mean over the category's photos of V @ (w_new - w_served)``, with ``V``
+        the metric vector as served (``_metric_vector``) and ``w_served`` the
+        folded current weights. The pairwise likelihood is blind to a constant
+        added to a whole category, so without this the apply moves the
+        category's level against every other category. None when there is
+        nothing to measure: no ``categories[]`` entry, no database, or no photo
+        stored in the category.
+        """
+        if self._find_category_entry(load_resolved(self.config_path), category) is None:
+            return None
+        if not os.path.exists(self.db_path):
+            logger.info("No database at %s: bonus not re-centred", self.db_path)
+            return None
+        served = self._load_current_weights(category)
+        rounded = self._round_percent_weights(new_weights)
+        diff = np.array([rounded[c] / 100.0 - served[c] if c in rounded else 0.0
+                         for c in self.SCORE_COMPONENTS])
+        total = np.zeros(len(self.SCORE_COMPONENTS))
+        count = 0
+        try:
+            with get_connection(self.db_path) as conn:
+                self._get_normalizer(conn)
+                cursor = conn.execute(
+                    f"SELECT {', '.join(SERVED_ROW_COLUMNS)} FROM photos WHERE category = ?", (category,))
+                while True:
+                    batch = cursor.fetchmany(1000)
+                    if not batch:
+                        break
+                    for row in batch:
+                        total += self._metric_vector(dict(row), category)
+                        count += 1
+        except sqlite3.Error:
+            logger.warning("Could not project the %s category's mean shift: bonus not re-centred",
+                           category, exc_info=True)
+            return None
+        if count == 0:
+            logger.info("No photos stored in category %s: bonus not re-centred", category)
+            return None
+        return float(total @ diff / count)
 
     def apply_optimized_weights(
         self,
@@ -787,23 +880,37 @@ class WeightOptimizer:
         """
         Apply optimized weights to scoring_config.json.
 
+        The category's ``modifiers.bonus`` is re-centred in the same write by the
+        projected mean shift of the category's scores, so applying new weights
+        changes how the category's photos rank among themselves, not where the
+        category sits against the others. A category with no ``categories[]``
+        entry (the v3 ``others`` block) has no bonus and is left as is.
+
+        The quality weight is folded into aesthetic and set to 0, so the served
+        weights equal ``new_weights`` (which are over the served weight space).
+
         Args:
             new_weights: Dict of component -> weight (0.0 to 1.0)
             category: Category to update
-            backup: Record a pre-apply weight snapshot before modifying
+            backup: Record a pre-apply weight snapshot (weights and bonus)
+                    before modifying
 
         Returns:
             The snapshot id when backup=True (else None)
         """
         from api.config import CONFIG_WRITE_LOCK
+        # Measured before the lock (it reads every photo of the category). A
+        # weights writer landing in between leaves a residual of its own size.
+        mean_shift = self._projected_mean_shift(new_weights, category)
         with CONFIG_WRITE_LOCK:
-            return self._apply_weights_locked(new_weights, category, backup)
+            return self._apply_weights_locked(new_weights, category, backup, mean_shift)
 
     def _apply_weights_locked(
         self,
         new_weights: Dict[str, float],
         category: str,
-        backup: bool
+        backup: bool,
+        mean_shift: Optional[float] = None,
     ) -> Optional[int]:
         """Rewrite one category's weights with the config lock already held.
 
@@ -817,18 +924,21 @@ class WeightOptimizer:
         writer shares. Nothing here may call
         ``reload_config``, which reaches the same lock through ``_load_config``
         and would deadlock against the frame above.
+
+        ``mean_shift`` is the projected mean change of the category's scores
+        (:meth:`_projected_mean_shift`); the bonus read here, inside the lock, is
+        moved by minus that, clamped to the viewer's range, in the same write.
         """
         # Load the resolved config: the file is only the operator's override
         config = load_resolved(self.config_path)
 
         # Update weights for the category — v4 categories array first, v3 fallback
+        entry = self._find_category_entry(config, category)
         cat_weights = None
-        for cat_entry in config.get('categories', []):
-            if cat_entry.get('name') == category:
-                if 'weights' not in cat_entry:
-                    cat_entry['weights'] = {}
-                cat_weights = cat_entry['weights']
-                break
+        if entry is not None:
+            if 'weights' not in entry:
+                entry['weights'] = {}
+            cat_weights = entry['weights']
 
         if cat_weights is None:
             # v3 fallback
@@ -838,6 +948,10 @@ class WeightOptimizer:
                 config['weights'][category] = {}
             cat_weights = config['weights'][category]
 
+        # The bonus a restore must give back: only a categories[] entry has one
+        # (the scorer reads a missing one as 0)
+        bonus_old = float((entry.get('modifiers') or {}).get('bonus', 0) or 0) if entry is not None else None
+
         # Snapshot the current weights before overwriting (restorable from the viewer)
         snapshot_id = None
         if backup:
@@ -846,14 +960,22 @@ class WeightOptimizer:
                 snapshot_id = record_weight_snapshot(
                     category, dict(cat_weights),
                     created_by='auto:optimizer', db=self.db_path,
+                    category_bonus=bonus_old,
                 )
                 logger.info("Recorded pre-apply weight snapshot (id=%s)", snapshot_id)
             except Exception:
                 logger.warning("Could not record pre-apply weight snapshot", exc_info=True)
 
-        # Components are config metric keys - write '<key>_percent' directly
-        for component, weight in new_weights.items():
-            cat_weights[f"{component}_percent"] = round(weight * 100, 1)
+        # Components are config metric keys - write '<key>_percent' directly,
+        # rounded to a tenth of a percent and summing to exactly 100
+        for component, percent in self._round_percent_weights(new_weights, log=True).items():
+            cat_weights[f"{component}_percent"] = percent
+
+        # The new weights are over the SERVED weight space (quality already folded
+        # into aesthetic), so quality must stop contributing: left in place it
+        # would be folded into the fitted aesthetic weight a second time.
+        if 'quality_percent' in cat_weights:
+            cat_weights['quality_percent'] = 0
 
         # Drop stale '<base>_percent' keys whose base is not a real scoring metric
         # (e.g. DB-column-named keys a pre-alignment apply may have left behind).
@@ -873,15 +995,21 @@ class WeightOptimizer:
                     if k.endswith('_percent') and k[:-len('_percent')] not in valid_metric_keys]:
             del cat_weights[key]
 
-        # Post-rounding normalization to ensure weights sum to exactly 100%
-        percent_keys = [f"{c}_percent" for c in new_weights.keys()]
-        total = sum(cat_weights[k] for k in percent_keys if k in cat_weights)
-        if total > 0 and abs(total - 100.0) > 0.01:
-            # Adjust largest weight to compensate for rounding error
-            adjustment = 100.0 - total
-            largest_key = max(percent_keys, key=lambda k: cat_weights.get(k, 0))
-            cat_weights[largest_key] = round(cat_weights[largest_key] + adjustment, 1)
-            logger.info("Adjusted %s by %+.1f%% to ensure 100%% total", largest_key, adjustment)
+        # Re-centre the category bonus so the mean score of the category's photos
+        # stays where it was
+        if entry is None or bonus_old is None:
+            logger.info("no category entry for %s, bonus not re-centred", category)
+        elif mean_shift is not None:
+            wanted = bonus_old - mean_shift
+            new_bonus = max(_BONUS_MIN, min(_BONUS_MAX, wanted))
+            logger.info("Projected mean score shift of %s: %+.2f (bonus %.2f -> %.2f)",
+                        category, mean_shift, bonus_old, new_bonus)
+            if wanted != new_bonus:
+                logger.warning(
+                    "Bonus for %s is clamped to [%g, %g]: a residual mean shift of %+.2f remains",
+                    category, _BONUS_MIN, _BONUS_MAX, new_bonus - wanted)
+            if abs(new_bonus - bonus_old) >= 0.005:
+                entry.setdefault('modifiers', {})['bonus'] = round(new_bonus, 2)
 
         # Save through the shared config writer rather than a local
         # open()+os.replace(): it is the one primitive that keeps the three
@@ -963,15 +1091,19 @@ def run_weight_optimization(
     category: Optional[str] = None,
     min_improvement: float = 2.0,
     force: bool = False,
+    l2_regularization: float = DEFAULT_L2_REGULARIZATION,
 ):
     """Run weight optimization from CLI. Applies weights only if they generalize.
 
     The final weights are fit on all comparisons, but the decision to apply is
-    gated on held-out k-fold accuracy (not training accuracy), so weights that
-    merely overfit the labelled set are not written. Pass force=True to apply
-    regardless of the gate.
+    the held-out gate of ``optimize_weights_with_cv`` (photo-grouped folds, a
+    one-sided McNemar test at p < 0.05 and a pooled held-out gain of at least
+    ``min_improvement`` pp), so weights that merely overfit the labelled set
+    are not written. When the gate cannot run (too few independent photo
+    groups), nothing is applied. Pass force=True to apply regardless.
 
     Args:
+        min_comparisons: Minimum DECISIVE comparisons required (ties do not count)
         sources: Restrict training data to these comparison sources
                  (vote/culling/rating); None uses all with reliability weighting
         category: Category to train on and write weights to. When set, only
@@ -980,9 +1112,10 @@ def run_weight_optimization(
                   are pooled and the result is written to the legacy 'others'
                   block (which v4 config does NOT read - pass an explicit
                   category to actually affect scoring).
-        min_improvement: Minimum held-out accuracy gain (pp) over current weights
-                  required to apply.
+        min_improvement: Minimum pooled held-out accuracy gain (pp) over the
+                  current weights required to apply.
         force: Apply the fitted weights even if the held-out gate is not met.
+        l2_regularization: Strength of the prior toward the current weights.
     """
     config_path = resolve_scoring_config_path(config_path)
     optimizer = WeightOptimizer(db_path, config_path)
@@ -1012,13 +1145,15 @@ def run_weight_optimization(
         category=category,
         min_comparisons=min_comparisons,
         sources=sources,
+        min_improvement_threshold=min_improvement,
+        l2_regularization=l2_regularization,
     )
 
     if 'error' in result:
         logger.error("Error: %s", result['error'])
         return
 
-    logger.info("Comparisons used: %d", result['comparisons_used'])
+    logger.info("Comparisons used: %d (%d ties)", result['comparisons_used'], result['ties_included'])
     for source, count in sorted(result.get('source_counts', {}).items()):
         weight = WeightOptimizer.SOURCE_WEIGHTS.get(source, 1.0)
         logger.info("  source %s: %d (likelihood weight %.1f)", source, count, weight)
@@ -1026,41 +1161,47 @@ def run_weight_optimization(
     logger.info("Accuracy after (train): %.1f%% (fitted weights, same set - optimistic)", result['accuracy_after'])
     logger.info("Log-likelihood:        %.4f", result.get('log_likelihood', 0.0))
 
-    # Held-out generalization estimate gates the apply decision
-    cv = optimizer.optimize_weights_with_cv(
+    # The held-out gate decides. The direct fit already ran it when its
+    # in-sample gain cleared the threshold; otherwise run it here so the log
+    # always carries the honest estimate.
+    cv = result.get('gate') or optimizer.optimize_weights_with_cv(
         category=category, min_comparisons=min_comparisons, sources=sources,
+        l2_regularization=l2_regularization, min_improvement=min_improvement,
     )
-    cv_accuracy = cv.get('cv_accuracy')
+    passed = False
     if 'error' in cv:
-        logger.warning("Cross-validation unavailable (%s); falling back to train accuracy for the gate.", cv['error'])
-        held_out = result['accuracy_after']
+        logger.warning("Held-out gate unavailable (%s): not applying.", cv['error'])
     else:
-        held_out = cv_accuracy
+        passed = cv['passed']
         logger.info(
-            "Held-out accuracy:      %.1f%% +/- %.1f (%d-fold CV) - the honest estimate",
-            cv_accuracy, cv.get('cv_std', 0.0), cv.get('n_folds', 0),
+            "Held-out accuracy:      %.1f%% +/- %.1f (%d-fold, photo-grouped) - the honest estimate",
+            cv['cv_accuracy'], cv.get('cv_std', 0.0), cv.get('n_folds', 0),
         )
-
-    held_out_improvement = held_out - result['accuracy_before']
-    logger.info("Held-out improvement:   %+.1f pp", held_out_improvement)
+        logger.info(
+            "Held-out gain:          %+.1f pp over the current weights on the same %d pairs",
+            cv['heldout_gain_pp'], cv['heldout_pairs'],
+        )
+        logger.info(
+            "McNemar (one-sided):    p = %.4f (only the fit right: %d, only the current weights right: %d)",
+            cv['p_value'], cv['discordant_new'], cv['discordant_old'],
+        )
 
     logger.info("Optimized weights:")
     for component, weight in sorted(result['new_weights'].items(), key=lambda x: -x[1]):
         if weight > 0.01:
             logger.info("  %s: %.1f%%", component, weight * 100)
 
-    should_apply = force or held_out_improvement >= min_improvement
-    if not should_apply:
+    if not (force or passed):
         logger.info(
-            "NOT applying: held-out gain %+.1f pp is below the %.1f pp threshold. "
+            "NOT applying: the held-out gate needs p < %.2f and a gain of at least %.1f pp. "
             "Weights likely overfit the %d labelled comparisons. Use force=True to override.",
-            held_out_improvement, min_improvement, result['comparisons_used'],
+            _GATE_ALPHA, min_improvement, result['comparisons_used'],
         )
         logger.info("=" * 60)
         return
 
-    if force and held_out_improvement < min_improvement:
-        logger.warning("Forcing apply despite held-out gain %+.1f pp below threshold.", held_out_improvement)
+    if force and not passed:
+        logger.warning("Forcing apply despite the held-out gate.")
 
     logger.info("Applying weights to config...")
     optimizer.apply_optimized_weights(

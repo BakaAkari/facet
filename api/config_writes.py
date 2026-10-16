@@ -168,11 +168,16 @@ def write_owner_only_backup(source_path, backup_path):
     return backup_path
 
 
-def record_category_snapshot(category, weights, created_by, get_db):
-    """Best-effort weights snapshot before a config write; never blocks the write."""
+def record_category_snapshot(category, weights, created_by, get_db, category_bonus=None):
+    """Best-effort weights snapshot before a config write; never blocks the write.
+
+    ``category_bonus`` is the category's current ``modifiers.bonus`` (None = no
+    entry to read it from), so undoing the snapshot restores the bonus as well.
+    """
     try:
         with get_db() as conn:
-            record_weight_snapshot(category, weights, created_by=created_by, db=conn)
+            record_weight_snapshot(category, weights, created_by=created_by, db=conn,
+                                   category_bonus=category_bonus)
             conn.commit()
     except Exception:
         logger.warning("Could not record weight snapshot for %s", category, exc_info=True)
@@ -388,14 +393,16 @@ def update_scoring_context(config_path, context, promote, excluded):
 
 def update_category_weights(config_path, category, snapshot_tag, get_db, *,
                             not_found_detail, weights=None, replace_weights=False,
-                            modifiers=None, filters=None, backup=False):
-    """Load the config, find ``category``, snapshot its current weights, optionally
-    back the file up, mutate the target, and write the config back.
+                            modifiers=None, filters=None, bonus=None, backup=False):
+    """Load the config, find ``category``, snapshot its current weights and bonus,
+    optionally back the file up, mutate the target, and write the config back.
 
     Returns the loose backup path (or None). Raises ``HTTPException(404)`` with
     ``not_found_detail`` when the category is absent. When ``replace_weights`` is
     False, ``weights`` is merged into the existing weights; otherwise it replaces
-    them. ``modifiers`` and ``filters`` are set only when not None.
+    them. ``modifiers`` and ``filters`` are set only when not None. ``bonus`` sets
+    just ``modifiers.bonus`` (merged into the existing block, unlike ``modifiers``,
+    which replaces it) when not None.
     """
     config_path = str(config_path)
     with CONFIG_WRITE_LOCK:
@@ -405,7 +412,8 @@ def update_category_weights(config_path, category, snapshot_tag, get_db, *,
         if target is None:
             raise HTTPException(status_code=404, detail=not_found_detail)
 
-        record_category_snapshot(category, dict(target.get('weights', {})), snapshot_tag, get_db)
+        record_category_snapshot(category, dict(target.get('weights', {})), snapshot_tag, get_db,
+                                 category_bonus=(target.get('modifiers') or {}).get('bonus', 0))
 
         backup_path = None
         if backup:
@@ -418,6 +426,8 @@ def update_category_weights(config_path, category, snapshot_tag, get_db, *,
                 target.setdefault('weights', {}).update(weights)
         if modifiers is not None:
             target['modifiers'] = modifiers
+        if bonus is not None:
+            target.setdefault('modifiers', {})['bonus'] = bonus
         if filters is not None:
             target['filters'] = filters
 

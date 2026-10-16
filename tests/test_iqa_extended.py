@@ -57,7 +57,7 @@ def _photo_row():
 def test_extended_metrics_absent_when_disabled():
     cfg = ScoringConfig(validate=False)
     cfg.config['iqa_extended'] = {'qrealign': False, 'aesthetic_v25': False, 'deqa': False}
-    vec = build_metric_vector(_photo_row(), cfg, 'default', weights=cfg.get_weights('default'))
+    vec = build_metric_vector(_photo_row(), cfg, 'default')
     assert 'qrealign' not in vec
     assert 'aesthetic_v25' not in vec
     assert 'deqa' not in vec
@@ -66,7 +66,7 @@ def test_extended_metrics_absent_when_disabled():
 def test_extended_metrics_present_when_enabled():
     cfg = ScoringConfig(validate=False)
     cfg.config['iqa_extended'] = {'qrealign': True, 'aesthetic_v25': True, 'deqa': True}
-    vec = build_metric_vector(_photo_row(), cfg, 'default', weights=cfg.get_weights('default'))
+    vec = build_metric_vector(_photo_row(), cfg, 'default')
     assert vec['qrealign'] == pytest.approx(8.0)
     assert vec['aesthetic_v25'] == pytest.approx(7.0)
     assert vec['deqa'] == pytest.approx(9.0)

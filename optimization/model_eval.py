@@ -286,66 +286,16 @@ def _candidate_scores(conn, cand, paths, partial_file, device):
     return score_live(cand.name, cand.factory, paths, partial_file, device)
 
 
-# Normalized column -> the raw column ``update_all_aggregates`` rebuilds it from.
-_NORMALIZED_COLUMNS = {
-    'tech_sharpness': 'raw_sharpness_variance',
-    'color_score': 'raw_color_entropy',
-    'eye_sharpness': 'raw_eye_sharpness',
-}
-
-
-def load_normalizer(conn, cfg):
-    """The percentile normalizer the last ``--recompute-average`` used, or None.
-
-    ``update_all_aggregates`` rewrites tech_sharpness / color_score /
-    eye_sharpness from their raw columns in memory, never on disk, so the stored
-    values alone do not reproduce the stored aggregate. Rebuilt read-only from
-    the ``percentiles_snapshot`` it persists to ``stats_cache``.
-    """
-    from config.percentile_normalizer import PercentileNormalizer
-    settings = cfg.get_normalization_settings()
-    if settings.get('method') != 'percentile':
-        return None
-    snap = PercentileNormalizer.load_persisted(conn)
-    if not snap:
-        logger.warning("No persisted percentile snapshot: the end-to-end recompute runs "
-                       "un-normalized and will not reproduce stored aggregates")
-        return None
-    norm = PercentileNormalizer(None, target_percentile=snap.get('target_percentile', 95),
-                                per_category=settings.get('per_category', False))
-    norm.percentiles = snap.get('percentiles') or {}
-    norm.category_percentiles = snap.get('category_percentiles') or {}
-    return norm
-
-
-def _production_metrics(scorer, row, normalizer):
-    """Mirror ``update_all_aggregates``' in-memory rewrites before the aggregate."""
-    m = dict(row)
-    m.setdefault('category_override', None)
-    m.setdefault('scoring_context', None)
-    if normalizer is not None:
-        category = scorer._determine_photo_category(m, scorer.config)
-        for col, raw_col in _NORMALIZED_COLUMNS.items():
-            raw = m.get(raw_col)
-            if not isinstance(raw, (int, float)):
-                continue
-            value = (normalizer.normalize_with_category(raw_col, raw, category)
-                     if normalizer.per_category else normalizer.normalize(raw_col, raw))
-            if value is not None:
-                m[col] = value
-    min_faces = scorer.config.get_face_detection_settings().get('min_faces_for_group', 4)
-    m['is_group_portrait'] = 1 if (m.get('face_count') or 0) >= min_faces else 0
-    return m
-
-
 def baseline_match_rate(conn, scorer, paths, normalizer, tol=0.01):
     """Fraction of photos whose recomputed, unsubstituted aggregate equals the stored one."""
+    from processing.scorer import Facet
     rows = fetch_metric_rows(conn, paths)
     hits = n = 0
     for row in rows.values():
         if row.get('aggregate') is None:
             continue
-        agg = scorer.calculate_aggregate_logic(_production_metrics(scorer, row, normalizer))[0]
+        agg = scorer.calculate_aggregate_logic(
+            Facet.prepare_scoring_row(dict(row), scorer.config, normalizer))[0]
         n += 1
         hits += abs(round(agg, 2) - row['aggregate']) <= tol
     return hits / n if n else None
@@ -358,6 +308,7 @@ def _end_to_end_scores(conn, base_slot, cand, paths, partial_file, device, score
     """
     if base_slot is None:
         return _candidate_scores(conn, cand, paths, partial_file, device)
+    from processing.scorer import Facet
     values, run_stats, mean_latency = _candidate_scores(conn, cand, paths, partial_file, device)
     rows = fetch_metric_rows(conn, paths)
     target = SLOT_TARGET_COLUMNS[base_slot]
@@ -367,7 +318,7 @@ def _end_to_end_scores(conn, base_slot, cand, paths, partial_file, device, score
         if value is None or row is None:
             scores[path] = None
             continue
-        metrics = _production_metrics(scorer, row, normalizer)
+        metrics = Facet.prepare_scoring_row(dict(row), scorer.config, normalizer)
         metrics[target] = value
         scores[path] = scorer.calculate_aggregate_logic(metrics)[0]
     return scores, run_stats, mean_latency
@@ -437,7 +388,9 @@ def evaluate(db_path, slot, candidates=None, out=None, seed=DEFAULT_SEED, config
                     slot, len(pairs), len(paths), n_ties)
         normalizer = match_rate = None
         if scorer is not None:
-            normalizer = load_normalizer(conn, scorer.config)
+            from config.percentile_normalizer import PercentileNormalizer
+            normalizer = PercentileNormalizer.from_snapshot(
+                conn, scorer.config.get_normalization_settings())
             match_rate = baseline_match_rate(conn, scorer, paths, normalizer)
             logger.info("Recomputed baseline reproduces the stored aggregate for %s of photos "
                         "(the rest drifted with config/category changes since the last recompute)",

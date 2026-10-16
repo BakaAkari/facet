@@ -597,8 +597,10 @@ class TestOomRetry:
         scorer.get_saliency_masks(_tagged_images(4))
         assert seen and all(exc is None for exc in seen)
 
-    def test_empty_mask_stays_a_successful_neutral_result(self):
+    def test_empty_mask_stays_a_successful_no_subject_result(self):
         scorer = _fixed_batch(_oom_scorer(), 4)
         imgs = [Image.new("RGB", (16, 12), (0, 0, 0))]  # even id -> empty mask
         result = scorer.score_batch(imgs, [np.zeros((12, 16, 3), dtype=np.uint8)])[0]
-        assert result['subject_sharpness'] == 5.0 and result['subject_bbox'] is None
+        # no subject: three metrics have no value, prominence 0.0 is a real measurement
+        assert result['subject_sharpness'] is None and result['subject_bbox'] is None
+        assert result['subject_prominence'] == 0.0

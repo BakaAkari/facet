@@ -221,6 +221,10 @@ Cada categoria possui:
 
 > **Pesos de forma e harmonia de cores.** O bloco `weights` de cada categoria carrega cinco chaves de métrica explicáveis — `symmetry_percent`, `balance_percent`, `edge_entropy_percent`, `fractal_percent` e `color_harmony_percent` — preenchidas por `--recompute-form`. Elas são distribuídas com valor `0` em todas as categorias, então os agregados permanecem idênticos byte a byte até você atribuir um peso a alguma (depois execute `--recompute-average` novamente). Os pesos dentro de uma categoria ainda devem somar 100.
 
+> **`quality_percent` conta como `aesthetic`.** A métrica de qualidade não tem pontuação própria, então o `quality_percent` de uma categoria é somado ao seu `aesthetic_percent` antes do cálculo: o peso estético efetivo é `aesthetic_percent + quality_percent` e os pesos continuam somando 100. Veja [SCORING.md](SCORING.md).
+
+> **A categoria `astro` incluída exige um quadro escuro.** Seus filtros são `tag_match_mode: "any"` mais `luminance_max: 0.30`: uma cena clara que o CLIP etiqueta como `aurora` ou `stars` não é `astro`. Os arrays são substituídos por inteiro (veja [Padrões e Seu Override](#padrões-e-seu-override)): um `scoring_config.json` com seu próprio array `categories` mantém a sua própria entrada `astro` e nunca recebe a proteção. Adicione `"luminance_max": 0.30` a `astro.filters` (ou apague o array); `python facet.py --doctor` imprime um «Config notice» quando a sua entrada `astro` não tem `luminance_max`. Depois execute `--recompute-average`.
+
 ---
 
 ## Contextos de Pontuação
@@ -332,29 +336,19 @@ Ambas as alavancas persistem em uma única tabela auxiliar, `photo_scoring_overr
 
 ## Thresholds
 
-Limiares de detecção para categorização automática.
+Limiares de pontuação. Resta apenas `blink_penalty_percent`: se uma foto é um retrato, uma foto noturna ou uma longa exposição é decidido pelos `filters` de cada categoria (veja [Categories](#categories)), não por este bloco.
 
 ```json
 {
   "thresholds": {
-    "portrait_face_ratio_percent": 5,
-    "blink_penalty_percent": 50,
-    "night_luminance_threshold": 0.15,
-    "night_iso_threshold": 3200,
-    "long_exposure_shutter_threshold": 1.0,
-    "astro_shutter_threshold": 10.0
+    "blink_penalty_percent": 50
   }
 }
 ```
 
 | Configuração | Padrão | Descrição |
 |--------------|--------|-----------|
-| `portrait_face_ratio_percent` | `5` | Face > 5% do quadro = retrato |
 | `blink_penalty_percent` | `50` | Multiplicador de pontuação quando um piscar é detectado (0,5x) |
-| `night_luminance_threshold` | `0.15` | Luminância média abaixo disso = noite |
-| `night_iso_threshold` | `3200` | ISO acima disso = pouca luz |
-| `long_exposure_shutter_threshold` | `1.0` | Obturador > 1s = longa exposição |
-| `astro_shutter_threshold` | `10.0` | Obturador > 10s = astrofotografia |
 
 ---
 
@@ -416,7 +410,7 @@ Controla a análise de exposição e a detecção de clipping.
 |--------------|--------|-----------|
 | `shadow_clip_threshold_percent` | `15` | Sinaliza se > 15% dos pixels forem preto puro |
 | `highlight_clip_threshold_percent` | `10` | Sinaliza se > 10% dos pixels forem branco puro |
-| `silhouette_detection` | `true` | Detecta silhuetas intencionais |
+| `silhouette_detection` | `true` | Com `true`, uma foto marcada `is_silhouette` ignora a penalidade de recorte na sua pontuação agregada. O próprio sinalizador não é configurável: vem de uma regra fixa baseada no rosto (veja [SCORING.md](SCORING.md)) |
 
 ---
 
@@ -430,11 +424,8 @@ Penalidades de pontuação para problemas técnicos.
     "noise_sigma_threshold": 4.0,
     "noise_max_penalty_points": 1.5,
     "noise_penalty_per_sigma": 0.3,
-    "bimodality_threshold": 2.5,
-    "bimodality_penalty_points": 0.5,
     "leading_lines_blend_percent": 30,
     "oversaturation_threshold": 0.9,
-    "oversaturation_pixel_percent": 5,
     "oversaturation_penalty_points": 0.5
   }
 }
@@ -445,11 +436,8 @@ Penalidades de pontuação para problemas técnicos.
 | `noise_sigma_threshold` | `4.0` | Ruído acima disso aciona penalidade |
 | `noise_max_penalty_points` | `1.5` | Penalidade máxima de ruído |
 | `noise_penalty_per_sigma` | `0.3` | Pontos por sigma acima do limiar |
-| `bimodality_threshold` | `2.5` | Coeficiente de bimodalidade do histograma |
-| `bimodality_penalty_points` | `0.5` | Penalidade para histogramas bimodais |
 | `leading_lines_blend_percent` | `30` | Mescla no comp_score |
 | `oversaturation_threshold` | `0.9` | Limiar de saturação média |
-| `oversaturation_pixel_percent` | `5` | Reservado para detecção em nível de pixel |
 | `oversaturation_penalty_points` | `0.5` | Penalidade por supersaturação |
 
 **Fórmula da penalidade de ruído:**
@@ -536,14 +524,14 @@ Seleciona quais modelos são usados por perfil de VRAM.
       "model_name": "google/siglip2-so400m-patch16-naflex",
       "backend": "transformers",
       "embedding_dim": 1152,
-      "similarity_threshold_percent": 8,
+      "tag_threshold_percent": 8,
       "search_threshold_percent": 5
     },
     "clip_legacy": {
       "model_name": "ViT-L-14",
       "pretrained": "laion2b_s32b_b82k",
       "embedding_dim": 768,
-      "similarity_threshold_percent": 22,
+      "tag_threshold_percent": 8,
       "search_threshold_percent": 15
     },
     "qwen2_vl": {
@@ -586,12 +574,12 @@ Seleciona quais modelos são usados por perfil de VRAM.
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | Modelo de embedding SigLIP 2 NaFlex (16gb/24gb) |
 | `clip.backend` | `"transformers"` | `"transformers"` (SigLIP 2 NaFlex) ou `"open_clip"` (legado) |
 | `clip.embedding_dim` | `1152` | Dimensões do embedding (1152 para SigLIP 2) |
-| `clip.similarity_threshold_percent` | `8` | Similaridade de cosseno CLIP mínima para uma correspondência de **tag** (`--tag-existing`, tagging automático durante a varredura) — **não** o limiar de busca semântica abaixo |
+| `clip.tag_threshold_percent` | `8` | Limiar de tags do tagger SigLIP 2 dos perfis `16gb`/`24gb` (varredura, `--recompute-tags`, `tag_existing.py`): similaridade de cosseno mínima para uma correspondência de **tag** — **não** o limiar da busca semântica abaixo. Substitui `similarity_threshold_percent`, que não é mais lido |
 | `clip.search_threshold_percent` | `5` | Limiar de similaridade de cosseno para a busca semântica de `GET /api/search` (exposto via `/api/config` como `search_threshold_default`), **não** o limiar de correspondência de tag acima. Deve ser um número inteiro entre `0` e `50` — o controle deslizante da barra lateral da galeria vai até 50, e a conversão para percentual no cliente (`Math.round(search_threshold_default * 100)`) só é exata para um inteiro. Calibrado com uma amostra de validação de 34 linhas de embeddings SigLIP 2 reais (issue #145): o valor padrão admite todos os 21 verdadeiros positivos conhecidos **e** 3 dos 13 negativos conhecidos — uma escolha deliberada em favor da abrangência (recall) em detrimento da precisão. Um valor mais estrito de `5,5%` teria admitido zero negativos, mas foi rejeitado porque quem reportou o issue havia medido uma correspondência real de `0.051` de similaridade de cosseno na própria biblioteca; excluir uma correspondência real confirmada foi considerado pior do que deixar passar alguns negativos, ainda mais porque o controle deslizante 0-50% da galeria permite restringir (ou afrouxar) uma busca específica depois. |
 | `clip_legacy.model_name` | `"ViT-L-14"` | Modelo CLIP legado (perfis legacy/8gb) |
 | `clip_legacy.pretrained` | `"laion2b_s32b_b82k"` | Pesos pré-treinados legados |
 | `clip_legacy.embedding_dim` | `768` | Dimensões do embedding legado |
-| `clip_legacy.similarity_threshold_percent` | `22` | Limiar de correspondência de tag para o CLIP legado — **não** o limiar de busca semântica abaixo |
+| `clip_legacy.tag_threshold_percent` | `8` | Limiar de tags do tagger CLIP ViT-L-14 dos perfis `legacy`/`8gb` — **não** o limiar da busca semântica abaixo. Os cossenos do ViT-L-14 ficam entre 0.15 e 0.35, então com 8 o limiar nunca filtra e `tagging.max_tags` decide quantas tags ficam |
 | `clip_legacy.search_threshold_percent` | `15` | Limiar de similaridade de cosseno para a busca semântica de `GET /api/search` no perfil legacy/8gb (open_clip) — preserva o limiar que o Facet usava antes da existência desta chave. Mesma restrição de número inteiro entre `0` e `50` que `clip.search_threshold_percent` acima. |
 | `qwen2_vl.model_path` | `"Qwen/Qwen2-VL-2B-Instruct"` | Caminho no Hugging Face para a opção manual `composition_model: "qwen2-vl-2b"` — nenhum perfil a seleciona por padrão |
 | `qwen3_5_2b.model_path` | `"Qwen/Qwen3.5-2B"` | Modelo de tagging para o perfil 16gb |
@@ -624,6 +612,8 @@ Quando `vram_profile` é `"auto"` (padrão), o sistema detecta a VRAM de GPU dis
 | ≥ 14GB | `16gb` |
 | ≥ 6GB | `8gb` |
 | Sem GPU | `legacy` (usa a RAM do sistema) |
+
+Um dispositivo CUDA só conta quando o PyTorch informa pelo menos um (`device_count() > 0`). Um build que responde `torch.cuda.is_available()` sem nenhum dispositivo visível — por exemplo com `CUDA_VISIBLE_DEVICES=''` no Windows — é tratado como sem GPU: a varredura usa a CPU, informa 0 GB de VRAM e seleciona `legacy`, em vez de parar com «Invalid device id». `FACET_DEVICE=cuda` sem dispositivo visível é o erro documentado de um acelerador forçado indisponível.
 
 **Placas de 10-14GB podem optar pelo conjunto completo de recursos.** A detecção automática não muda: abaixo de 14GB ela continua selecionando `8gb`. Em vez disso, uma placa de 10-14GB pode executar o perfil `16gb` (embeddings SigLIP 2, TOPIQ, tagging com Qwen3.5-2B, Q-ReAlign, saliência) definindo `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`. O planejador de passagens então divide os modelos em quatro passagens que cabem (três em uma placa que informa 11,8 GiB ou mais) (veja [Agrupamento Dinâmico de Passagens](#agrupamento-dinâmico-de-passagens)), a saliência, que antes ficava sem memória aqui, agora dimensiona seu lote pela VRAM livre, e uma foto que ela ainda não consegue pontuar grava NULL e registra um ERROR em vez de uma pontuação neutra. **Trocar uma biblioteca `8gb` existente para `16gb` muda o modelo de embeddings** (CLIP ViT-L-14 de 768 dimensões → SigLIP 2 de 1152 dimensões), de modo que a biblioteca misturaria duas dimensões de embedding: refaça a varredura ou execute `--recompute-embeddings` para reincorporá-la. Veja *Busca semântica e uma biblioteca incorporada sob um perfil diferente* em [Models](#models) para saber como a busca se comporta até lá.
 
@@ -1528,7 +1518,7 @@ Configurações gerais de tagging. O modelo de tagging é configurado por perfil
 | `enabled` | `true` | Ativa o tagging |
 | `max_tags` | `5` | Máximo de tags por foto |
 
-**Nota:** Configurações específicas do CLIP, como `similarity_threshold_percent`, ficam na seção `models.clip`.
+**Nota:** O limiar de tags do CLIP/SigLIP é `tag_threshold_percent` no bloco clip do perfil ativo (`models.clip` para `16gb`/`24gb`, `models.clip_legacy` para `legacy`/`8gb`; `vram_profile: "auto"` é resolvido antes para o perfil detectado). A antiga chave `similarity_threshold_percent` não é mais lida, sem alias: se o seu arquivo ainda a contém, copie um valor personalizado para `tag_threshold_percent` (o carregamento da configuração e `python facet.py --doctor` nomeiam a chave antiga).
 
 Ao final de uma varredura, a etapa de marcação só carrega o modelo de embeddings do perfil quando tem algo a marcar. Ela é ignorada, com uma linha de log, quando `enabled` é `false` ou quando nenhuma foto tem ao mesmo tempo um embedding armazenado e uma lista de tags vazia. Uma varredura cujas fotos pendentes o marcador nunca consegue marcar (toda similaridade abaixo do limiar) continua carregando o modelo a cada execução. `python tag_existing.py`, `--force` e `python facet.py --tag-untagged` não são afetados.
 
@@ -1722,7 +1712,7 @@ Exibição e comportamento da galeria web.
 | `default_category` | `""` | Filtro de categoria padrão |
 | `edition_password` | `""` | Senha para desbloquear o modo de edição (vazio = toda edição é recusada; a instalação é somente leitura) |
 | **comparison_mode** | | |
-| `min_comparisons_for_optimization` | `50` | Mínimo para otimização |
+| `min_comparisons_for_optimization` | `50` | Número mínimo de comparações decisivas (A/B, sem empates) da categoria antes de sugerir pesos |
 | `pair_selection_strategy` | `"learning"` | Estratégia de pares: `learning` (partida a frio por diversidade de embeddings + discordância de classificação uma vez treinado), `uncertainty`, `boundary`, `active`, `random` |
 | `candidate_pool_size` | `200` | Conjunto aleatório de candidatos dentro do qual a estratégia `learning` amostra os pares |
 | `show_current_scores` | `true` | Mostra as pontuações durante a comparação |

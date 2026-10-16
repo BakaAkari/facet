@@ -12,7 +12,7 @@ import hashlib
 logger = logging.getLogger("facet.config")
 
 from config_resolve import (  # noqa: F401 - default_config_path is re-exported via config/__init__.py
-    default_config_path, load_resolved, path_is_named, write_user_config,
+    default_config_path, load_defaults, load_resolved, path_is_named, write_user_config,
 )
 from config.category_filter import (
     VALID_NUMERIC_FILTERS, VALID_BOOLEAN_FILTERS, VALID_TAG_FILTERS,
@@ -292,7 +292,7 @@ class ScoringConfig:
         if validate:
             for schema_error in self.validate_schema():
                 logger.warning("Config schema error: %s", schema_error)
-            for message in self.validate_moved_face_clustering_keys():
+            for message in self.config_notices():
                 logger.warning("Config: %s", message)
             self.validate_weights(verbose=True)
 
@@ -653,10 +653,6 @@ class ScoringConfig:
         """Get a threshold value."""
         return self.config.get('thresholds', {}).get(name, 0)
 
-    def get_thresholds(self):
-        """Get all threshold values."""
-        return self.config.get('thresholds', {})
-
     def get_composition_weights(self):
         """Get composition analysis weights."""
         return self.config.get('composition', {})
@@ -738,13 +734,11 @@ class ScoringConfig:
         })
 
     def get_penalty_settings(self):
-        """Get penalty settings for noise, bimodality, and leading lines blend."""
+        """Get penalty settings for noise, oversaturation, and leading lines blend."""
         return self.config.get('penalties', {
             'noise_sigma_threshold': 4.0,
             'noise_max_penalty_points': 1.5,
             'noise_penalty_per_sigma': 0.3,
-            'bimodality_threshold': 2.5,
-            'bimodality_penalty_points': 0.5,
             'leading_lines_blend_percent': 30
         })
 
@@ -781,20 +775,13 @@ class ScoringConfig:
 
         Note: Tagging model is configured per-profile in models.profiles.*.tagging_model.
         Use get_model_for_task('tagging') to get the configured model.
-        CLIP-specific settings like similarity_threshold are in get_clip_settings().
+        The CLIP/SigLIP tag gate is tag_threshold_percent in the active
+        profile's clip block (get_clip_config()); utils.tags.get_tag_params
+        reads both.
         """
         return self.config.get('tagging', {
             'enabled': True,
             'max_tags': 5
-        })
-
-    def get_clip_settings(self):
-        """Get CLIP model settings including similarity threshold for tagging."""
-        models_config = self.get_model_config()
-        return models_config.get('clip', {
-            'model_name': 'ViT-L-14',
-            'pretrained': 'laion2b_s32b_b82k',
-            'similarity_threshold_percent': 22
         })
 
     def get_burst_detection_settings(self):
@@ -985,12 +972,15 @@ class ScoringConfig:
     def get_clip_config(self):
         """Resolve CLIP/SigLIP model config based on active VRAM profile.
 
+        'auto' is resolved to the detected profile first: read raw, it would
+        fall through to the legacy block on every auto install.
+
         Returns:
             dict with 'model_name', 'pretrained', 'embedding_dim', etc.
         """
+        profile_name = self._resolved_vram_profile()
         model_config = self.get_model_config()
         profiles = model_config.get('profiles', {})
-        profile_name = model_config.get('vram_profile', 'legacy')
         active_profile = profiles.get(profile_name, profiles.get('legacy', {}))
         clip_config_key = active_profile.get('clip_config', 'clip')
         return model_config.get(clip_config_key, model_config.get('clip', {}))
@@ -1608,6 +1598,70 @@ class ScoringConfig:
             f"embedding model under face_clustering.thresholds_by_model.<model>.{key} "
             "(models: arcface_buffalo_l, sface)"
             for key in self._MOVED_FACE_CLUSTERING_KEYS if key in block
+        ]
+
+    # The clip blocks whose old tag-gate key was renamed to tag_threshold_percent.
+    _CLIP_TAG_GATE_BLOCKS = ('clip', 'clip_legacy')
+
+    def validate_obsolete_clip_tag_gate_keys(self):
+        """Warnings for a config still carrying the old CLIP/SigLIP tag-gate key.
+
+        ``models.<block>.similarity_threshold_percent`` is no longer read (no
+        alias, by design): the gate is ``tag_threshold_percent`` in the active
+        profile's block. The shipped defaults no longer carry the old key, so
+        only an operator file can -- a pre-1.14.3 full config holds
+        ``clip_legacy: 22``, which was never read and must stay inert.
+        """
+        models = self.config.get('models')
+        if not isinstance(models, dict):
+            return []
+        return [
+            f"models.{block}.similarity_threshold_percent is no longer read and is "
+            f"ignored; the tag gate is models.{block}.tag_threshold_percent (default 8)"
+            for block in self._CLIP_TAG_GATE_BLOCKS
+            if isinstance(models.get(block), dict)
+            and 'similarity_threshold_percent' in models[block]
+        ]
+
+    def validate_astro_guard(self):
+        """Notice when an operator's own ``categories`` array leaves ``astro`` without its guard.
+
+        The shipped ``astro`` filter carries ``luminance_max`` (a daylight frame tagged
+        ``aurora`` or ``stars`` is not an astro photo). ``config_resolve`` replaces a list
+        wholesale, so an operator file with a ``categories`` array -- every file a viewer
+        weight/priority/filter save or an optimizer apply wrote, and every pre-1.14.3 full
+        config -- keeps the OLD ``astro`` filter and never receives the guard. That is not
+        auto-migrated (no shim, and rewriting a hand-edited array is unsafe), so it is named.
+        Returns ``[]`` when the resolved ``astro`` has the key, is absent, or the shipped
+        one has no guard to lose. Deliberately NOT part of ``config_notices`` (logged at
+        every load): keeping the guard off is the operator's choice, so only ``--doctor``
+        prints it.
+        """
+        shipped = next((c for c in load_defaults().get('categories', [])
+                        if isinstance(c, dict) and c.get('name') == 'astro'), None)
+        guard = ((shipped or {}).get('filters') or {}).get('luminance_max')
+        if guard is None:
+            return []
+        categories = self.config.get('categories')
+        resolved = next((c for c in categories if isinstance(c, dict) and c.get('name') == 'astro'),
+                        None) if isinstance(categories, list) else None
+        if resolved is None or 'luminance_max' in (resolved.get('filters') or {}):
+            return []
+        return [
+            "categories.astro has no luminance_max: your scoring_config.json carries its own "
+            f"categories array, so the shipped astro guard (luminance_max {guard:.2f}) does not "
+            "apply; add it to astro.filters"
+        ]
+
+    def config_notices(self):
+        """Every operator-facing notice about ignored or moved config keys.
+
+        Logged once per validating load and printed by ``--doctor``'s
+        "Config notices" section; none of them changes behaviour.
+        """
+        return [
+            *self.validate_moved_face_clustering_keys(),
+            *self.validate_obsolete_clip_tag_gate_keys(),
         ]
 
     def validate_schema(self):

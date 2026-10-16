@@ -213,6 +213,10 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 
 > **形式与色彩和谐权重。** 每个类别的 `weights` 块都带有五个可解释的指标键 — `symmetry_percent`、`balance_percent`、`edge_entropy_percent`、`fractal_percent` 和 `color_harmony_percent` — 由 `--recompute-form` 填充。它们在所有类别中出厂值都是 `0`，因此在你给其中某一项赋予权重之前，聚合评分保持逐字节不变（赋权之后请重新运行 `--recompute-average`）。同一类别内部的权重总和仍必须为 100。
 
+> **`quality_percent` 按 `aesthetic` 计算。** 画质指标没有独立评分，因此类别的 `quality_percent` 会在计算前并入其 `aesthetic_percent`：实际美观度权重为 `aesthetic_percent + quality_percent`，权重总和仍为 100。参见 [SCORING.md](SCORING.md)。
+
+> **内置的 `astro` 类别要求画面偏暗。** 其过滤条件是 `tag_match_mode: "any"` 加上 `luminance_max: 0.30`，因此被 CLIP 标为 `aurora` 或 `stars` 的明亮场景不属于 `astro`。数组会整体替换（参见[默认值与你的覆盖配置](#默认值与你的覆盖配置)）：带有自己 `categories` 数组的 `scoring_config.json` 会保留它自己的 `astro` 条目，永远不会获得这道防护。请在 `astro.filters` 中加入 `"luminance_max": 0.30`（或删除该数组）；当你的 `astro` 条目没有 `luminance_max` 时，`python facet.py --doctor` 会打印一条 “Config notice”。然后运行 `--recompute-average`。
+
 ---
 
 ## 拍摄场景评分方案
@@ -324,29 +328,19 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 
 ## 阈值
 
-用于自动归类的检测阈值。
+评分阈值。现在只剩 `blink_penalty_percent`：一张照片是不是人像、夜景或长曝光，由各类别的 `filters` 决定（参见[类别](#类别)），而不是由这个块决定。
 
 ```json
 {
   "thresholds": {
-    "portrait_face_ratio_percent": 5,
-    "blink_penalty_percent": 50,
-    "night_luminance_threshold": 0.15,
-    "night_iso_threshold": 3200,
-    "long_exposure_shutter_threshold": 1.0,
-    "astro_shutter_threshold": 10.0
+    "blink_penalty_percent": 50
   }
 }
 ```
 
 | 设置 | 默认值 | 说明 |
 |---------|---------|-------------|
-| `portrait_face_ratio_percent` | `5` | 人脸占画面 > 5% = 人像 |
 | `blink_penalty_percent` | `50` | 检测到闭眼时的评分乘数（0.5 倍） |
-| `night_luminance_threshold` | `0.15` | 平均亮度低于此值 = 夜景 |
-| `night_iso_threshold` | `3200` | ISO 高于此值 = 弱光 |
-| `long_exposure_shutter_threshold` | `1.0` | 快门 > 1 秒 = 长曝光 |
-| `astro_shutter_threshold` | `10.0` | 快门 > 10 秒 = 星空摄影 |
 
 ---
 
@@ -408,7 +402,7 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 |---------|---------|-------------|
 | `shadow_clip_threshold_percent` | `15` | 纯黑像素 > 15% 时标记 |
 | `highlight_clip_threshold_percent` | `10` | 纯白像素 > 10% 时标记 |
-| `silhouette_detection` | `true` | 检测有意为之的剪影 |
+| `silhouette_detection` | `true` | 为 `true` 时，被标记为 `is_silhouette` 的照片在综合评分中跳过溢出裁切扣分。该标志本身不可配置：它来自一条基于人脸的固定规则（参见 [SCORING.md](SCORING.md)） |
 
 ---
 
@@ -422,11 +416,8 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
     "noise_sigma_threshold": 4.0,
     "noise_max_penalty_points": 1.5,
     "noise_penalty_per_sigma": 0.3,
-    "bimodality_threshold": 2.5,
-    "bimodality_penalty_points": 0.5,
     "leading_lines_blend_percent": 30,
     "oversaturation_threshold": 0.9,
-    "oversaturation_pixel_percent": 5,
     "oversaturation_penalty_points": 0.5
   }
 }
@@ -437,11 +428,8 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 | `noise_sigma_threshold` | `4.0` | 噪点高于此值即触发扣分 |
 | `noise_max_penalty_points` | `1.5` | 噪点扣分的上限 |
 | `noise_penalty_per_sigma` | `0.3` | 超出阈值每个 sigma 扣的分数 |
-| `bimodality_threshold` | `2.5` | 直方图双峰系数 |
-| `bimodality_penalty_points` | `0.5` | 双峰直方图的扣分 |
 | `leading_lines_blend_percent` | `30` | 混入 comp_score 的比例 |
 | `oversaturation_threshold` | `0.9` | 平均饱和度阈值 |
-| `oversaturation_pixel_percent` | `5` | 预留给像素级检测 |
 | `oversaturation_penalty_points` | `0.5` | 过饱和扣分 |
 
 **噪点扣分公式：**
@@ -528,14 +516,14 @@ penalty = min(noise_max_penalty_points, (noise_sigma - threshold) * noise_penalt
       "model_name": "google/siglip2-so400m-patch16-naflex",
       "backend": "transformers",
       "embedding_dim": 1152,
-      "similarity_threshold_percent": 8,
+      "tag_threshold_percent": 8,
       "search_threshold_percent": 5
     },
     "clip_legacy": {
       "model_name": "ViT-L-14",
       "pretrained": "laion2b_s32b_b82k",
       "embedding_dim": 768,
-      "similarity_threshold_percent": 22,
+      "tag_threshold_percent": 8,
       "search_threshold_percent": 15
     },
     "qwen2_vl": {
@@ -578,12 +566,12 @@ penalty = min(noise_max_penalty_points, (noise_sigma - threshold) * noise_penalt
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | SigLIP 2 NaFlex 嵌入模型（16gb/24gb） |
 | `clip.backend` | `"transformers"` | `"transformers"`（SigLIP 2 NaFlex）或 `"open_clip"`（旧版） |
 | `clip.embedding_dim` | `1152` | 嵌入维度（SigLIP 2 为 1152） |
-| `clip.similarity_threshold_percent` | `8` | **标签**匹配所需的最低 CLIP 余弦相似度（`--tag-existing`、扫描时的自动打标）——**不是**下面的语义搜索阈值 |
+| `clip.tag_threshold_percent` | `8` | `16gb`/`24gb` 配置档中 SigLIP 2 标签器的标签阈值（扫描、`--recompute-tags`、`tag_existing.py`）：判定**标签**匹配所需的最小余弦相似度——**不是**下方的语义搜索阈值。取代 `similarity_threshold_percent`，后者已不再读取 |
 | `clip.search_threshold_percent` | `5` | `GET /api/search` 语义搜索的余弦阈值（通过 `/api/config` 的 `search_threshold_default` 暴露给客户端），**不是**上面的标签匹配阈值。必须是 `0-50` 之间的整数——图库侧边栏滑块的上限是 50，客户端的百分比换算（`Math.round(search_threshold_default * 100)`）只有对整数才不会失真。基于一份包含 34 行真实 SigLIP 2 嵌入的验证样本校准得出（issue #145）：默认值下 21 个已知真正例**全部**被保留，同时 13 个已知负例中也有 3 个被保留——这是刻意偏向召回率而非精确率的取舍。更严格的 `5.5%` 本可以让负例全部被拒，但因为该 issue 的报告者在自己的图库中测得一个真实匹配的余弦相似度恰为 `0.051` 而被否决；排除一个已确认的真实匹配，被认为比放过几个负例更糟，尤其是图库的 0-50% 滑块本就允许用户事后针对某次搜索收紧（或放宽）阈值。 |
 | `clip_legacy.model_name` | `"ViT-L-14"` | 旧版 CLIP 模型（legacy/8gb 配置档） |
 | `clip_legacy.pretrained` | `"laion2b_s32b_b82k"` | 旧版预训练权重 |
 | `clip_legacy.embedding_dim` | `768` | 旧版嵌入维度 |
-| `clip_legacy.similarity_threshold_percent` | `22` | 旧版 CLIP 的标签匹配阈值——**不是**下面的语义搜索阈值 |
+| `clip_legacy.tag_threshold_percent` | `8` | `legacy`/`8gb` 配置档中 CLIP ViT-L-14 标签器的标签阈值——**不是**下方的语义搜索阈值。ViT-L-14 的余弦值落在 0.15 到 0.35 之间，因此取 8 时阈值永远不会过滤任何标签，由 `tagging.max_tags` 决定保留多少 |
 | `clip_legacy.search_threshold_percent` | `15` | legacy/8gb（open_clip）配置档上 `GET /api/search` 语义搜索的余弦阈值——保留了 Facet 在引入该键之前一直使用的阈值。与上面 `clip.search_threshold_percent` 相同，必须是 `0-50` 之间的整数。 |
 | `qwen2_vl.model_path` | `"Qwen/Qwen2-VL-2B-Instruct"` | 手动启用 `composition_model: "qwen2-vl-2b"` 时使用的 HuggingFace 路径 — 没有任何配置档默认选用它 |
 | `qwen3_5_2b.model_path` | `"Qwen/Qwen3.5-2B"` | 16gb 配置档的标签模型 |
@@ -614,6 +602,8 @@ penalty = min(noise_max_penalty_points, (noise_sigma - threshold) * noise_penalt
 | ≥ 14GB | `16gb` |
 | ≥ 6GB | `8gb` |
 | 无 GPU | `legacy`（使用系统内存） |
+
+只有当 PyTorch 报告至少一个 CUDA 设备（`device_count() > 0`）时，CUDA 设备才算数。一个对 `torch.cuda.is_available()` 回答真、却没有任何可见设备的构建——例如在 Windows 上设置了 `CUDA_VISIBLE_DEVICES=''`——被视为没有 GPU：扫描改用 CPU，报告 0 GB 显存并选择 `legacy`，而不是以 “Invalid device id” 中止。没有可见设备时设置 `FACET_DEVICE=cuda`，会得到文档记载的“强制加速器不可用”错误。
 
 **10-14GB 的显卡可以自行启用完整功能集。** 自动检测保持不变：低于 14GB 时仍会选择 `8gb`。10-14GB 的显卡可以改为运行 `16gb` 配置档（SigLIP 2 嵌入、TOPIQ、Qwen3.5-2B 标签、Q-ReAlign、显著性），方法是设置 `"vram_profile": "16gb"` 或 `FACET_VRAM_PROFILE=16gb`。此时遍次规划器会把模型拆成四个放得下的遍次（显卡报告 11.8 GiB 或更多时为三个）（见[动态遍次分组](#动态遍次分组)），此前在这里会显存不足的显著性，现在按空闲显存确定批大小；仍无法评分的照片会存入 NULL 并记录一条 ERROR，而不是存入中性分数。**把已有的 `8gb` 照片库切换到 `16gb` 会更换嵌入模型**（CLIP ViT-L-14 的 768 维 → SigLIP 2 的 1152 维），照片库里会混入两种嵌入维度：请重新扫描，或运行 `--recompute-embeddings` 重新生成嵌入。在此之前搜索的行为见[模型](#模型)一节中的*语义搜索与在不同配置档下建立索引的照片库*。
 
@@ -1496,7 +1486,7 @@ InsightFace 人脸检测设置。
 | `enabled` | `true` | 启用打标签 |
 | `max_tags` | `5` | 每张照片最多的标签数 |
 
-**注意：** 诸如 `similarity_threshold_percent` 之类 CLIP 专属的设置位于 `models.clip` 一节中。
+**注意：** CLIP/SigLIP 的标签阈值是当前配置档 clip 块中的 `tag_threshold_percent`（`16gb`/`24gb` 用 `models.clip`，`legacy`/`8gb` 用 `models.clip_legacy`；`vram_profile: "auto"` 会先解析为检测到的配置档）。旧键 `similarity_threshold_percent` 已不再读取，也没有别名：如果你的文件里仍有它，请把自定义的值复制到 `tag_threshold_percent`（加载配置时和 `python facet.py --doctor` 都会点名这个旧键）。
 
 扫描结束时，标注步骤只在确有内容需要标注时才加载该配置档的嵌入模型。当 `enabled` 为 `false`，或没有任何照片同时具有已存储的嵌入向量和空的标签列表时，该步骤会跳过并输出一行日志。若待处理的照片永远无法被标注器标注（所有相似度都低于阈值），扫描每次运行仍会加载该模型。`python tag_existing.py`、`--force` 和 `python facet.py --tag-untagged` 不受影响。
 
@@ -1690,7 +1680,7 @@ python facet.py --recompute-tags-vlm   # 用 VLM 标签模型重新打标签
 | `default_category` | `""` | 默认的类别筛选 |
 | `edition_password` | `""` | 解锁编辑模式的密码（留空 = 所有编辑均被拒绝；安装为只读） |
 | **comparison_mode** | | |
-| `min_comparisons_for_optimization` | `50` | 进行优化所需的最少比较次数 |
+| `min_comparisons_for_optimization` | `50` | 建议权重之前，该类别所需的最少决定性（A/B，非平局）比较次数 |
 | `pair_selection_strategy` | `"learning"` | 配对策略：`learning`（冷启动阶段按嵌入多样性，训练完成后按排序分歧）、`uncertainty`、`boundary`、`active`、`random` |
 | `candidate_pool_size` | `200` | `learning` 策略从中抽取配对的随机候选池大小 |
 | `show_current_scores` | `true` | 比较时显示评分 |

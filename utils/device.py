@@ -328,11 +328,20 @@ def cuda_arch_mismatch(*, torch_module: Any | None = None) -> CudaArchStatus | N
 
 
 def _cuda_is_available(torch_module: Any) -> bool:
-    """True when torch's own probe reports a device, ignoring arch support."""
+    """True when torch reports a CUDA device it can address, ignoring arch support.
+
+    ``is_available()`` alone is not enough: a Windows build answers True with
+    ``CUDA_VISIBLE_DEVICES=''`` while ``device_count()`` is 0, and the first
+    ``get_device_properties(0)`` then dies with "Invalid device id". A missing
+    or raising ``device_count`` therefore counts as no device.
+    """
     cuda = getattr(torch_module, "cuda", None)
     available = getattr(cuda, "is_available", None)
+    device_count = getattr(cuda, "device_count", None)
+    if not callable(available) or not callable(device_count):
+        return False
     try:
-        return bool(available()) if callable(available) else False
+        return bool(available()) and int(device_count()) > 0
     except Exception:
         return False
 

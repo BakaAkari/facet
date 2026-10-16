@@ -160,6 +160,8 @@ python database.py --migrate-user-preferences --user alice
 
 对美学 IAA、人脸画质 IQA、LIQE 和 Aesthetic V2.5 的范围筛选只匹配有评分的照片。模型未能评分的照片存为 NULL（以前是中性的 5.0），因此即使筛选从 0 开始也会将其排除；按美学（IAA）、人脸画质（IQA）或 LIQE 升序排序时，无论在图库还是相册（包括智能相册和共享相册）中，它都排在最后。见[补充 IQA 维度](SCORING.md#补充-iqa-维度)。
 
+主体清晰度、主体位置、背景分离度和构图交点的范围筛选同样只匹配有测量值的照片：检测不到主体的照片在这些列中存为 NULL（以前是中性的 5.0），所以即使筛选从 0 开始也会排除它，详情面板和提示框也会省略该行。这类照片的主体突出程度为 0.0。参见 [SCORING.md](SCORING.md)。
+
 ### 构图模式
 
 按 SAMP-Net 检测出的模式筛选（模型只会输出以下 8 种，来自
@@ -425,7 +427,7 @@ HDR 之间重新标注。**漏检**则从照片库修正，因为未被检测到
 - 使用与当前 VRAM 配置档相同的嵌入模型（16gb/24gb 用 SigLIP 2，legacy/8gb 用 CLIP ViT-L-14），如果两者不一致，则使用 `models.clip`/`clip_legacy` 中实际匹配已存储嵌入维度的那一个（见 [docs/CONFIGURATION.md](CONFIGURATION.md)）
 - `scope=text` 会把查询限制为对 OCR／描述文本的字面 FTS5 匹配，并跳过嵌入向量检索
 - 由 `viewer.features.show_semantic_search` 控制（默认：`true`）
-- 余弦阈值默认使用 `models.clip.search_threshold_percent`（5%）／`models.clip_legacy.search_threshold_percent`（15%）——按后端分别校准的值，区别于标签匹配阈值 `similarity_threshold_percent`。`/api/config` 的 `search_threshold_default` 用于初始化图库的 0-50% 阈值滑块，该滑块覆盖整个区间：既可以按次搜索把阈值收紧到默认值以上，也可以放宽回 `0%`；阈值恰好为 `0%` 时仍会拒绝负的余弦相似度，并不等于”不过滤”。SigLIP 的 5% 默认值刻意偏向召回率而非精确率——校准取舍详见 [docs/CONFIGURATION.md](CONFIGURATION.md) 中的 `clip.search_threshold_percent`
+- 余弦阈值默认使用 `models.clip.search_threshold_percent`（5%）／`models.clip_legacy.search_threshold_percent`（15%）——按后端分别校准的值，区别于标签匹配阈值 `tag_threshold_percent`。`/api/config` 的 `search_threshold_default` 用于初始化图库的 0-50% 阈值滑块，该滑块覆盖整个区间：既可以按次搜索把阈值收紧到默认值以上，也可以放宽回 `0%`；阈值恰好为 `0%` 时仍会拒绝负的余弦相似度，并不等于”不过滤”。SigLIP 的 5% 默认值刻意偏向召回率而非精确率——校准取舍详见 [docs/CONFIGURATION.md](CONFIGURATION.md) 中的 `clip.search_threshold_percent`
 - 每条结果会返回两个相似度字段：`similarity` 是用于排序的嵌入（70%）+ FTS（30%）综合得分；`embedding_similarity` 是实际用于和上述阈值比较的原始余弦相似度，仅当该照片计算出了嵌入得分时才会出现（在仅命中 FTS 或 `scope=text` 的结果上缺失——绝不会是 `null`）
 
 ## 相册
@@ -784,7 +786,7 @@ API：参见下文的 [API 端点](#api-端点)一节。
 
 ### 权重建议标签页
 
-把从比较中学到的权重与当前权重并排展示，并给出前后的模型准确率。当前的前 10 张照片和重新计算后预测的前 10 张照片会在相邻两列中预览。**应用**会写入建议的权重；**重新计算**会为该类别重新评分以使其生效（两者都需要编辑模式）。
+把从比较中学到的权重与当前权重并排展示，并给出前后的模型准确率。当前的前 10 张照片和重新计算后预测的前 10 张照片会在相邻两列中预览。**应用**会写入建议的权重；**重新计算**会为该类别重新评分以使其生效（两者都需要编辑模式）。 只有当服务器报告 `suggest_changes`，即通过了按照片分组的留出 McNemar 检验（与 `--optimize-weights` 相同）时，才会提供**应用**；否则建议的权重只作参考显示。与 `--optimize-weights` 不同，**应用**走的是与“权重”标签页手动编辑相同的路径（`POST /api/config/update_weights`），不会重新居中该类别的 bonus，因此该类别的平均得分可能发生偏移。
 
 ### 权重标签页
 
@@ -792,7 +794,7 @@ API：参见下文的 [API 端点](#api-端点)一节。
 
 ### 快照标签页
 
-把当前权重保存为具名快照，并可恢复任意较早的快照。
+把当前权重保存为具名快照，并可恢复任意较早的快照。 快照还会记录该类别的 bonus（`modifiers.bonus`），恢复时 bonus 会随权重一起恢复；本次变更之前记录的、由 `calibrate.py` 记录的或属于 `others` 的快照没有 bonus，恢复时保持 bonus 不变。
 
 ### 类别优先级与拍摄场景评分方案
 
@@ -1103,6 +1105,8 @@ python database.py --refresh-stats   # 预先计算聚合结果
 python database.py --optimize        # 整理数据库碎片
 ```
 
+`--migrate-tags` 是标签查找表的一次性引导。填充之后，扫描、`--recompute-tags`、`--recompute-tags-vlm` 和 `tag_existing.py` 会逐张照片保持其同步，因此筛选不会显示过期标签；从未填充过的表不会被隐式填充，在此之前标签筛选使用 `LIKE` 回退。
+
 ### 图库索引与计数缓存
 
 图库的计数、被隐藏照片的汇总以及每一页，都会在各自的隐藏子句中读取同一组可见性列（眨眼、连拍、重复、包围曝光、全景、被拒绝、垃圾）。八个覆盖索引（`idx_gallery_aggregate`、`idx_gallery_date_desc`、`idx_gallery_date_asc`、`idx_gallery_category`、`idx_gallery_camera`、`idx_star_rating_path`、`idx_gallery_iaa_asc` 和 `idx_stats_categories`，定义在 `db/schema.py` 中）把这些列与排序列放在一起，因此这些查询直接由索引回答，而不必遍历整张 `photos` 表。在一个 13 万张照片的图库上，默认图库页面因此从约 1.2 秒降到约 30 毫秒。
@@ -1321,7 +1325,7 @@ python database.py --stats-info
 | `GET /api/comparison/confidence` | `[Edition]` 学习评分的置信度指标 |
 | `GET /api/comparison/photo_metrics` | 照片的原始指标 |
 | `GET /api/comparison/category_weights` | `[Edition]` 类别权重／筛选条件 |
-| `GET /api/comparison/learned_weights` | `[Edition]` 从比较中得出的建议权重 |
+| `GET /api/comparison/learned_weights` | `[Edition]` 从比较中得出的建议权重（`suggest_changes` 是留出 McNemar 检验的结论） |
 | `POST /api/comparison/preview_score` | 用自定义权重预览 |
 | `POST /api/comparison/suggest_filters` | 分析筛选条件冲突 |
 | `POST /api/comparison/override_category` | `[Edition]` 为单张照片设置持久的类别覆盖（会针对已配置的类别名称校验；能挺过下一次重新计算） |
@@ -1386,10 +1390,10 @@ python database.py --stats-info
 
 | 端点 | 说明 |
 |----------|-------------|
-| `POST /api/config/update_weights` | 更新评分权重 |
+| `POST /api/config/update_weights` | 更新评分权重（也是“权重建议”标签页中**应用**所调用的接口；不会重新居中该类别的 bonus） |
 | `GET /api/config/weight_snapshots` | `[Edition]` 列出已保存的权重快照 |
 | `POST /api/config/save_snapshot` | 把当前权重保存为快照 |
-| `POST /api/config/restore_weights` | 从快照恢复权重 |
+| `POST /api/config/restore_weights` | 从快照恢复权重（以及快照记录了的类别 bonus） |
 | `GET /api/config/category_priorities` | `[Edition]` 按当前优先级（求值）顺序列出各类别 |
 | `POST /api/config/category_priorities` | `[Edition]` 重排类别求值优先级；把现有的优先级数值按新顺序做置换，而不是重新编号 |
 | `GET /api/config/scoring_contexts` | 列出已配置的拍摄场景评分方案，每个都带有解析后的实际生效类别顺序 |

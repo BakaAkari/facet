@@ -19,10 +19,10 @@ Fotos werden zunächst einer Kategorie zugeordnet und anschließend mit den Gewi
 | Priorität | Kategorie | Erkennungsmethode |
 |----------|----------|------------------|
 | 8 | `art` | Tags: painting, statue, drawing, cartoon, anime |
-| 10 | `astro` | Tags: aurora, astrophotography, stars, milky way |
+| 10 | `astro` | Tags: aurora, astrophotography, stars, milky way, UND mittlere Leuchtdichte ≤ 0.30 |
 | 15 | `concert` | Tags: concert |
 | 35 | `group_portrait` | Gesichtsanteil ≥ 5 % UND is_group_portrait |
-| 42 | `silhouette` | Hat Gesicht UND is_silhouette |
+| 42 | `silhouette` | Hat Gesicht UND `is_silhouette` (das größte Gesicht ist dunkel vor hellerer Umgebung) |
 | 45 | `portrait` | Gesichtsanteil ≥ 5 %, nicht silhouette/group/mono |
 | 46 | `portrait_bw` | Monochromes Porträt (Gesicht ≥ 5 %) |
 | 55 | `macro` | Tags: macro, insect, butterfly, dewdrop, ... |
@@ -36,6 +36,12 @@ Fotos werden zunächst einer Kategorie zugeordnet und anschließend mit den Gewi
 | 999 | `default` | Rückfall (kein Filter) |
 
 Weitere tag-basierte Kategorien sind `aerial`, `food`, `sports`, `vehicle`, `travel`, `fashion`, `candid`, `product`, `architecture`, `urban`, `golden_hour`, `blue_hour`, `cinematic`, `vintage`, `abstract`, `minimalist`, `dramatic` und `weather`.
+
+Auf den CLIP-Tagging-Profilen (`legacy`/`8gb` sowie `16gb`/`24gb`, wenn der VLM-Tagger nicht eingeplant ist) vergibt ein Multi-Pass-Scan die Tags im Embedding-Durchgang, bevor Kategorie und Gesamtwert berechnet werden; die Kategorie beim Scan sieht die Tags also wie `--recompute-average`. Der Tag-Schritt nach dem Scan ist nur ein Fallback für noch ungetaggte Fotos. Ein einzelner `--pass NAME`-Lauf vergibt keine Tags.
+
+**Silhouette.** `is_silhouette` ist eine gesichtsbezogene Pixelregel (siehe die Filtertabelle unten), kein Tag und kein Histogrammtest. Das gespeicherte Flag steuert neben der Kategorie auch den Gesamtwert: Eine Silhouette überspringt die Clipping-Strafe in `aggregate` (`exposure.silhouette_detection`), während ein Scan `exposure_score` mit der Clipping-Strafe speichert, `--recompute-average` ihn aber für jedes Foto mit gesetztem gespeichertem `is_silhouette` ohne diese Strafe neu ableitet, unabhängig von `exposure.silhouette_detection`. Gespeicherte Flags leiten Sie mit `python facet.py --recompute-silhouette` neu ab, danach `--recompute-average`.
+
+**Astro.** Ein Foto braucht einen Astro-Tag *und* eine mittlere Leuchtdichte von höchstens 0.30 (`luminance_max`): Eine helle Szene, die CLIP mit `aurora` oder `stars` taggt, ist kein Astro, und ein Foto ohne gespeicherte Leuchtdichte passt nie. Eine `scoring_config.json` mit eigenem `categories`-Array behält ihren eigenen `astro`-Eintrag und erhält diese Absicherung erst, wenn Sie `"luminance_max": 0.30` in `astro.filters` eintragen; `python facet.py --doctor` sagt, ob sie bei Ihnen fehlt.
 
 ## Bewertungskontexte
 
@@ -138,7 +144,7 @@ Jede Kategorie in `scoring_config.json` besteht aus diesen Komponenten:
 |--------|-------------|
 | `has_face` | Mindestens ein Gesicht erkannt |
 | `is_monochrome` | Sättigung < 5 % |
-| `is_silhouette` | Gegenlicht mit starken Schatten/Lichtern |
+| `is_silhouette` | Das größte Gesicht ist dunkel und seine Umgebung hell: Die mittlere Luma der zentralen 60 % des Gesichtsrahmens liegt unter 0.12, und das Band um den Rahmen (0.2 bis 0.75 Rahmenbreiten außerhalb, am Bildrand beschnitten) ist um mehr als 0.20 heller. Eine gesichtsbezogene Pixelmessung; weder der CLIP-Tag `silhouette` noch das Histogramm des ganzen Bildes setzen es noch. Ein Foto ohne Gesicht ist nie eine Silhouette |
 | `is_group_portrait` | face_count >= `min_faces_for_group` (konfigurierbar, Standard: 4) |
 
 ### Tag-Filter
@@ -156,7 +162,7 @@ Alle Gewichte verwenden das Suffix `_percent`. Sie werden von `get_weights()` no
 | Schlüssel | Metrik | Quelle | Am besten für |
 |-----|--------|--------|----------|
 | `aesthetic_percent` | Visuelle Anziehungskraft | TOPIQ oder CLIP+MLP | Alle |
-| `quality_percent` | Veraltete Qualität | In `aesthetic` umverteilt (kein separates Signal) | — |
+| `quality_percent` | Veraltete Qualität | Vor der Bewertung zu `aesthetic_percent` addiert (kein separates Signal) | — |
 | `face_quality_percent` | Gesichtsklarheit | InsightFace | Porträts |
 | `eye_sharpness_percent` | Augenschärfe | InsightFace-Landmarken | Porträts |
 | `tech_sharpness_percent` | Gesamtschärfe | Laplace-Varianz | Landschaften |
@@ -179,6 +185,8 @@ Alle Gewichte verwenden das Suffix `_percent`. Sie werden von `get_weights()` no
 | `subject_placement_percent` | Drittelregel des Motivs | BiRefNet | Alle |
 | `bg_separation_percent` | Hintergrundtrennung | BiRefNet | Porträts, Makro |
 
+**`quality_percent` zählt zu `aesthetic`.** Die Qualitätsmetrik hat keinen eigenen Wert; deshalb wird `quality_percent` einer Kategorie vor der Bewertung zu ihrem `aesthetic_percent` addiert: Das effektive Ästhetik-Gewicht ist `aesthetic_percent + quality_percent`, und die Gewichte ergeben weiterhin 100. Vor der Korrektur bewertete der `quality`-Anteil eine Metrik, die immer 0 war, und fiel so aus dem Gesamtwert heraus; eine von älterem Code aggregierte Bibliothek steigt beim nächsten `--recompute-average` leicht an (ohne dass eine Kategorie wechselt).
+
 ## Modifikatoren
 
 Passen das Bewertungsverhalten pro Kategorie an:
@@ -187,9 +195,6 @@ Passen das Bewertungsverhalten pro Kategorie an:
 |----------|------|-------------|
 | `bonus` | float | Zur Endwertung addiert (z. B. 0,5) |
 | `noise_tolerance_multiplier` | float | Skaliert die Rauschstrafe (0,5 = halb) |
-| `iso_tolerance_multiplier` | float | Skaliert die ISO-Strafe |
-| `min_saturation_bonus` | float | Bonus für hohe Sättigung |
-| `contrast_bonus` | float | Bonus für hohen Kontrast |
 | `_skip_clipping_penalty` | bool | Belichtungs-Clipping-Strafe überspringen |
 | `_skip_oversaturation_penalty` | bool | Übersättigungsstrafe überspringen |
 | `_clipping_multiplier` | float | Skaliert die Clipping-Strafe |
@@ -207,6 +212,8 @@ Vier aus der BiRefNet-Motivsegmentierung abgeleitete Dimensionen:
 | `bg_separation_percent` | Hintergrundtrennung | Unterschied des Kantengradienten an der Motivgrenze (Bokeh-Qualität). |
 
 Verwenden Sie `subject_sharpness_percent` und `bg_separation_percent` für Porträts/Wildtiere; `subject_prominence_percent` für Makro.
+
+**Kein Motiv, keine Zahl.** Wird kein Motiv gefunden, werden `subject_sharpness`, `subject_placement` und `bg_separation` als NULL gespeichert (ebenso `power_point_score`, wenn es keinen Motivrahmen gibt), `subject_prominence` ist 0.0 und `subject_bbox` NULL; frühere Versionen speicherten ein neutrales 5.0. Die Min/Max-Bereichsfilter der Galerie überspringen ein NULL für diese Metriken (`min_subject_sharpness=0` liefert kein Foto ohne Motiv mehr), SQL-Mittelwerte ignorieren es, und die Oberfläche zeigt es als fehlend. Der Gesamtwert bewertet ein NULL weiterhin als neutrale 5.0, sodass sich kein Gesamtwert ändert. Bestehende Zeilen behalten ihre 5.0, bis `--recompute-saliency` und `--recompute-composition-cpu` sie umschreiben.
 
 **Wenn die Salienz fehlschlägt.** Auf CUDA wird die Salienz-Batchgröße aus dem freien VRAM abgeleitet (etwa 2,4 GiB pro Bild bei 1024 px, zwischen 1 und 8 Bildern) und nach einem Out-of-Memory-Fehler halbiert, bis hinunter zu einem Bild. Schlägt die Salienz für ein Foto trotzdem fehl, wird ein ERROR protokolliert und nichts gespeichert: Ein Foto, das nie bewertet wurde, behält NULL in allen fünf Salienz-Spalten (`subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation`, `subject_bbox`), und `--recompute-saliency` sowie `--pass saliency` behalten die gespeicherten Werte eines Fotos, wenn dessen Salienz fehlschlägt. Ein vollständiger Neuscan des Fotos (z. B. mit `--force`) speichert dafür NULL, wie bei einem nie bewerteten Foto. Facet schreibt nie eine neutrale Zahl anstelle eines fehlgeschlagenen Ergebnisses. Im Gesamtwert zählt NULL als neutral (5,0), genau wie bei einem Foto, das gescannt wurde, bevor es die Salienz gab, und hilft oder schadet der Bewertung daher nicht. `--recompute-saliency` wählt ein solches Foto erneut aus (siehe [Motiv-Salienz](COMMANDS.md#motiv-salienz)).
 
@@ -383,19 +390,20 @@ python facet.py --recompute-average
    in synthetische Paare materialisiert (`source='rating'`). Ein erneuter Lauf
    synchronisiert aus den aktuellen Labels neu, sodass zurückgezogene Bewertungen verschwinden.
 
-Der Optimierer gewichtet jede Quelle nach Zuverlässigkeit (vote 1.0, rating 0.7,
-culling 0.5), wenn er die Bradley-Terry-Likelihood maximiert. Er trainiert auf dem
-exakten 0–10-Metrikvektor, den der Scorer verwendet (einschließlich `liqe`, `aesthetic_iaa`,
-`face_quality_iqa` und der Motiverkennungs-Metriken), sodass die optimierten Gewichte
-direkt auf die Produktivbewertung abgebildet werden.
+Der Optimierer gewichtet jede Quelle nach Zuverlässigkeit (vote 1.0, rating 0.7, culling 0.5), wenn er die Bradley-Terry-Likelihood maximiert. Ein **Gleichstand** zählt als halber Sieg plus halbe Niederlage: ein Hinweis, dass zwei Fotos ähnlich bewertet werden, mit derselben Stärke wie eine entscheidende Stimme (`include_ties` lässt sie weiterhin weg). Die Anpassung ist durch einen L2-Prior (`l2_regularization`, Stärke 100) an die **aktuellen Gewichte verankert**: Bei wenigen Vergleichen bleibt der Vorschlag nahe an Ihren Gewichten und entfernt sich mit wachsender Stimmenzahl weiter. Er trainiert auf jedem Foto, wie der Scorer es liefert: derselbe 0–10-Metrikvektor, den der Gesamtwert liest (einschließlich `liqe`, `aesthetic_iaa`, `face_quality_iqa` und der Motiverkennungs-Metriken), mit perzentil-normalisierter Augenschärfe, technischer Schärfe und Farbe, dem neu aufgebauten Belichtungswert und dem Gruppenporträt-Flag. Die Perzentile stammen aus dem Snapshot, den `--recompute-average` gespeichert hat; vor dem ersten `--recompute-average` werden stattdessen die gespeicherten Spalten gelesen. Er startet bei den **ausgelieferten** Gewichten und schreibt sie auch: `quality_percent` wird wie im Scorer in `aesthetic` gefaltet, und das Anwenden schreibt `quality_percent: 0` für die Kategorien, die es tragen.
 
-Gewichte werden **nur angewendet, wenn sie generalisieren**: Die endgültigen Gewichte werden auf
-allen Vergleichen angepasst, aber die Entscheidung, sie zu schreiben, ist an die Held-out-k-fold-Genauigkeit
-gekoppelt, nicht an die Trainingsgenauigkeit. Liegt der Held-out-Gewinn gegenüber den aktuellen Gewichten
-unter dem Schwellenwert (Standard 2 pp), meldet der Lauf die Zahlen und schreibt
-nichts – verwenden Sie `--optimize-force`, um dies zu übersteuern. Die Optimierung erfolgt pro Kategorie und
-benötigt gelabelte Vergleiche **für diese Kategorie**; Kategorien ohne Stimmen
-können nicht aus Daten abgestimmt werden.
+Gewichte werden **nur angewendet, wenn sie generalisieren**. Die endgültigen Gewichte werden auf allen Vergleichen angepasst, aber die Entscheidung, sie zu schreiben, ist ein Held-out-Kriterium: 5-fache Kreuzvalidierung mit **fotogruppierten Folds** (kein Foto steckt in einem Fold zugleich in den Trainings- und den Held-out-Paaren), über die Folds gepoolt und auf denselben Held-out-Paaren per **einseitigem exaktem McNemar-Test** mit den aktuellen Gewichten verglichen. Sie werden nur angewendet, wenn `p < 0.05` **und** der Held-out-Gewinn mindestens 2 pp beträgt (`min_improvement`); sonst protokolliert der Lauf die Zahlen und schreibt nichts — verwenden Sie `--optimize-force`, um dies zu übersteuern. Kann das Kriterium nicht berechnet werden (zu wenige unabhängige Fotogruppen), fällt die CLI nicht auf die Trainingsgenauigkeit zurück: Sie wendet ohne Erzwingen nichts an. Die Optimierung erfolgt pro Kategorie und benötigt **entscheidende** gelabelte Vergleiche (A oder B gewann) **für diese Kategorie**: `min_comparisons` zählt diese; Gleichstände und andere Kategorien erfüllen es nicht; Kategorien ohne Stimmen können nicht aus Daten abgestimmt werden. Das Protokoll zeigt zum Beispiel:
+
+```
+Held-out accuracy:      69.2% +/- 4.0 (5-fold, photo-grouped) - the honest estimate
+Held-out gain:          +8.5 pp over the current weights on the same 389 pairs
+McNemar (one-sided):    p = 0.0006 (only the fit right: 66, only the current weights right: 33)
+NOT applying: the held-out gate needs p < 0.05 and a gain of at least 2.0 pp. ...   (logged when the gate fails)
+```
+
+Das Anwenden eines Ergebnisses mit `--optimize-weights` ändert, wie die Fotos der Kategorie untereinander rangieren, nicht wo die Kategorie gegenüber den anderen steht: Im selben Config-Schreibvorgang wie die Gewichte wird `modifiers.bonus` um minus die projizierte mittlere Wertungsverschiebung der Kategoriefotos verschoben (begrenzt auf [-5, 5]; eine Begrenzung wird als Rest protokolliert), sodass der mittlere Gesamtwert der Kategorie gleich bleibt. Eine Kategorie ohne `categories[]`-Eintrag (`others`) hat keinen Bonus und wird nicht neu zentriert. Der vor dem Schreiben aufgezeichnete Gewichts-Snapshot enthält den Bonus, und das Wiederherstellen eines Snapshots stellt Gewichte **und** Bonus wieder her (Snapshots, die vor dieser Änderung, von `calibrate.py` oder für `others` aufgezeichnet wurden, enthalten keinen und lassen den Bonus unberührt). Dokumentierter Rest: Der Viewer schreibt Gewichte über `POST /api/config/update_weights` — für seine Schaltfläche **Anwenden** wie für eine manuelle Bearbeitung im Tab „Gewichte“ —, und diese Route zentriert den Bonus nicht neu (nur `--optimize-weights` tut das).
+
+**Trainieren Sie nach dem Upgrade den persönlichen Ranker und die Keeper-Heads neu und führen Sie dann `--recompute-average` aus.** Optimierer, Ranker und Keeper-Heads teilen sich einen Merkmalsvektor, der nun der ausgelieferte ist (normalisierte Augen-, Technik- und Farbmetriken); ein gespeichertes Modell kann die Änderung nicht erkennen.
 
 Empfohlene Kadenz:
 
@@ -413,7 +421,7 @@ python facet.py --recompute-average      # anwenden + Perzentil-Snapshot persist
 3. Klicken Sie auf „Gewichte vorschlagen" für optimierte Werte
 4. Aktualisieren Sie die Konfiguration manuell
 
-**Gewichte vorschlagen** beantwortet auch eine engere Frage als das CV-Gate oben: Wie gut stimmen die *aktuell live* verwendeten Gewichte dieser Kategorie bereits mit Ihren eigenen Vergleichen überein? Ein Klick liefert `accuracy_before` — den Prozentsatz der gelabelten Paare dieser Kategorie (A/B-Stimmen, Aussortieren und aus Bewertungen abgeleitete Paare), deren Gewinner die live verwendeten Gewichte korrekt vorhersagen — neben `accuracy_after`, derselben Kennzahl für die vorgeschlagenen Gewichte. Beide werden bei jedem Ausführen nebeneinander im Tab „Gewichtsvorschläge" und in der Seitenleiste des Tabs „A/B-Vergleich" angezeigt (`GET /api/comparison/learned_weights`, `optimization/weight_optimizer.py:optimize_weights_direct`). Wie das CLI-Gate benötigt dies `min_comparisons_for_optimization` (Standard 30) gelabelte Paare für diese Kategorie — darunter meldet die Schaltfläche das Defizit statt einer Zahl.
+**Gewichte vorschlagen** beantwortet auch eine engere Frage als das Held-out-Kriterium oben: Wie gut stimmen die *aktuell live* verwendeten Gewichte dieser Kategorie bereits mit Ihren eigenen Vergleichen überein? Ein Klick liefert `accuracy_before` — den Prozentsatz der gelabelten Paare dieser Kategorie (A/B-Stimmen, Aussortieren und aus Bewertungen abgeleitete Paare), deren Gewinner die live verwendeten Gewichte korrekt vorhersagen — neben `accuracy_after`, derselben Kennzahl für die vorgeschlagenen Gewichte; beides sind In-Sample-Werte. Beide werden bei jedem Ausführen nebeneinander im Tab „Gewichtsvorschläge“ und in der Seitenleiste des Tabs „A/B-Vergleich“ angezeigt (`GET /api/comparison/learned_weights`, `optimization/weight_optimizer.py:optimize_weights_direct`). Ob **Anwenden** angeboten wird, folgt demselben Held-out-McNemar-Kriterium wie die CLI, nicht dem In-Sample-Gewinn: `suggest_changes` ist nur wahr, wenn das Kriterium erfüllt ist (die Anfrage führt die Kreuzvalidierung nur aus, wenn der In-Sample-Gewinn bereits 2 pp erreicht; `?use_cv=true` führt sie immer aus). Wie die CLI benötigt dies `min_comparisons_for_optimization` (ausgelieferter Standard 50) entscheidende A/B-Vergleiche für diese Kategorie — darunter meldet die Schaltfläche das Defizit („Need at least N decisive comparisons (have K)“) statt einer Zahl.
 
 ## Eigene Kategorien hinzufügen
 

@@ -229,7 +229,6 @@ def _calculate_breakdown(photo, sc, category):
     for weight_key, weight_val in weights.items():
         if weight_key in ('bonus', 'blink_penalty', 'noise_tolerance_multiplier',
                           'noise_penalty_max', 'noise_threshold', 'score_min', 'score_max',
-                          'bimodality_threshold', 'bimodality_penalty',
                           'oversaturation_threshold', 'oversaturation_penalty',
                           'clipping_multiplier', 'noise_penalty_rate'):
             continue

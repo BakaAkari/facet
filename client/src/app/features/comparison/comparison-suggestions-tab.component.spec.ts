@@ -84,6 +84,14 @@ describe('ComparisonSuggestionsTabComponent', () => {
     expect(component['topBefore']().length).toBeGreaterThan(0);
   });
 
+  it('offers Apply only when the server suggests changes', () => {
+    component['learnedWeights'].set({ available: true, suggest_changes: false, suggested_weights: { a_percent: 40 } });
+    expect(component.canApply()).toBe(false);
+
+    component['learnedWeights'].set({ available: true, suggest_changes: true, suggested_weights: { a_percent: 40 } });
+    expect(component.canApply()).toBe(true);
+  });
+
   it('builds rows over the canonical percent weights, overlaying suggestions', () => {
     component['categoryConfig'].set({ weights: { a_percent: 30, bonus: 1, b_percent: 10 }, modifiers: {}, filters: {} });
     component['learnedWeights'].set({ available: true, suggested_weights: { a_percent: 40 } });

@@ -157,6 +157,8 @@ python database.py --migrate-user-preferences --user alice
 
 Os filtros de intervalo de Estética IAA, Qualidade do rosto IQA, LIQE e Aesthetic V2.5 incluem apenas fotos que têm pontuação. Uma foto que um modelo não conseguiu pontuar é gravada como NULL (antes trazia um 5,0 neutro), portanto até um filtro que começa em 0 a exclui, e uma ordenação crescente por Estética (IAA), Qualidade do rosto (IQA) ou LIQE a coloca por último, na galeria e nos álbuns (inteligentes e compartilhados incluídos). Veja [Dimensões Suplementares de IQA](SCORING.md#dimensões-suplementares-de-iqa).
 
+Os filtros de intervalo de Nitidez do sujeito, Posicionamento do sujeito, Separação do fundo e Pontos de força também só retornam fotos com uma medição: uma foto sem sujeito detectável armazena NULL nessas colunas (antes levava um 5.0 neutro), então até um filtro que começa em 0 a exclui, e o painel de detalhes e a dica omitem a linha. A proeminência do sujeito é 0.0 para uma foto assim. Veja [SCORING.md](SCORING.md).
+
 ### Padrões de Composição
 
 Filtrar pelos padrões detectados pelo SAMP-Net (o modelo emite exatamente estes 8,
@@ -362,7 +364,7 @@ Busca híbrida combinando a similaridade de embedding CLIP/SigLIP (70%) com a co
 - Usa o mesmo modelo de embedding do perfil de VRAM ativo (SigLIP 2 para 16gb/24gb, CLIP ViT-L-14 para legacy/8gb), ou o de `models.clip`/`clip_legacy` que realmente corresponde à dimensão de embedding armazenada, se os dois divergirem (ver [docs/CONFIGURATION.md](CONFIGURATION.md))
 - `scope=text` restringe a consulta a correspondências literais FTS5 em texto OCR/legenda e ignora a busca por embedding
 - Controlado por `viewer.features.show_semantic_search` (padrão: `true`)
-- O limiar de cosseno usa por padrão `models.clip.search_threshold_percent` (5%) / `models.clip_legacy.search_threshold_percent` (15%) — valores calibrados por backend, distintos do limiar de correspondência de tag `similarity_threshold_percent`. O `search_threshold_default` de `/api/config` inicializa o controle deslizante de limiar 0-50% da galeria, que cobre todo o intervalo: uma busca pode ser restringida além do padrão ou afrouxada de volta até `0%` por consulta; um limiar de exatamente `0%` continua a rejeitar uma similaridade de cosseno negativa, não é "sem filtro". O valor padrão de 5% para SigLIP favorece deliberadamente a abrangência (recall) em detrimento da precisão — veja `clip.search_threshold_percent` em [docs/CONFIGURATION.md](CONFIGURATION.md) para a compensação dessa calibração
+- O limiar de cosseno usa por padrão `models.clip.search_threshold_percent` (5%) / `models.clip_legacy.search_threshold_percent` (15%) — valores calibrados por backend, distintos do limiar de correspondência de tag `tag_threshold_percent`. O `search_threshold_default` de `/api/config` inicializa o controle deslizante de limiar 0-50% da galeria, que cobre todo o intervalo: uma busca pode ser restringida além do padrão ou afrouxada de volta até `0%` por consulta; um limiar de exatamente `0%` continua a rejeitar uma similaridade de cosseno negativa, não é "sem filtro". O valor padrão de 5% para SigLIP favorece deliberadamente a abrangência (recall) em detrimento da precisão — veja `clip.search_threshold_percent` em [docs/CONFIGURATION.md](CONFIGURATION.md) para a compensação dessa calibração
 - Cada resultado reporta dois campos de similaridade: `similarity` é a pontuação combinada de embedding (70%) + FTS (30%) usada para o ranking; `embedding_similarity` é a similaridade de cosseno bruta que foi de fato comparada com o limiar acima, presente apenas quando uma pontuação de embedding foi calculada para aquela foto (ausente — nunca `null` — numa correspondência apenas de FTS ou `scope=text`)
 
 ## Álbuns
@@ -720,7 +722,7 @@ Pares de fotos lado a lado. Escolha um vencedor, marque um empate ou pule. Uma b
 
 ### Aba Sugestões de Pesos
 
-Mostra os pesos aprendidos das comparações em relação aos pesos atuais, lado a lado, com a precisão do modelo antes/depois. As top 10 fotos atuais e as top 10 previstas após o recálculo são visualizadas em colunas adjacentes. **Aplicar** grava os pesos sugeridos; **Recalcular** repontua a categoria para aplicá-los (ambos requerem o modo de edição).
+Mostra os pesos aprendidos das comparações em relação aos pesos atuais, lado a lado, com a precisão do modelo antes/depois. As top 10 fotos atuais e as top 10 previstas após o recálculo são visualizadas em colunas adjacentes. **Aplicar** grava os pesos sugeridos; **Recalcular** repontua a categoria para aplicá-los (ambos requerem o modo de edição). **Aplicar** só é oferecido quando o servidor informa `suggest_changes`, isto é, quando o portão reservado de McNemar agrupado por foto (o mesmo de `--optimize-weights`) é superado; caso contrário os pesos sugeridos são mostrados apenas a título informativo. Diferentemente de `--optimize-weights`, **Aplicar** grava pelo mesmo caminho de uma edição manual na aba Pesos (`POST /api/config/update_weights`) e não recentra o bônus da categoria, então a pontuação média da categoria pode se deslocar.
 
 ### Aba Pesos
 
@@ -728,7 +730,7 @@ Editor de pesos manual: um controle deslizante por métrica para a categoria sel
 
 ### Aba Instantâneos
 
-Salve os pesos atuais como um instantâneo nomeado e restaure qualquer instantâneo anterior.
+Salve os pesos atuais como um instantâneo nomeado e restaure qualquer instantâneo anterior. Um instantâneo também registra o bônus da categoria (`modifiers.bonus`), e restaurá-lo devolve o bônus junto com os pesos; os instantâneos registrados antes desta mudança, por `calibrate.py` ou para `others` não levam bônus e o deixam intacto.
 
 ### Prioridade de Categoria e Contextos de Pontuação
 
@@ -1039,6 +1041,8 @@ python database.py --refresh-stats   # Precompute aggregations
 python database.py --optimize        # Defragment database
 ```
 
+`--migrate-tags` é a carga inicial única da tabela de consulta de tags. Depois de preenchida, as varreduras, `--recompute-tags`, `--recompute-tags-vlm` e `tag_existing.py` a mantêm atualizada foto a foto, então os filtros não mostram tags obsoletas; uma tabela nunca preenchida não é preenchida implicitamente e os filtros de tags usam o recurso `LIKE` até lá.
+
 ### Índices da galeria e cache de contagens
 
 A contagem da galeria, o seu resumo das fotos ocultas e cada página leem as mesmas colunas de visibilidade nas suas cláusulas de ocultação (piscadas, rajadas, duplicatas, bracketing, panoramas, rejeitadas, lixo). Oito índices de cobertura (`idx_gallery_aggregate`, `idx_gallery_date_desc`, `idx_gallery_date_asc`, `idx_gallery_category`, `idx_gallery_camera`, `idx_star_rating_path`, `idx_gallery_iaa_asc` e `idx_stats_categories`, definidos em `db/schema.py`) guardam essas colunas ao lado da coluna de ordenação, de modo que essas consultas são respondidas pelo índice em vez de percorrer toda a tabela `photos`. Numa biblioteca de 130k fotos, isso reduziu a página padrão da galeria de cerca de 1,2 s para cerca de 30 ms.
@@ -1257,7 +1261,7 @@ Os tipos TypeScript do cliente são gerados a partir desse esquema em `client/sr
 | `GET /api/comparison/confidence` | `[Edition]` Métricas de confiança para pontuações aprendidas |
 | `GET /api/comparison/photo_metrics` | Métricas brutas das fotos |
 | `GET /api/comparison/category_weights` | `[Edition]` Pesos/filtros de categoria |
-| `GET /api/comparison/learned_weights` | `[Edition]` Pesos sugeridos a partir de comparações |
+| `GET /api/comparison/learned_weights` | `[Edition]` Pesos sugeridos a partir de comparações (`suggest_changes` é a decisão de McNemar reservada) |
 | `POST /api/comparison/preview_score` | Prévia com pesos personalizados |
 | `POST /api/comparison/suggest_filters` | Analisa conflitos de filtro |
 | `POST /api/comparison/override_category` | `[Edition]` Define uma substituição de categoria persistente por foto (validada contra os nomes de categoria configurados; sobrevive ao próximo recálculo) |
@@ -1322,10 +1326,10 @@ Os tipos TypeScript do cliente são gerados a partir desse esquema em `client/sr
 
 | Endpoint | Descrição |
 |----------|-------------|
-| `POST /api/config/update_weights` | Atualiza os pesos de pontuação |
+| `POST /api/config/update_weights` | Atualiza os pesos de pontuação (também é o que **Aplicar** chama na aba Sugestões de Pesos; não recentra o bônus da categoria) |
 | `GET /api/config/weight_snapshots` | `[Edition]` Lista os instantâneos de pesos salvos |
 | `POST /api/config/save_snapshot` | Salva os pesos atuais como instantâneo |
-| `POST /api/config/restore_weights` | Restaura os pesos de um instantâneo |
+| `POST /api/config/restore_weights` | Restaura os pesos de um instantâneo (e o bônus da categoria, quando o instantâneo o registrou) |
 | `GET /api/config/category_priorities` | `[Edition]` Lista as categorias na ordem de prioridade (avaliação) atual |
 | `POST /api/config/category_priorities` | `[Edition]` Reordena a prioridade de avaliação de categorias; permuta os valores de prioridade existentes para a nova ordem em vez de renumerar |
 | `GET /api/config/scoring_contexts` | Lista os contextos de pontuação configurados, cada um com sua ordem efetiva de categorias resolvida |

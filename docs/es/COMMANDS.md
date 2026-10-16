@@ -20,7 +20,7 @@
 | `python facet.py /path --pass tags` | Ejecuta solo el paso de etiquetado (el modelo depende del perfil de VRAM) |
 | `python facet.py /path --pass composition` | Ejecuta solo la detección de patrones de composición SAMP-Net |
 | `python facet.py /path --pass faces` | Ejecuta solo la detección facial InsightFace |
-| `python facet.py /path --pass embeddings` | Ejecuta solo la extracción de embeddings CLIP/SigLIP |
+| `python facet.py /path --pass embeddings` | Ejecuta solo la extracción de embeddings CLIP/SigLIP (una ejecución con un solo `--pass` no escribe etiquetas) |
 | `python facet.py /path --pass saliency` | Ejecuta solo la detección de saliencia del sujeto BiRefNet |
 | `python facet.py /path --db custom.db` | Usa un archivo de base de datos personalizado |
 | `python facet.py /path --config my.json` | Usa una configuración de puntuación personalizada |
@@ -113,7 +113,7 @@ Estos comandos actualizan métricas específicas, derivan datos nuevos (leyendas
 
 | Comando | Descripción |
 |---------|-------------|
-| `python facet.py --recompute-average` | Recalcula las puntuaciones globales a partir de los embeddings almacenados (re-derivable; sin instantánea de la BD — para revertir, restaura una instantánea de pesos y recalcula) |
+| `python facet.py --recompute-average` | Recalcula las puntuaciones globales a partir de los embeddings almacenados (re-derivable; sin instantánea de la BD — para revertir, restaura una instantánea de pesos y recalcula). Tras actualizar desde una versión anterior, ejecuta primero `--recompute-silhouette` y después este comando dos veces: la primera pasada sobre una biblioteca agregada por última vez con código antiguo puede dejar filas que la segunda aún cambia |
 | `python facet.py --recompute-category portrait` | Recalcula las puntuaciones de una sola categoría |
 | `python facet.py --tag-untagged` | Etiqueta solo las fotos que aún no tienen etiquetas, a partir de los embeddings almacenados (sin leer imágenes). El mismo trabajo que un escaneo hace al final; sirve para rellenar huecos sin volver a etiquetar lo ya etiquetado |
 | `python facet.py --recompute-tags` | Vuelve a etiquetar todas las fotos con el modelo configurado |
@@ -124,7 +124,7 @@ Estos comandos actualizan métricas específicas, derivan datos nuevos (leyendas
 | `python facet.py --detect-junk` | Marca la basura no fotográfica (capturas de pantalla, documentos, recibos, memes, diapositivas) en fotos nuevas/no evaluadas mediante CLIP zero-shot sobre los embeddings almacenados; se ejecuta automáticamente al final de cada escaneo. Las fotos limpias se marcan como `not_junk` para que las reejecuciones nunca vuelvan a escanearlas; añade `--dry-run --verbose` para previsualizar las puntuaciones por foto sin escribir |
 | `python facet.py --recompute-junk` | Reevalúa `junk_kind` para toda la biblioteca (todas las fotos con un embedding almacenado) |
 | `python facet.py --recompute-saliency` | `[GPU]` `[16gb/24gb]` Recalcula las métricas de saliencia del sujeto (BiRefNet_dynamic). Una foto cuya saliencia falla (por ejemplo, por memoria agotada) se registra como ERROR y no se escribe: una fila nunca puntuada sigue en NULL y la siguiente ejecución vuelve a seleccionarla, y con `--force` una fila que ya tiene saliencia conserva sus valores guardados. En CUDA, el tamaño de lote se deriva de la VRAM libre. |
-| `python facet.py --recompute-composition-cpu` | Recalcula la composición, basada en reglas (CPU, cualquier perfil) |
+| `python facet.py --recompute-composition-cpu` | Recalcula la composición, basada en reglas (CPU, cualquier perfil). Una foto cuya miniatura no tiene cuadro de sujeto recibe un `power_point_score` NULL (el 5.0 neutro heredado se reescribe a NULL; una miniatura que no se puede decodificar conserva su valor) |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` Recalcula la composición con SAMP-Net |
 | `python facet.py --recompute-iqa` | `[GPU]` `[8gb/16gb/24gb]` Recalcula métricas IQA suplementarias (TOPIQ IAA, NR-Face, LIQE) a partir de las miniaturas almacenadas. Solo rellena las columnas que son NULL. NR-Face omite las fotos sin cara detectada; LIQE omite una foto cuya miniatura almacenada tiene un lado corto inferior a 224 px (se cuenta en el resumen, no se guarda nada); una foto que NR-Face rechaza se recuerda en la tabla `iqa_declined` y no se reintenta hasta que la foto se reescanea (una actualización de pyiqa o de los pesos de NR-Face no borra estos registros: reescanea con `--force` o ejecuta `--refresh-thumbnails`); cualquier otro fallo (memoria agotada, error inesperado) sigue siendo NULL y la siguiente ejecución lo vuelve a seleccionar. Un valor ya guardado (incluido un 5,0 neutro de una versión anterior) nunca se sustituye: bórralo antes con `--repair-neutral-iqa`. Consulta [Modelos de calidad suplementarios](#modelos-de-calidad-suplementarios) |
 | `python facet.py --detect-text` | Extrae el texto presente en la imagen (carteles, pósteres, documentos) a `ocr_text` mediante OCR sobre las miniaturas almacenadas, haciéndolo buscable desde la barra de búsqueda de la galería. Omite las fotos ya evaluadas, así que las reejecuciones solo leen las nuevas. Opcional: necesita `ocr.enabled` en `scoring_config.json` más `pip install easyocr` — consulta [Configuración — OCR](CONFIGURATION.md#ocr) |
@@ -150,6 +150,7 @@ Estos comandos actualizan métricas específicas, derivan datos nuevos (leyendas
 | `python facet.py --score-topiq` | Vuelve a puntuar `topiq_score` con TOPIQ para cada foto que tenga una miniatura almacenada (requiere GPU). No hay filtro de NULL, así que se sobrescriben los valores existentes; una foto que TOPIQ no puede puntuar conserva su valor almacenado |
 | `python facet.py --backfill-focal-35mm` | Rellena la distancia focal equivalente a 35 mm desde el EXIF para las fotos que la tengan ausente |
 | `python facet.py --backfill-clipping` | Deriva los porcentajes de recorte por canal a partir de los histogramas almacenados. Solo base de datos (sin descodificar imágenes) y reanudable; las fotos cuyo histograma es anterior al formato RGB quedan como desconocidas (NULL) |
+| `python facet.py --recompute-silhouette` | Vuelve a derivar `is_silhouette` con la regla basada en el rostro (ver [SCORING.md](SCORING.md)) a partir de las miniaturas y los cuadros de rostros almacenados. Solo base de datos (sin decodificar la imagen original), reanudable (confirma por lotes) y reescribe solo esa columna; respeta el `--dry-run` global (informa de lo que cambiaría, no escribe nada). El informe reparte las fotos según cómo se relacionan sus cuadros de rostros almacenados con la miniatura (`exact`, `scaled`, `count_mismatch` (un refinamiento sin verificar), `other`); un cuadro que no sabe ubicar se escribe como 0, igual que una foto sin rostros. Las fotos con `face_count` NULL, o con rostros pero sin miniatura almacenada, conservan su indicador y se cuentan como `skipped_face_count_null` / `skipped_no_thumbnail`. Ejecuta después `--recompute-average` para que las puntuaciones y categorías sigan el nuevo indicador |
 | `python facet.py --repair-int-columns` | Repara las columnas INTEGER de `photos` cuyo valor almacenado es un REAL: la afinidad de SQLite no es una restricción, así que un ISO fraccionario escrito por una herramienta externa se conserva como REAL. Redondea cada valor en el sitio (un valor que SQLite no puede guardar como entero — no finito, o más allá de 2^53 — pasa a NULL) y no toca nada más. Solo base de datos (sin descodificar imágenes). La API redondea al leer las filas sin reparar, así que la galería funciona sin esto; los filtros y las ordenaciones comparan el valor realmente almacenado, así que ejecútalo para que una foto mostrada como ISO 63 no quede fuera de un rango ISO |
 | `python facet.py --repair-neutral-iqa` | Borra el 5,0 neutro que las versiones anteriores a la 1.20 guardaron en `aesthetic_iaa`, `face_quality_iqa` y `liqe_score` para las fotos que un modelo no pudo puntuar: todo valor exactamente igual a 5,0 en esas tres columnas pasa a NULL, en una sola transacción, y se descartan los rangos de la galería guardados en caché. Muestra el recuento por columna. No toca `aesthetic`, `topiq_score`, `aesthetic_v25` ni `quality_score` (allí un 5,00 genuino no se distingue del falso, y `aesthetic` es la columna CLIP+MLP en `legacy`/`8gb`). Un valor genuino que redondee exactamente a 5,00 también se borra y `--recompute-iqa` la rellena a partir de la miniatura almacenada, así que el valor nuevo puede diferir ligeramente. Ejecuta después `--recompute-iqa` para rellenar las columnas y luego `--recompute-average`; la reparación en sí no mueve ningún agregado, porque un NULL puntúa como neutro. Un visor en ejecución conserva en memoria sus rangos de métricas hasta una hora después de la reparación, o hasta que se reinicie (solo cambian los recuentos de valores exactamente iguales a 5,0). Solo base de datos (sin descodificar imágenes); se rechaza con `--dry-run` (código de salida 2); no está en ninguna cadena de `--upgrade-db` |
 | `python facet.py --compute-recommendations` | Analiza la base de datos y muestra un resumen de puntuación |
@@ -185,6 +186,8 @@ Una foto que un modelo no puede puntuar (para NR-Face, ninguna cara que encuentr
 
 Requiere `transformers` (~3 GB de VRAM). En CUDA, el tamaño de lote se deriva de la VRAM libre (unos 2,4 GiB por imagen a 1024 px, entre 1 y 8 imágenes) y se reduce a la mitad tras un error de memoria agotada, hasta llegar a una sola imagen. Una foto cuya saliencia sigue fallando se registra como ERROR y no guarda ningún valor: sigue en NULL si nunca se puntuó (y puntúa como neutra en el agregado, igual que las fotos escaneadas antes de que existiera la saliencia), con `--recompute-saliency` y `--pass saliency` conserva sus valores guardados si ya tenía saliencia (un reescaneo completo, por ejemplo con `--force`, guarda NULL para ella, igual que para una foto nunca puntuada), y `--recompute-saliency` vuelve a seleccionarla. Consulta [Dimensiones de saliencia del sujeto](SCORING.md#dimensiones-de-saliencia-del-sujeto).
 
+Una foto sin sujeto detectable almacena NULL en nitidez del sujeto, ubicación del sujeto y separación del fondo (y, desde el paso de composición, en `power_point_score` cuando no hay cuadro de sujeto), prominencia 0.0 y un `subject_bbox` NULL; las versiones anteriores almacenaban un 5.0 neutro. Las filas existentes conservan el 5.0 hasta que `--recompute-saliency` (que vuelve a seleccionar las fotos sin `subject_bbox`) y `--recompute-composition-cpu` las reescriban. Una métrica NULL sigue puntuando neutra en el agregado; ver [SCORING.md](SCORING.md).
+
 ### Modelos de etiquetado
 
 El modelo de etiquetado se selecciona según el perfil de VRAM:
@@ -197,6 +200,8 @@ El modelo de etiquetado se selecciona según el perfil de VRAM:
 | `24gb` | Qwen3.5-4B | Modelo multimodal más grande. |
 
 Todos los etiquetadores asignan la salida al vocabulario de etiquetas configurado. Usa `--recompute-tags` para volver a etiquetar con el modelo por defecto del perfil, o `--recompute-tags-vlm` para un reetiquetado basado en VLM.
+
+**Cuándo se escriben las etiquetas.** En los perfiles de similitud CLIP (`legacy`/`8gb`, y `16gb`/`24gb` cuando no está programada la pasada del etiquetador VLM) un escaneo multipasada etiqueta durante la pasada de embeddings, así que la categoría y el agregado del escaneo ya ven las etiquetas; el paso de etiquetado posterior al escaneo es solo un recurso para las fotos aún sin etiquetar. Una ejecución con un solo `--pass` (por ejemplo `--pass embeddings`) no escribe etiquetas, y `--pass tags` en un perfil CLIP sigue deteniéndose y remite a `--recompute-tags`. Las filas existentes conservan su categoría hasta `--recompute-average`.
 
 ### Modelos de embeddings
 
@@ -285,8 +290,8 @@ Solo lectura: decodifica una muestra aleatoria directamente desde el disco e imp
 | Comando | Descripción |
 |---------|-------------|
 | `python facet.py --comparison-stats` | Muestra las estadísticas de comparación por pares |
-| `python facet.py --optimize-weights` | Optimiza y guarda los pesos a partir de las comparaciones (todas las fuentes, ponderado por fiabilidad); se aplica solo si la precisión de validación cruzada k-fold de datos reservados supera la de los pesos actuales |
-| `python facet.py --optimize-weights --optimize-force` | Aplica los pesos optimizados aunque no se cumpla el umbral de precisión |
+| `python facet.py --optimize-weights` | Optimiza y guarda pesos a partir de comparaciones (todas las fuentes, ponderadas por fiabilidad); solo se aplica si supera la puerta reservada agrupada por foto (prueba de McNemar unilateral p < 0.05 y una ganancia de al menos 2 pp sobre los pesos actuales). Al aplicar también se recentra el `modifiers.bonus` de la categoría; ver [SCORING.md](SCORING.md) |
+| `python facet.py --optimize-weights --optimize-force` | Aplica los pesos optimizados aunque no se cumpla la puerta reservada (o no pudiera ejecutarse) |
 | `python facet.py --optimize-weights --optimize-sources vote,culling` | Restringe los datos de entrenamiento a fuentes de comparación específicas |
 | `python facet.py --optimize-weights --optimize-category portrait` | Entrena solo en una categoría y escribe su bloque `categories[].weights` v4 |
 | `python facet.py --auto-tune-categories` | **Solo superadministrador** (pasa `--user` en modo multiusuario): informa la disponibilidad de etiquetas de comparación por categoría para el autoajuste de los pesos globales compartidos. Stub — solo informa la disponibilidad; el bucle de aplicación automática está aplazado a la espera de etiquetas |
@@ -358,7 +363,7 @@ Solo los casos 4 y 5 pueden no encontrar nada. Los casos 1 y 2 nombran una ruta,
 |---------|-------------|
 | `python tag_existing.py` | Añade etiquetas a las fotos sin etiquetar usando los embeddings CLIP almacenados |
 | `python tag_existing.py --dry-run` | Previsualiza las etiquetas sin guardar |
-| `python tag_existing.py --threshold 0.25` | Umbral de similitud personalizado (por defecto: 0.22) |
+| `python tag_existing.py --threshold 0.25` | Umbral de similitud personalizado (por defecto: el `tag_threshold_percent` del perfil activo, 0.08) |
 | `python tag_existing.py --max-tags 3` | Limita las etiquetas por foto (por defecto: 5) |
 | `python tag_existing.py --force` | Vuelve a etiquetar todas las fotos |
 | `python tag_existing.py --db custom.db` | Usa una base de datos personalizada |
@@ -385,7 +390,7 @@ Comprueba: rangos de puntuación, métricas faciales, corrupción de BLOB, tama�
 |---------|-------------|
 | `python database.py` | Inicializa/actualiza el esquema (también construye los índices de cobertura de la galería, como hace un escaneo al iniciar; el visor construye los que falten en segundo plano al iniciar, consulta [VIEWER.md](VIEWER.md#índices-de-la-galería-y-caché-de-recuentos)) |
 | `python database.py --info` | Muestra información del esquema |
-| `python database.py --migrate-tags` | Puebla la tabla de búsqueda photo_tags (consultas 10-50 veces más rápidas) |
+| `python database.py --migrate-tags` | Arranque único de la tabla de búsqueda photo_tags (consultas 10-50x más rápidas). Una vez poblada, los escaneos, `--recompute-tags`, `--recompute-tags-vlm` y `tag_existing.py` la mantienen al día foto a foto; una tabla que nunca se pobló no se rellena implícitamente y los lectores usan el recurso `LIKE` hasta entonces |
 | `python database.py --rebuild-fts` | Reconstruye el índice de búsqueda de texto completo FTS5 a partir de leyendas/etiquetas |
 | `python database.py --populate-vec` | Puebla la tabla de búsqueda vectorial sqlite-vec a partir de los embeddings |
 | `python database.py --refresh-stats` | Actualiza la caché de estadísticas |

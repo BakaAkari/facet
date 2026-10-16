@@ -269,7 +269,7 @@ def _resolve_clip_config_uncached(stored_dim: Optional[int]) -> dict:
 def search_threshold_default() -> float:
     """The active encoder's calibrated semantic-search cosine threshold, as a 0-1 fraction.
 
-    Distinct from `similarity_threshold_percent` (the tag-match threshold) --
+    Distinct from `tag_threshold_percent` (the tag-match threshold) --
     no fallback to it under any circumstance. The `15` here is not a silent
     paper-over of a broken config: it is the value `get_model_config()`'s
     in-code default `clip` block (ViT-L-14) already carries, so a config with

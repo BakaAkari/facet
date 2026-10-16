@@ -160,6 +160,8 @@ python database.py --migrate-user-preferences --user alice
 
 Range filters on Aesthetic IAA, Face Quality IQA, LIQE and Aesthetic V2.5 match only photos that have a score. A photo a model could not score is stored as NULL (it used to carry a neutral 5.0), so even a filter that starts at 0 excludes it, and an ascending sort on Aesthetic (IAA), Face Quality (IQA) or LIQE lists it last, in the gallery and in albums (smart and shared included). See [Supplementary IQA Dimensions](SCORING.md#supplementary-iqa-dimensions).
 
+Range filters on Subject Sharpness, Subject Placement, Background Separation and Power Points likewise match only photos with a measurement: a photo with no detectable subject stores NULL in those columns (it used to carry a neutral 5.0), so even a filter that starts at 0 excludes it, and the detail panel and tooltip omit the row. Subject Prominence is 0.0 for such a photo. See [SCORING.md](SCORING.md).
+
 ### Composition Patterns
 
 Filter by SAMP-Net detected patterns (the model emits exactly these 8, from
@@ -433,7 +435,7 @@ Hybrid search combining CLIP/SigLIP embedding similarity (70%) with FTS5 BM25 te
 - Uses the same embedding model as the active VRAM profile (SigLIP 2 for 16gb/24gb, CLIP ViT-L-14 for legacy/8gb), or whichever of `models.clip`/`clip_legacy` actually matches the stored embedding dimension if the two disagree (see [docs/CONFIGURATION.md](CONFIGURATION.md))
 - `scope=text` restricts the query to literal FTS5 matches in OCR/caption text and skips the embedding search
 - Controlled by `viewer.features.show_semantic_search` (default: `true`)
-- The cosine gate defaults to `models.clip.search_threshold_percent` (5%) / `models.clip_legacy.search_threshold_percent` (15%) — calibrated per-backend values, distinct from the tag-match `similarity_threshold_percent`. `/api/config`'s `search_threshold_default` seeds the gallery's 0-50% threshold slider, which spans the whole range: a query can be tightened above the default or loosened back down toward `0%` per search; a threshold of exactly `0%` still rejects a negative cosine, it is not "no filter". The `5%` SigLIP default itself deliberately favours recall over precision — see `clip.search_threshold_percent` in [docs/CONFIGURATION.md](CONFIGURATION.md) for the calibration tradeoff
+- The cosine gate defaults to `models.clip.search_threshold_percent` (5%) / `models.clip_legacy.search_threshold_percent` (15%) — calibrated per-backend values, distinct from the tag-match `tag_threshold_percent`. `/api/config`'s `search_threshold_default` seeds the gallery's 0-50% threshold slider, which spans the whole range: a query can be tightened above the default or loosened back down toward `0%` per search; a threshold of exactly `0%` still rejects a negative cosine, it is not "no filter". The `5%` SigLIP default itself deliberately favours recall over precision — see `clip.search_threshold_percent` in [docs/CONFIGURATION.md](CONFIGURATION.md) for the calibration tradeoff
 - Each result reports two similarity fields: `similarity` is the blended embedding (70%) + FTS (30%) score used for ranking; `embedding_similarity` is the raw cosine that was actually gated against the threshold above, present only when an embedding score was computed for that photo (absent — never `null` — on an FTS-only or `scope=text` hit)
 
 ## Albums
@@ -792,7 +794,7 @@ Side-by-side photo pairs. Pick a winner, mark a tie, or skip. A progress bar tra
 
 ### Weight Suggestions tab
 
-Shows the weights learned from comparisons against the current weights, side by side, with model accuracy before/after. The current top 10 photos and the predicted top 10 after recompute are previewed in adjacent columns. **Apply** writes the suggested weights; **Recompute** rescores the category to apply them (both require edition mode).
+Shows the weights learned from comparisons against the current weights, side by side, with model accuracy before/after. The current top 10 photos and the predicted top 10 after recompute are previewed in adjacent columns. **Apply** writes the suggested weights; **Recompute** rescores the category to apply them (both require edition mode). **Apply** is offered only when the server reports `suggest_changes`, that is when the photo-grouped held-out McNemar gate passed (the same gate as `--optimize-weights`); otherwise the suggested weights are shown for information only. Unlike `--optimize-weights`, **Apply** writes through the same route as a hand edit in the Weights tab (`POST /api/config/update_weights`) and does not re-centre the category's bonus, so the category's mean score can move.
 
 ### Weights tab
 
@@ -800,7 +802,7 @@ Manual weight editor: a slider per metric for the selected category with a live 
 
 ### Snapshots tab
 
-Save the current weights as a named snapshot and restore any earlier snapshot.
+Save the current weights as a named snapshot and restore any earlier snapshot. A snapshot also records the category's bonus (`modifiers.bonus`), and restoring it gives the bonus back with the weights; snapshots recorded before this change, by `calibrate.py` or for `others` carry no bonus and leave it untouched.
 
 ### Category Priority & Scoring Contexts
 
@@ -1112,6 +1114,8 @@ python database.py --refresh-stats   # Precompute aggregations
 python database.py --optimize        # Defragment database
 ```
 
+`--migrate-tags` is the one-time bootstrap of the tag lookup. Once the table is populated, scans, `--recompute-tags`, `--recompute-tags-vlm` and `tag_existing.py` keep it in step per photo, so filters do not show stale tags; a table that was never populated is never filled implicitly, and tag filters use the `LIKE` fallback until it is.
+
 ### Gallery Indexes and the Count Cache
 
 The gallery's count, its hidden-photo summary and every page read the same visibility columns in their hide clauses (blinks, bursts, duplicates, brackets, panoramas, rejects, junk). Eight covering indexes (`idx_gallery_aggregate`, `idx_gallery_date_desc`, `idx_gallery_date_asc`, `idx_gallery_category`, `idx_gallery_camera`, `idx_star_rating_path`, `idx_gallery_iaa_asc` and `idx_stats_categories`, defined in `db/schema.py`) hold those columns next to the sort column, so these statements are answered from the index instead of by walking the whole `photos` table. On a 130k-photo library this took the default gallery page from about 1.2 s to about 30 ms.
@@ -1330,7 +1334,7 @@ The client's TypeScript types are generated from that schema into `client/src/ap
 | `GET /api/comparison/confidence` | `[Edition]`  Confidence metrics for learned scores |
 | `GET /api/comparison/photo_metrics` | Raw metrics for photos |
 | `GET /api/comparison/category_weights` | `[Edition]`  Category weights/filters |
-| `GET /api/comparison/learned_weights` | `[Edition]`  Suggested weights from comparisons |
+| `GET /api/comparison/learned_weights` | `[Edition]`  Suggested weights from comparisons (`suggest_changes` is the held-out McNemar decision) |
 | `POST /api/comparison/preview_score` | Preview with custom weights |
 | `POST /api/comparison/suggest_filters` | Analyze filter conflicts |
 | `POST /api/comparison/override_category` | `[Edition]` Set a sticky per-photo category override (validated against configured category names; survives the next recompute) |
@@ -1395,10 +1399,10 @@ The client's TypeScript types are generated from that schema into `client/src/ap
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /api/config/update_weights` | Update scoring weights |
+| `POST /api/config/update_weights` | Update scoring weights (also what **Apply** in the Weight Suggestions tab calls; does not re-centre the category bonus) |
 | `GET /api/config/weight_snapshots` | `[Edition]`  List saved weight snapshots |
 | `POST /api/config/save_snapshot` | Save current weights as snapshot |
-| `POST /api/config/restore_weights` | Restore weights from snapshot |
+| `POST /api/config/restore_weights` | Restore weights from snapshot (and the category bonus, when the snapshot recorded one) |
 | `GET /api/config/category_priorities` | `[Edition]` List categories in current priority (evaluation) order |
 | `POST /api/config/category_priorities` | `[Edition]` Reorder category evaluation priority; permutes the existing priority values onto the new order rather than renumbering |
 | `GET /api/config/scoring_contexts` | List configured scoring contexts, each with its resolved effective category order |

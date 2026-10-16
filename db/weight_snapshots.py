@@ -12,7 +12,7 @@ from db.connection import get_connection, DEFAULT_DB_PATH
 _INSERT_SQL = (
     "INSERT INTO weight_config_snapshots "
     "(category, weights, description, accuracy_before, accuracy_after, "
-    "comparisons_used, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "comparisons_used, created_by, category_bonus) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _DELETE_SQL = "DELETE FROM weight_config_snapshots WHERE id = ?"
@@ -20,14 +20,18 @@ _DELETE_SQL = "DELETE FROM weight_config_snapshots WHERE id = ?"
 
 def record_weight_snapshot(category, weights, *, created_by, db=None,
                            description=None, accuracy_before=None,
-                           accuracy_after=None, comparisons_used=None):
+                           accuracy_after=None, comparisons_used=None,
+                           category_bonus=None):
     """Insert a weights snapshot row and return its id.
+
+    ``category_bonus`` is the category's ``modifiers.bonus`` at snapshot time
+    (None = not recorded; a restore then leaves the bonus alone).
 
     ``db`` may be an open sqlite3 connection (the caller owns the commit) or a
     database path / None (a short-lived connection is opened and committed here).
     """
     params = (category, json.dumps(weights), description, accuracy_before,
-              accuracy_after, comparisons_used, created_by)
+              accuracy_after, comparisons_used, created_by, category_bonus)
     if hasattr(db, 'execute'):
         return db.execute(_INSERT_SQL, params).lastrowid
     with get_connection(db or DEFAULT_DB_PATH) as conn:

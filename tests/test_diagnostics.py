@@ -166,6 +166,7 @@ def _make_cuda_torch():
     )
     mock_torch.cuda = types.SimpleNamespace(
         is_available=lambda: True,
+        device_count=lambda: 1,
         get_device_name=lambda idx: "NVIDIA GeForce RTX 3090",
         get_device_properties=lambda idx: types.SimpleNamespace(
             total_memory=24 * 1024**3, major=8, minor=6,
@@ -203,6 +204,7 @@ def _make_blackwell_torch():
     )
     mock_torch.cuda = types.SimpleNamespace(
         is_available=lambda: True,
+        device_count=lambda: 1,
         get_device_name=lambda idx: "NVIDIA GeForce RTX 5070 Ti",
         get_device_properties=lambda idx: types.SimpleNamespace(
             total_memory=16 * 1024**3, major=12, minor=0,
@@ -439,6 +441,7 @@ class TestDetectGpuVramGb:
         mock_torch = _make_mock_torch_module()
         mock_torch.cuda = types.SimpleNamespace(
             is_available=lambda: True,
+            device_count=lambda: 1,
             get_device_properties=lambda idx: types.SimpleNamespace(
                 total_memory=16 * 1024**3,
             ),

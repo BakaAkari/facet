@@ -15,7 +15,14 @@ from processing.scorer import describe_scoring_device
 from utils import device
 
 
-def _torch(*, cuda=False, mps=False):
+def _torch(*, cuda=False, mps=False, cuda_devices=None):
+    """A torch double; ``cuda_devices`` defaults to one device when ``cuda`` is True.
+
+    ``cuda=True, cuda_devices=0`` models a build whose ``is_available()`` says
+    True while ``device_count()`` is 0 (``CUDA_VISIBLE_DEVICES=''``).
+    """
+    if cuda_devices is None:
+        cuda_devices = 1 if cuda else 0
     calls = types.SimpleNamespace(cuda_empty=0, cuda_sync=0, mps_empty=0, mps_sync=0)
 
     def _inc(name):
@@ -24,6 +31,7 @@ def _torch(*, cuda=False, mps=False):
     fake = types.SimpleNamespace(
         cuda=types.SimpleNamespace(
             is_available=lambda: cuda,
+            device_count=lambda: cuda_devices,
             empty_cache=lambda: _inc("cuda_empty"),
             synchronize=lambda: _inc("cuda_sync"),
         ),
@@ -641,3 +649,55 @@ class TestIsOutOfMemoryError:
 
     def test_unrelated_exception_type_is_not_oom(self):
         assert device.is_out_of_memory_error(ValueError("bad value")) is False
+
+
+class TestCudaWithoutDevices:
+    """``is_available()`` True with ``device_count() == 0`` is no CUDA device.
+
+    A Windows torch build answers True under ``CUDA_VISIBLE_DEVICES=''``; the
+    scan then picked ``cuda`` and died with "Invalid device id" on the first
+    ``get_device_properties(0)``.
+    """
+
+    @staticmethod
+    def _fake():
+        fake, _ = _torch(cuda=True, cuda_devices=0)
+
+        def _properties(index):
+            raise AssertionError("get_device_properties must not be reached")
+
+        fake.cuda.get_device_properties = _properties
+        return fake
+
+    def test_cuda_with_zero_devices_is_not_available(self, monkeypatch):
+        fake = self._fake()
+        monkeypatch.setitem(sys.modules, "torch", fake)
+        monkeypatch.delenv("FACET_DEVICE", raising=False)
+        assert device.get_device() == "cpu"
+        assert device.is_device_available("cuda", torch_module=fake) is False
+        assert device.cuda_arch_mismatch(torch_module=fake) is None
+
+    def test_detect_vram_with_zero_devices_returns_zero(self, monkeypatch):
+        fake = self._fake()
+        monkeypatch.setitem(sys.modules, "torch", fake)
+        with mock.patch("models.model_manager._ensure_torch", return_value=fake):
+            assert ModelManager.detect_vram() == 0.0
+
+    def test_forced_cuda_with_zero_devices_is_an_error_not_a_crash(self, monkeypatch):
+        fake = self._fake()
+        monkeypatch.setitem(sys.modules, "torch", fake)
+        monkeypatch.setenv("FACET_DEVICE", "cuda")
+        with pytest.raises(RuntimeError, match="not available"):
+            device.get_device()
+
+    @pytest.mark.parametrize("count", [
+        pytest.param(lambda: (_ for _ in ()).throw(RuntimeError("boom")), id="raises"),
+        pytest.param(None, id="missing"),
+    ])
+    def test_an_unreadable_device_count_means_no_device(self, count):
+        fake, _ = _torch(cuda=True)
+        if count is None:
+            del fake.cuda.device_count
+        else:
+            fake.cuda.device_count = count
+        assert device.is_device_available("cuda", torch_module=fake) is False

@@ -223,7 +223,6 @@ class TechnicalAnalyzer:
                 'highlight_clipped': 0,
                 'channel_clip_shadow_pct': None,
                 'channel_clip_highlight_pct': None,
-                'is_silhouette': 0
             }
 
         if cache is not None:
@@ -261,12 +260,6 @@ class TechnicalAnalyzer:
         highlight_mass = np.sum(hist_normalized[225:])
         highlight_clipped = 1 if highlight_mass > highlight_threshold else 0
 
-        # Silhouette detection (intentional artistic choice, don't penalize)
-        # Silhouette: heavy shadows AND significant highlights (backlit subject)
-        lower_third = np.sum(hist_normalized[:85])
-        upper_third = np.sum(hist_normalized[170:])
-        is_silhouette = 1 if (lower_third > 0.35 and upper_third > 0.25) else 0
-
         # Bimodality detection (harsh contrast indicator)
         # High bimodality = histogram has two peaks (high contrast)
         try:
@@ -282,11 +275,11 @@ class TechnicalAnalyzer:
         spread_bonus = min(4.0, spread / 20.0)  # Reward dynamic range
         bimodality_penalty = max(0, bimodality - 1.0) * 0.6  # Penalize harsh contrast
 
-        # Add clipping penalty to exposure score (unless silhouette)
-        clipping_penalty = 0
-        if not is_silhouette:
-            # Increase clipping penalties significantly
-            clipping_penalty = shadow_mass * 4.0 + highlight_mass * 5.0
+        # Clipping penalty is always part of the scan-time exposure score. Whether a
+        # silhouette is exempt is decided later, from the face-aware is_silhouette flag
+        # (detect_silhouette needs the face boxes, which do not exist yet):
+        # update_all_aggregates re-derives exposure_score from the final stored flag.
+        clipping_penalty = shadow_mass * 4.0 + highlight_mass * 5.0
 
         exposure_score = max(0, min(10.0, 7.0 - luminance_penalty + spread_bonus - bimodality_penalty - clipping_penalty))
 
@@ -300,7 +293,6 @@ class TechnicalAnalyzer:
             'highlight_clipped': highlight_clipped,
             'channel_clip_shadow_pct': channel_clip_shadow,
             'channel_clip_highlight_pct': channel_clip_highlight,
-            'is_silhouette': is_silhouette
         }
 
 

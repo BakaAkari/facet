@@ -111,9 +111,11 @@ class TestBinaryMasks:
         res = check(_rect(H, W, 15, 40, 20, 55), img)
         assert res['subject_bbox'] is not None
 
-    def test_empty_mask_returns_the_neutral_dict(self, img):
+    def test_empty_mask_returns_the_no_subject_dict(self, img):
         res = check(np.zeros((H, W), np.uint8), img)
-        assert res['subject_sharpness'] == 5.0 and res['subject_bbox'] is None
+        assert res['subject_sharpness'] is None and res['subject_bbox'] is None
+        assert res['subject_prominence'] == 0.0
+        assert res['subject_placement'] is None and res['bg_separation'] is None
 
     @pytest.mark.parametrize('n', [49, 50, 51])
     def test_around_min_subject_pixels(self, img, n):

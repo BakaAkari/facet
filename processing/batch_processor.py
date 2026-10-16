@@ -378,8 +378,8 @@ class BatchProcessor:
                 exif_data = batch_exif.get(resolved_path) or self.scorer.get_exif_data(path)
                 photo_override = batch_overrides.get(resolved_path, {})
 
-                # Determine silhouette using shared function
-                is_silhouette = detect_silhouette(histogram_data, tags, face_res.get('face_count', 0))
+                # Determine silhouette using shared function (face-aware, pixel-only)
+                is_silhouette = detect_silhouette(cache.gray, face_res.get('face_details'))
 
                 # Calculate aggregate via the shared builder so the single-pass
                 # batch path feeds calculate_aggregate_logic the same feature space
@@ -447,7 +447,9 @@ class BatchProcessor:
                     'histogram_spread': float(histogram_data['spread']),
                     'mean_luminance': float(histogram_data['mean_luminance']),
                     'histogram_bimodality': float(histogram_data['bimodality']),
-                    'power_point_score': float(comp_data['power_point_score']),
+                    # None (no subject box) is stored as NULL, never as a made-up 5.0
+                    'power_point_score': (None if comp_data['power_point_score'] is None
+                                          else float(comp_data['power_point_score'])),
                     'raw_color_entropy': float(color_data['raw_entropy']),
                     'raw_eye_sharpness': float(face_res.get('raw_eye_sharpness', 0)),
                     'config_version': self.scorer.config.version_hash,

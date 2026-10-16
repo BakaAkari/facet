@@ -73,13 +73,11 @@ class TestCalculateScoringPenalties:
         from processing.scorer import _calculate_scoring_penalties
         metrics = {
             'noise_sigma': 1.0,
-            'histogram_bimodality': 1.0,
             'mean_saturation': 0.5,
             'leading_lines_score': 0.0,
         }
         result = _calculate_scoring_penalties(metrics, config=None)
         assert result['noise_penalty'] == 0
-        assert result['bimodality_penalty'] == 0
         assert result['oversaturation_penalty'] == 0
         assert result['leading_lines'] == 0.0
 
@@ -98,11 +96,15 @@ class TestCalculateScoringPenalties:
         # (50 - 4) * 0.3 = 13.8, capped at 1.5.
         assert result['noise_penalty'] == 1.5
 
-    def test_bimodality_triggered_above_threshold(self):
+    def test_penalties_ignore_histogram_bimodality(self):
+        """The histogram-bimodality penalty is gone: the metric tops out at 2.0, below
+        its old 2.5 threshold, so it never fired and pointed the wrong way."""
         from processing.scorer import _calculate_scoring_penalties
-        metrics = {'histogram_bimodality': 3.0}
-        result = _calculate_scoring_penalties(metrics, config=None)
-        assert result['bimodality_penalty'] == 0.5
+        base = _calculate_scoring_penalties({'noise_sigma': 1.0}, config=None)
+        stray = _calculate_scoring_penalties(
+            {'noise_sigma': 1.0, 'histogram_bimodality': 1.9}, config=None)
+        assert 'bimodality_penalty' not in stray
+        assert stray == base
 
     def test_oversaturation_triggered_above_threshold(self):
         from processing.scorer import _calculate_scoring_penalties
@@ -252,12 +254,12 @@ class TestAggregateLogic:
         noisy, _ = scorer.calculate_aggregate_logic(self._merge(noise_sigma=12.0))
         assert noisy < clean
 
-    def test_bimodality_penalty_reduces_score(self, scorer):
+    def test_histogram_bimodality_does_not_move_the_aggregate(self, scorer):
         flat, _ = scorer.calculate_aggregate_logic(self._merge())
         bimodal, _ = scorer.calculate_aggregate_logic(
             self._merge(histogram_bimodality=5.0)
         )
-        assert bimodal < flat
+        assert bimodal == flat
 
     def test_monochrome_rebases_color_to_neutral(self, scorer):
         """Monochrome photos use 5.0 as the colour score even if measured low.

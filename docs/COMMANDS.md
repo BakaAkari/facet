@@ -20,7 +20,7 @@
 | `python facet.py /path --pass tags` | Run tagging pass only (model depends on VRAM profile) |
 | `python facet.py /path --pass composition` | Run SAMP-Net composition pattern detection only |
 | `python facet.py /path --pass faces` | Run InsightFace face detection only |
-| `python facet.py /path --pass embeddings` | Run CLIP/SigLIP embedding extraction only |
+| `python facet.py /path --pass embeddings` | Run CLIP/SigLIP embedding extraction only (a single `--pass` run writes no tags) |
 | `python facet.py /path --pass saliency` | Run BiRefNet subject saliency detection only |
 | `python facet.py /path --db custom.db` | Use custom database file |
 | `python facet.py /path --config my.json` | Use custom scoring config |
@@ -113,7 +113,7 @@ These commands update specific metrics, derive new data (AI captions, GPS, embed
 
 | Command | Description |
 |---------|-------------|
-| `python facet.py --recompute-average` | Recompute aggregate scores from stored embeddings (re-derivable; no DB snapshot — roll back by restoring a weight snapshot and recomputing) |
+| `python facet.py --recompute-average` | Recompute aggregate scores from stored embeddings (re-derivable; no DB snapshot — roll back by restoring a weight snapshot and recomputing). After upgrading from an older release run `--recompute-silhouette` first, then this command twice: the first pass over a library last aggregated by older code can leave rows that the second pass still changes |
 | `python facet.py --recompute-category portrait` | Recompute scores for a single category only |
 | `python facet.py --tag-untagged` | Tag only photos that have no tags yet, from stored embeddings (no image reads). The same work a scan does at the end; use it to fill gaps without re-tagging what is already labelled |
 | `python facet.py --recompute-tags` | Re-tag all photos using configured model |
@@ -124,7 +124,7 @@ These commands update specific metrics, derive new data (AI captions, GPS, embed
 | `python facet.py --detect-junk` | Flag non-photo junk (screenshots, documents, receipts, memes, slides) in new/unevaluated photos via zero-shot CLIP over stored embeddings; auto-runs at the end of every scan. Clean photos are marked `not_junk` so re-runs never re-scan them; add `--dry-run --verbose` to preview per-photo scores without writing |
 | `python facet.py --recompute-junk` | Re-evaluate `junk_kind` for the whole library (all photos with a stored embedding) |
 | `python facet.py --recompute-saliency` | `[GPU]` Recompute subject saliency metrics (BiRefNet_dynamic) from stored thumbnails — works with the library volume offline. Skips photos that already have `subject_bbox` (resumable); `--force` redoes all. Saliency is enabled on all profiles (legacy runs it on CPU, slower); GPU strongly recommended. A photo whose saliency fails (for example out of memory) is logged as an ERROR and not written: a never-scored row stays NULL and is selected again by the next run, and under `--force` a row that already has saliency keeps its stored values. The batch size is derived from the free VRAM on CUDA. |
-| `python facet.py --recompute-composition-cpu` | Recompute composition, rule-based (CPU, any profile) |
+| `python facet.py --recompute-composition-cpu` | Recompute composition, rule-based (CPU, any profile). A photo whose thumbnail has no subject box gets a NULL `power_point_score` (the legacy neutral 5.0 is rewritten to NULL; a thumbnail that cannot be decoded keeps its value) |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` Recompute composition with SAMP-Net |
 | `python facet.py --recompute-iqa` | `[GPU]` Recompute supplementary IQA metrics (TOPIQ IAA, NR-Face, LIQE) from stored thumbnails. Enabled on all profiles (legacy runs on CPU, slower); GPU strongly recommended. Fills only NULL columns. NR-Face skips photos with no detected face; LIQE skips a photo whose stored thumbnail has a short side under 224 px (counted in the summary, nothing stored); a photo NR-Face declines is remembered in the `iqa_declined` table and not retried until the photo is rescanned (a pyiqa or NR-Face weights upgrade does not clear these records: rescan with `--force`, or run `--refresh-thumbnails`); any other failure (out of memory, unexpected error) stays NULL and is selected again by the next run. A value already stored (including a neutral 5.0 from an earlier version) is never replaced: clear those with `--repair-neutral-iqa` first. See [Supplementary Quality Models](#supplementary-quality-models) |
 | `python facet.py --detect-text` | Extract in-image text (signs, posters, documents) into `ocr_text` via OCR over stored thumbnails, making it searchable from the gallery search box. Skips already-evaluated photos, so re-runs only read new ones. Opt-in: needs `ocr.enabled` in `scoring_config.json` plus `pip install easyocr` — see [Configuration — OCR](CONFIGURATION.md#ocr) |
@@ -150,6 +150,7 @@ These commands update specific metrics, derive new data (AI captions, GPS, embed
 | `python facet.py --score-topiq` | Re-score `topiq_score` with TOPIQ for every photo that has a stored thumbnail (GPU required). There is no NULL filter, so existing values are overwritten; a photo TOPIQ cannot score keeps its stored value |
 | `python facet.py --backfill-focal-35mm` | Backfill 35mm-equivalent focal length from EXIF for photos missing it |
 | `python facet.py --backfill-clipping` | Derive per-channel clipping percentages from stored histograms. Database-only (no image decode) and resumable; photos whose histogram predates the RGB format stay unknown (NULL) |
+| `python facet.py --recompute-silhouette` | Re-derive `is_silhouette` with the face-aware rule (see [SCORING.md](SCORING.md)) from the stored thumbnails and face boxes. Database-only (no source image decode), resumable (commits per batch) and rewrites only that column; honours the global `--dry-run` (reports what would change, writes nothing). The report splits photos by how their stored face boxes relate to the thumbnail (`exact`, `scaled`, `count_mismatch` (an unverified refinement), `other`); a box it cannot place is written 0, as is a photo with no faces. Photos whose `face_count` is NULL, or that have faces but no stored thumbnail, keep their flag and are counted as `skipped_face_count_null` / `skipped_no_thumbnail`. Run `--recompute-average` afterwards so scores and categories follow the new flag |
 | `python facet.py --repair-int-columns` | Repair `photos` INTEGER columns whose stored value is a REAL — SQLite affinity is not a constraint, so an external EXIF writer's fractional ISO is kept as a REAL. Rounds each one in place (a value SQLite cannot hold as an integer — non-finite, or beyond 2^53 — becomes NULL) and leaves everything else alone. Database-only (no image decode). The API rounds unrepaired rows on read, so the gallery works without this; filters and sorts compare the value actually stored, so run it to stop a photo displayed as ISO 63 from being missed by an ISO range |
 | `python facet.py --repair-neutral-iqa` | Clear the neutral 5.0 that versions before 1.20 stored in `aesthetic_iaa`, `face_quality_iqa` and `liqe_score` for photos a model could not score: every value exactly equal to 5.0 in those three columns is set to NULL, in one transaction, and the cached gallery metric ranges are dropped. Prints the count per column. It does not touch `aesthetic`, `topiq_score`, `aesthetic_v25` or `quality_score` (a genuine 5.00 cannot be told from the fake there, and `aesthetic` is the CLIP+MLP column on `legacy`/`8gb`). A genuine score that rounds to exactly 5.00 is cleared too and is refilled from the stored thumbnail by `--recompute-iqa`, so the refilled value can differ slightly. Run `--recompute-iqa` afterwards to refill the columns, then `--recompute-average`; the repair itself moves no aggregate, because a NULL scores neutral. A running viewer keeps serving its in-memory metric ranges for up to an hour after the repair, or until it restarts (only the counts of exact 5.0 values move). Database-only (no image decode); refused with `--dry-run` (exit code 2); in no `--upgrade-db` chain |
 | `python facet.py --compute-recommendations` | Analyze database, show scoring summary |
@@ -185,6 +186,8 @@ A photo a model cannot score (for NR-Face, no face its detector finds; for LIQE,
 
 Requires `transformers` (~3 GB VRAM). On CUDA the batch size is derived from the free VRAM (about 2.4 GiB per image at 1024 px, between 1 and 8 images) and is halved after an out-of-memory error, down to one image. A photo whose saliency still fails is logged as an ERROR and stores no values: it stays NULL if it was never scored (and scores neutral in the aggregate, like photos scanned before saliency existed), under `--recompute-saliency` and `--pass saliency` it keeps its stored values if it already had saliency (a full rescan of it, for example `--force`, stores NULL for it, as for a never-scored photo), and `--recompute-saliency` selects it again. See [Subject Saliency Dimensions](SCORING.md#subject-saliency-dimensions).
 
+A photo with no detectable subject stores NULL for subject sharpness, subject placement and background separation (and, from the composition step, for `power_point_score` when there is no subject box), prominence 0.0 and a NULL `subject_bbox`; earlier versions stored a neutral 5.0. Existing rows keep the 5.0 until `--recompute-saliency` (which selects photos without a `subject_bbox` again) and `--recompute-composition-cpu` rewrite them. A NULL metric still scores neutral in the aggregate; see [SCORING.md](SCORING.md).
+
 ### Tagging Models
 
 The tagging model is selected per VRAM profile:
@@ -197,6 +200,8 @@ The tagging model is selected per VRAM profile:
 | `24gb` | Qwen3.5-4B | Larger multimodal model. |
 
 All taggers map output to the configured tag vocabulary. Use `--recompute-tags` to re-tag with the profile's default model, or `--recompute-tags-vlm` for VLM-based re-tagging.
+
+**When tags are written.** On the CLIP-similarity profiles (`legacy`/`8gb`, and `16gb`/`24gb` when the VLM tagger pass is not scheduled) a multi-pass scan tags during the embeddings pass, so the scan-time category and aggregate already see the tags; the post-scan tag step is only a fallback for photos still untagged. A single `--pass` run (for example `--pass embeddings`) writes no tags, and `--pass tags` on a CLIP profile still stops and points to `--recompute-tags`. Existing rows keep their category until `--recompute-average`.
 
 ### Embedding Models
 
@@ -285,8 +290,8 @@ Read-only: it decodes a random sample straight from disk and prints the mean lum
 | Command | Description |
 |---------|-------------|
 | `python facet.py --comparison-stats` | Show pairwise comparison statistics |
-| `python facet.py --optimize-weights` | Optimize and save weights from comparisons (all sources, reliability-weighted); applied only if held-out k-fold accuracy beats current weights |
-| `python facet.py --optimize-weights --optimize-force` | Apply optimized weights even if the accuracy gate is not met |
+| `python facet.py --optimize-weights` | Optimize and save weights from comparisons (all sources, reliability-weighted); applied only if the photo-grouped held-out gate passes (one-sided McNemar p < 0.05 and a gain of at least 2 pp over the current weights). Applying also re-centres the category's `modifiers.bonus`; see [SCORING.md](SCORING.md) |
+| `python facet.py --optimize-weights --optimize-force` | Apply optimized weights even if the held-out gate is not met (or could not run) |
 | `python facet.py --optimize-weights --optimize-sources vote,culling` | Restrict training data to specific comparison sources |
 | `python facet.py --optimize-weights --optimize-category portrait` | Train only on one category and write its v4 `categories[].weights` block |
 | `python facet.py --auto-tune-categories` | **Superadmin only** (pass `--user` in multi-user mode): report per-category comparison-label readiness for auto-tuning the shared global weights. Stub — reports readiness only; the auto-apply loop is deferred pending labels |
@@ -353,7 +358,7 @@ Only cases 4 and 5 may find nothing. Cases 1 and 2 name a path, so a missing fil
 |---------|-------------|
 | `python tag_existing.py` | Add tags to untagged photos using stored CLIP embeddings |
 | `python tag_existing.py --dry-run` | Preview tags without saving |
-| `python tag_existing.py --threshold 0.25` | Custom similarity threshold (default: 0.22) |
+| `python tag_existing.py --threshold 0.25` | Custom similarity threshold (default: the active profile's `tag_threshold_percent`, 0.08) |
 | `python tag_existing.py --max-tags 3` | Limit tags per photo (default: 5) |
 | `python tag_existing.py --force` | Re-tag all photos |
 | `python tag_existing.py --db custom.db` | Use custom database |
@@ -380,7 +385,7 @@ Checks: Score ranges, face metrics, BLOB corruption, embedding sizes, orphaned f
 |---------|-------------|
 | `python database.py` | Initialize/upgrade schema (also builds the gallery covering indexes, as a scan does at its start; the viewer builds missing ones in the background at start, see [VIEWER.md](VIEWER.md#gallery-indexes-and-the-count-cache)) |
 | `python database.py --info` | Show schema information |
-| `python database.py --migrate-tags` | Populate photo_tags lookup (10-50x faster queries) |
+| `python database.py --migrate-tags` | One-time bootstrap of the photo_tags lookup (10-50x faster queries). Once it is populated, scans, `--recompute-tags`, `--recompute-tags-vlm` and `tag_existing.py` keep it in step per photo; a table that was never populated is never filled implicitly, and readers use the `LIKE` fallback until it is |
 | `python database.py --rebuild-fts` | Rebuild FTS5 full-text search index from captions/tags |
 | `python database.py --populate-vec` | Populate sqlite-vec vector search table from embeddings |
 | `python database.py --refresh-stats` | Refresh statistics cache |

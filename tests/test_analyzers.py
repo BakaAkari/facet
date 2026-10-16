@@ -55,7 +55,7 @@ class TestPlacementData:
     def test_no_bbox_no_image_falls_back_to_center_assumption(self):
         data = CompositionAnalyzer.get_placement_data(None, 1000, 1000)
         assert data["score"] == 7.0
-        assert data["power_point_score"] == 5.0
+        assert data["power_point_score"] is None
         assert data["line_score"] == 5.0
 
     def test_power_point_score_high_at_intersection(self):
@@ -367,7 +367,9 @@ class TestHistogramData:
         assert out['exposure_score'] == 5.0
         assert out['shadow_clipped'] == 0
         assert out['highlight_clipped'] == 0
-        assert out['is_silhouette'] == 0
+        # The flag is face-aware now (utils.detection.detect_silhouette), so the
+        # histogram analyzer no longer reports one.
+        assert 'is_silhouette' not in out
 
     def test_all_black_flags_shadow_clip(self):
         img = np.zeros((50, 50, 3), dtype=np.uint8)
@@ -388,12 +390,20 @@ class TestHistogramData:
         assert out['highlight_clipped'] == 0
         assert out['mean_luminance'] == pytest.approx(0.5, abs=0.02)
 
-    def test_bimodal_silhouette_pattern(self):
-        # Half black, half white — classic silhouette pattern
+    def test_bimodal_histogram_no_longer_sets_a_silhouette_flag_and_keeps_the_clipping_penalty(self):
+        # Half black, half white: the old whole-frame histogram rule called this a
+        # silhouette and skipped the clipping penalty. That rule is gone (it never looked
+        # at a face); the histogram carries no flag and the penalty always applies.
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         img[:, 50:, :] = 255
         out = TechnicalAnalyzer.get_histogram_data(img)
-        assert out['is_silhouette'] == 1
+        assert 'is_silhouette' not in out
+        # 7.0 - luminance_penalty + spread_bonus - bimodality_penalty - clipping_penalty:
+        # mean 0.5 -> 0; spread 127.5 -> min(4, 127.5 / 20) = 4; bimodality is negative
+        # for two spikes -> 0; clipping = 0.5 * 4.0 (shadows) + 0.5 * 5.0 (highlights).
+        without_skip = 7.0 - 0.0 + 4.0 - 0.0 - (0.5 * 4.0 + 0.5 * 5.0)
+        assert out['exposure_score'] == pytest.approx(without_skip)
+        assert out['exposure_score'] < 10.0   # the old skip clamped this frame to 10.0
 
     def test_histogram_bytes_length(self):
         img = np.full((10, 10, 3), 50, dtype=np.uint8)

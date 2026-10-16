@@ -157,6 +157,8 @@ python database.py --migrate-user-preferences --user alice
 
 Bereichsfilter auf Ästhetik IAA, Gesichtsqualität IQA, LIQE und Aesthetic V2.5 treffen nur auf Fotos mit einem Wert zu. Ein Foto, das ein Modell nicht bewerten konnte, wird als NULL gespeichert (früher trug es eine neutrale 5,0) und daher selbst von einem Filter, der bei 0 beginnt, ausgeschlossen; eine aufsteigende Sortierung nach Ästhetik (IAA), Gesichtsqualität (IQA) oder LIQE stellt es in der Galerie und in Alben (auch intelligenten und geteilten) ans Ende. Siehe [Ergänzende IQA-Dimensionen](SCORING.md#ergänzende-iqa-dimensionen).
 
+Bereichsfilter auf Motivschärfe, Motivplatzierung, Hintergrundtrennung und Power-Points treffen ebenso nur auf Fotos mit einem Messwert zu: Ein Foto ohne erkennbares Motiv speichert in diesen Spalten NULL (früher ein neutrales 5.0), sodass es selbst ein Filter ausschließt, der bei 0 beginnt; Detailbereich und Tooltip lassen die Zeile weg. Die Motivprominenz ist für ein solches Foto 0.0. Siehe [SCORING.md](SCORING.md).
+
 ### Kompositionsmuster
 
 Nach von SAMP-Net erkannten Mustern filtern (das Modell liefert genau diese 8, aus
@@ -363,7 +365,7 @@ Hybride Suche, die CLIP/SigLIP-Embedding-Ähnlichkeit (70%) mit FTS5-BM25-Textab
 - Verwendet dasselbe Embedding-Modell wie das aktive VRAM-Profil (SigLIP 2 für 16gb/24gb, CLIP ViT-L-14 für legacy/8gb), oder dasjenige von `models.clip`/`clip_legacy`, das tatsächlich zur gespeicherten Embedding-Dimension passt, falls beide voneinander abweichen (siehe [docs/CONFIGURATION.md](CONFIGURATION.md))
 - `scope=text` beschränkt die Anfrage auf literale FTS5-Treffer im OCR-/Beschreibungstext und überspringt die Embedding-Suche
 - Gesteuert über `viewer.features.show_semantic_search` (Standard: `true`)
-- Die Kosinus-Schwelle verwendet standardmäßig `models.clip.search_threshold_percent` (5%) / `models.clip_legacy.search_threshold_percent` (15%) — pro Backend kalibrierte Werte, getrennt von der Tag-Übereinstimmungsschwelle `similarity_threshold_percent`. Der `search_threshold_default` von `/api/config` initialisiert den 0-50%-Schwellenwertregler der Galerie, der den gesamten Bereich abdeckt: eine Suche kann je Anfrage über den Standardwert hinaus verschärft oder bis auf `0%` wieder gelockert werden; eine Schwelle von exakt `0%` weist weiterhin eine negative Kosinusähnlichkeit zurück — das ist kein „kein Filter". Der Standardwert von 5% für SigLIP bevorzugt bewusst Recall gegenüber Präzision — siehe `clip.search_threshold_percent` in [docs/CONFIGURATION.md](CONFIGURATION.md) für den Kalibrierungs-Kompromiss
+- Die Kosinus-Schwelle verwendet standardmäßig `models.clip.search_threshold_percent` (5%) / `models.clip_legacy.search_threshold_percent` (15%) — pro Backend kalibrierte Werte, getrennt von der Tag-Übereinstimmungsschwelle `tag_threshold_percent`. Der `search_threshold_default` von `/api/config` initialisiert den 0-50%-Schwellenwertregler der Galerie, der den gesamten Bereich abdeckt: eine Suche kann je Anfrage über den Standardwert hinaus verschärft oder bis auf `0%` wieder gelockert werden; eine Schwelle von exakt `0%` weist weiterhin eine negative Kosinusähnlichkeit zurück — das ist kein „kein Filter". Der Standardwert von 5% für SigLIP bevorzugt bewusst Recall gegenüber Präzision — siehe `clip.search_threshold_percent` in [docs/CONFIGURATION.md](CONFIGURATION.md) für den Kalibrierungs-Kompromiss
 - Jedes Ergebnis liefert zwei Ähnlichkeitsfelder: `similarity` ist der für die Rangfolge verwendete kombinierte Wert aus Embedding (70%) + FTS (30%); `embedding_similarity` ist die rohe Kosinusähnlichkeit, die tatsächlich gegen die obige Schwelle geprüft wurde, und ist nur vorhanden, wenn für dieses Foto ein Embedding-Score berechnet wurde (fehlt — nie `null` — bei einem reinen FTS-Treffer oder `scope=text`)
 
 ## Alben
@@ -721,7 +723,7 @@ Fotopaare nebeneinander. Wählen Sie einen Gewinner, markieren Sie ein Unentschi
 
 ### Tab „Gewichtsvorschläge"
 
-Zeigt die aus Vergleichen gelernten Gewichte gegenüber den aktuellen Gewichten nebeneinander an, mit Modellgenauigkeit vorher/nachher. Die aktuellen Top-10-Fotos und die nach der Neuberechnung vorhergesagten Top 10 werden in benachbarten Spalten als Vorschau gezeigt. **Anwenden** schreibt die vorgeschlagenen Gewichte; **Neu berechnen** bewertet die Kategorie neu, um sie anzuwenden (beides erfordert den Bearbeitungsmodus).
+Zeigt die aus Vergleichen gelernten Gewichte gegenüber den aktuellen Gewichten nebeneinander an, mit Modellgenauigkeit vorher/nachher. Die aktuellen Top-10-Fotos und die nach der Neuberechnung vorhergesagten Top 10 werden in benachbarten Spalten als Vorschau gezeigt. **Anwenden** schreibt die vorgeschlagenen Gewichte; **Neu berechnen** bewertet die Kategorie neu, um sie anzuwenden (beides erfordert den Bearbeitungsmodus). **Anwenden** wird nur angeboten, wenn der Server `suggest_changes` meldet, also wenn das fotogruppierte Held-out-McNemar-Kriterium erfüllt wurde (dasselbe wie bei `--optimize-weights`); sonst werden die vorgeschlagenen Gewichte nur zur Information angezeigt. Anders als `--optimize-weights` schreibt **Anwenden** über dieselbe Route wie eine manuelle Bearbeitung im Tab „Gewichte“ (`POST /api/config/update_weights`) und zentriert den Bonus der Kategorie nicht neu, sodass sich der mittlere Wert der Kategorie verschieben kann.
 
 ### Tab „Gewichte"
 
@@ -729,7 +731,7 @@ Manueller Gewichtseditor: ein Regler pro Metrik für die ausgewählte Kategorie 
 
 ### Tab „Snapshots"
 
-Speichern Sie die aktuellen Gewichte als benannten Snapshot und stellen Sie jeden früheren Snapshot wieder her.
+Speichern Sie die aktuellen Gewichte als benannten Snapshot und stellen Sie jeden früheren Snapshot wieder her. Ein Snapshot zeichnet auch den Bonus der Kategorie (`modifiers.bonus`) auf, und beim Wiederherstellen kommt der Bonus mit den Gewichten zurück; Snapshots, die vor dieser Änderung, von `calibrate.py` oder für `others` aufgezeichnet wurden, enthalten keinen Bonus und lassen ihn unberührt.
 
 ### Kategoriepriorität & Bewertungskontexte
 
@@ -1038,6 +1040,8 @@ python database.py --refresh-stats   # Aggregationen vorberechnen
 python database.py --optimize        # Datenbank defragmentieren
 ```
 
+`--migrate-tags` ist der einmalige Aufbau der Tag-Lookup-Tabelle. Ist sie gefüllt, halten Scans, `--recompute-tags`, `--recompute-tags-vlm` und `tag_existing.py` sie pro Foto aktuell, sodass Filter keine veralteten Tags zeigen; eine nie gefüllte Tabelle wird nie implizit gefüllt, und Tag-Filter nutzen bis dahin den `LIKE`-Fallback.
+
 ### Galerie-Indizes und Zähler-Cache
 
 Die Anzahl der Galerie, ihre Zusammenfassung der ausgeblendeten Fotos und jede Seite lesen in ihren Ausblend-Klauseln dieselben Sichtbarkeitsspalten (Blinzler, Serienbilder, Duplikate, Belichtungsreihen, Panoramen, abgelehnte Fotos, Junk). Acht abdeckende Indizes (`idx_gallery_aggregate`, `idx_gallery_date_desc`, `idx_gallery_date_asc`, `idx_gallery_category`, `idx_gallery_camera`, `idx_star_rating_path`, `idx_gallery_iaa_asc` und `idx_stats_categories`, definiert in `db/schema.py`) enthalten diese Spalten neben der Sortierspalte, sodass diese Abfragen aus dem Index beantwortet werden, statt die gesamte Tabelle `photos` zu durchlaufen. Auf einer Bibliothek mit 130k Fotos sank die Standard-Galerieseite damit von etwa 1,2 s auf etwa 30 ms.
@@ -1256,7 +1260,7 @@ Die TypeScript-Typen des Clients werden mit `cd client && npm run gen:api` aus d
 | `GET /api/comparison/confidence` | `[Edition]` Konfidenzmetriken für gelernte Wertungen |
 | `GET /api/comparison/photo_metrics` | Rohe Metriken für Fotos |
 | `GET /api/comparison/category_weights` | `[Edition]` Kategoriegewichte/-filter |
-| `GET /api/comparison/learned_weights` | `[Edition]` Vorgeschlagene Gewichte aus Vergleichen |
+| `GET /api/comparison/learned_weights` | `[Edition]` Vorgeschlagene Gewichte aus Vergleichen (`suggest_changes` ist die Held-out-McNemar-Entscheidung) |
 | `POST /api/comparison/preview_score` | Vorschau mit benutzerdefinierten Gewichten |
 | `POST /api/comparison/suggest_filters` | Filterkonflikte analysieren |
 | `POST /api/comparison/override_category` | `[Edition]` Dauerhafte Kategorieüberschreibung pro Foto setzen (validiert gegen die konfigurierten Kategorienamen; übersteht die nächste Neuberechnung) |
@@ -1321,10 +1325,10 @@ Die TypeScript-Typen des Clients werden mit `cd client && npm run gen:api` aus d
 
 | Endpunkt | Beschreibung |
 |----------|-------------|
-| `POST /api/config/update_weights` | Bewertungsgewichte aktualisieren |
+| `POST /api/config/update_weights` | Bewertungsgewichte aktualisieren (auch das, was **Anwenden** im Tab Gewichtsvorschläge aufruft; zentriert den Kategorie-Bonus nicht neu) |
 | `GET /api/config/weight_snapshots` | `[Edition]` Gespeicherte Gewichts-Snapshots auflisten |
 | `POST /api/config/save_snapshot` | Aktuelle Gewichte als Snapshot speichern |
-| `POST /api/config/restore_weights` | Gewichte aus einem Snapshot wiederherstellen |
+| `POST /api/config/restore_weights` | Gewichte aus einem Snapshot wiederherstellen (und den Kategorie-Bonus, sofern der Snapshot einen aufgezeichnet hat) |
 | `GET /api/config/category_priorities` | `[Edition]` Kategorien in aktueller Prioritäts- (Auswertungs-)Reihenfolge auflisten |
 | `POST /api/config/category_priorities` | `[Edition]` Auswertungspriorität der Kategorien neu ordnen; permutiert die vorhandenen Prioritätswerte auf die neue Reihenfolge, statt sie neu durchzunummerieren |
 | `GET /api/config/scoring_contexts` | Konfigurierte Bewertungskontexte auflisten, jeweils mit der aufgelösten effektiven Kategoriereihenfolge |

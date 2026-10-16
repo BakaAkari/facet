@@ -131,7 +131,7 @@ class CompositionAnalyzer:
             center_bonus = 7.0  # Assume centered subject = decent composition
             return {
                 'score': center_bonus,
-                'power_point_score': 5.0,  # Neutral - we don't know where subject is
+                'power_point_score': None,  # No subject box: there is no power-point distance to score
                 'line_score': 5.0,
                 'center_score': center_bonus
             }

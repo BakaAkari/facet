@@ -469,6 +469,8 @@ FACET_DEVICE=mps python facet.py /path/to/photos --pass embeddings --force
 （不可用时明确报错）。InsightFace 仍留在处理器上，因为它是 ONNX Runtime 模型，
 不是 PyTorch 模型。
 
+只有当 PyTorch 报告至少一个 CUDA 设备（`device_count() > 0`）时才算数：设置 `CUDA_VISIBLE_DEVICES=''` 时，自动选择是 CPU，而 `FACET_DEVICE=cuda` 会以与不可用的 `mps` 相同的 “requested, but that device is not available” 错误中止。
+
 Metal 没有专用显存，所以 `vram_profile: "auto"` 是按统一内存总量来选定的：
 
 | 统一内存总量 | `auto` 选定的配置档 |

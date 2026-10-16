@@ -887,10 +887,63 @@ class ChunkedMultiPassProcessor:
                 from models.aesthetic_head import score_aesthetic
                 scores = score_aesthetic(self.scorer.aesthetic_head, features_normalized)
 
+        tagger = self._scan_clip_tagger(model_dict, device)
+        if tagger is not None:
+            from utils import get_tag_params, tags_to_string
+            threshold, max_tags = get_tag_params(self.scorer.config)
+
         for i, path in enumerate(paths):
-            results[path]['clip_embedding'] = embeddings[i].astype(np.float32).tobytes()
+            embedding_bytes = embeddings[i].astype(np.float32).tobytes()
+            results[path]['clip_embedding'] = embedding_bytes
             if hasattr(self.scorer, 'aesthetic_head') and self.scorer.aesthetic_head is not None:
                 results[path]['aesthetic'] = float(scores[i])
+            if tagger is not None:
+                # Byte-for-byte what tag_existing.tag_untagged_photos would store
+                # post-scan, but now before category and aggregate read `tags`.
+                results[path]['tags'] = tags_to_string(
+                    tagger.get_tags_from_embedding(embedding_bytes, threshold, max_tags))
+
+    def _scan_clip_tagger(self, model_dict: Dict, device):
+        """The CLIP/SigLIP tagger for this scan's embeddings, or None when it must not tag.
+
+        A CLIP-similarity profile (and a VLM profile whose tagger is not
+        scheduled) used to leave `tags` empty until the post-scan step, so
+        category and aggregate were computed without them. Tagging here, while
+        the embedding model is loaded, puts the tags before every consumer.
+
+        None when a restricted single pass runs (its save writes only the pass's
+        own columns), when tagging is disabled, or when a VLM tagger pass is
+        scheduled (it owns `tags`). Built once per processor from the loaded
+        model, whose text tower therefore always matches the image tower; the
+        model reference is dropped right after the vocabulary is encoded so the
+        cached tagger never pins it across the between-pass unload.
+        """
+        if self.restricted:
+            return None
+        if not self.scorer.config.get_tagging_settings().get('enabled', True):
+            return None
+        if any(model in VLM_TAGGER_KEYS for group in (self.pass_groups or []) for model in group):
+            return None
+        tagger = getattr(self, '_clip_tagger', None)
+        if tagger is None:
+            from models.tagger import CLIPTagger
+            try:
+                clip_config = self.model_manager.get_clip_config()
+                tagger = CLIPTagger(
+                    model_dict['model'], device, config=self.scorer.config,
+                    model_name=clip_config.get('model_name', model_dict.get('model_name')),
+                    backend=model_dict.get('backend', 'open_clip'),
+                )
+            except Exception as e:
+                # Never fail the embedding pass over tags: the post-scan tag
+                # step still tags whatever is left untagged.
+                logger.warning("Scan-time tagging disabled, tags come from the post-scan "
+                               "step instead: %s", e)
+                tagger = False
+            else:
+                tagger.model = None  # keep only the text matrix
+            self._clip_tagger = tagger
+        return tagger or None
 
     def _pass_samp_net(self, scorer: Any, images: Dict, results: Dict):
         """SAMP-Net pass: composition patterns and scores."""
@@ -1178,9 +1231,13 @@ class ChunkedMultiPassProcessor:
                 if 'leading_lines_score' not in data:
                     data['leading_lines_score'] = img_data['composition']['leading_lines_score']
 
-            # Detect silhouette
+            # Detect silhouette: the largest face is a dark patch against a brighter
+            # surround. face_details is None after a face-pass failure and absent when no
+            # face pass ran: no evidence, so 0. The gray plane is not retained across the
+            # passes, so it is rebuilt only for a photo that has a face to judge.
+            face_details = data.get('face_details')
             is_silhouette = detect_silhouette(
-                histogram, data.get('tags', ''), data.get('face_count') or 0
+                self._rebuild_gray(img_data['pil']) if face_details else None, face_details
             )
             data['is_silhouette'] = is_silhouette
 
@@ -1340,7 +1397,9 @@ class ChunkedMultiPassProcessor:
                 'comp_score': round(data.get('comp_score', 5.0), 2),
                 'composition_pattern': data.get('composition_pattern'),
                 'composition_explanation': data.get('composition_explanation'),
-                'power_point_score': float(data.get('power_point_score', 5.0)),
+                # An explicit None (no subject box) is stored as NULL, never as a made-up 5.0
+                'power_point_score': (None if data.get('power_point_score', 5.0) is None
+                                      else float(data.get('power_point_score', 5.0))),
                 'leading_lines_score': float(data.get('leading_lines_score', 0)),
 
                 # Supplementary PyIQA scores

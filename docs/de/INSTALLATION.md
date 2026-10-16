@@ -505,6 +505,8 @@ Setzen Sie `FACET_DEVICE=cpu`, um die Beschleunigung zu deaktivieren, oder
 verfügbar ist). InsightFace bleibt auf dem Prozessor, weil es ein
 ONNX-Runtime-Modell ist und kein PyTorch-Modell.
 
+Ein CUDA-Gerät zählt nur, wenn PyTorch mindestens eines meldet (`device_count() > 0`): Mit `CUDA_VISIBLE_DEVICES=''` fällt die automatische Wahl auf den Prozessor, und `FACET_DEVICE=cuda` bricht mit demselben Fehler „requested, but that device is not available“ ab wie ein nicht verfügbares `mps`.
+
 Metal hat keinen dedizierten Grafikspeicher, daher wird `vram_profile: "auto"` anhand
 des gesamten Unified Memory bemessen:
 

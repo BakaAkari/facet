@@ -452,9 +452,11 @@ def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=
         _warn("Config", f"{config_path} was named explicitly but does not exist")
     else:
         _ok("Config", f"no override at {config_path} — running on the shipped defaults")
+    notices_config = None
     try:
         from config.scoring_config import ScoringConfig
-        schema_errors = ScoringConfig(config_path, validate=False).validate_schema()
+        notices_config = ScoringConfig(config_path, validate=False)
+        schema_errors = notices_config.validate_schema()
         if not schema_errors:
             _ok("Config schema", "valid")
         else:
@@ -500,6 +502,29 @@ def run_doctor(config_path=None, db_path=None, simulate_gpu=None, simulate_vram=
         check_fast_paths(db_path)
     else:
         _info("Database", f"{db_path} not found (will be created on first scan)")
+
+    if notices_config is not None:
+        _report_config_notices(notices_config)
+
+
+def _report_config_notices(config):
+    """Print the keys an operator file carries that are ignored or have moved.
+
+    Each notice is something that changes nothing on its own but means the
+    operator's intent is not being applied (an obsolete key stays inert by
+    design: there are no aliases).
+    """
+    _section("Config notices")
+    try:
+        # The astro-guard notice is doctor-only: it is the operator's choice to keep it off
+        notices = [*config.config_notices(), *config.validate_astro_guard()]
+    except Exception as e:
+        _warn("Config notices", f"could not evaluate: {e}")
+        return
+    if not notices:
+        _ok("Config notices", "none")
+    for message in notices:
+        _warn("Config notice", message)
 
 
 def check_fast_paths(db_path):
