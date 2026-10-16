@@ -4,6 +4,8 @@ All notable changes to Facet are documented in this file.
 
 ## [Unreleased]
 
+## [1.21.0] "Rafale" — 2026-10-16
+
 **Upgrading from 1.20.0.** This release changes stored scores and categories (the BREAKING silhouette entry under Changed, and the `quality_percent` and `astro` entries under Fixed), and adds indexes that take minutes to build on a large library. Do these steps in this order:
 
 1. On a large library, run `python database.py` once before you start the viewer. It builds the new indexes at its own start. If the viewer starts first, it builds them in the background and refuses saves with 503 `library_busy` while each index is being written. On a 129,737-photo copy, one viewer start built the 9 missing indexes in 75.1 s: 45.8 s for the first, which read the library from disk, then about 4 s each.
