@@ -505,7 +505,7 @@ Setzen Sie `FACET_DEVICE=cpu`, um die Beschleunigung zu deaktivieren, oder
 verfügbar ist). InsightFace bleibt auf dem Prozessor, weil es ein
 ONNX-Runtime-Modell ist und kein PyTorch-Modell.
 
-Ein CUDA-Gerät zählt nur, wenn PyTorch mindestens eines meldet (`device_count() > 0`): Mit `CUDA_VISIBLE_DEVICES=''` fällt die automatische Wahl auf den Prozessor, und `FACET_DEVICE=cuda` bricht mit demselben Fehler „requested, but that device is not available“ ab wie ein nicht verfügbares `mps`.
+Eine CUDA-GPU zählt nur, wenn PyTorch mindestens ein Gerät sehen kann. Mit `CUDA_VISIBLE_DEVICES=''` fällt die automatische Wahl auf den Prozessor, und `FACET_DEVICE=cuda` bricht mit demselben Fehler „requested, but that device is not available“ ab wie ein nicht verfügbares `mps`.
 
 Metal hat keinen dedizierten Grafikspeicher, daher wird `vram_profile: "auto"` anhand
 des gesamten Unified Memory bemessen:
@@ -598,7 +598,7 @@ lokalen Modell-Caches und der Hugging-Face-API.
 | SigLIP 2 NaFlex SO400M (Embeddings) | 4,581 GB | `16gb`/`24gb` |
 | Qwen3.5-2B (VLM-Tagging) | 4,571 GB | `16gb` |
 | Qwen3.5-4B (VLM-Tagging) | 9,343 GB | `24gb` |
-| Qwen2-VL-2B (Komposition) | 4,430 GB | standardmäßig kein Profil — nur wenn Sie manuell `composition_model: "qwen2-vl-2b"` **und** `processing.mode: "single-pass"` setzen (außerhalb des kommerziellen Modus funktioniert die Kombination nur bei `legacy`/`8gb`: bei `16gb`/`24gb` fällt Single-Pass auf Multi-Pass zurück, das keinen Qwen2-VL-Pass hat) |
+| Qwen2-VL-2B (Komposition) | 4,430 GB | standardmäßig kein Profil — nur wenn Sie manuell `composition_model: "qwen2-vl-2b"` **und** `processing.mode: "single-pass"` setzen. Außerhalb des kommerziellen Modus funktioniert das nur bei `legacy`/`8gb`: Bei `16gb`/`24gb` fällt Single-Pass auf Multi-Pass zurück, das keinen Qwen2-VL-Pass hat |
 | InsightFace buffalo_l (Gesichter) | 289 MB Download / 630 MB auf der Platte (das Zip bleibt neben den extrahierten `.onnx`-Dateien erhalten) | alle |
 | SAMP-Net-Gewichte (Komposition) | 183 MB | alle |
 | U2-Net-P (Salienz-Untermodell von SAMP-Net) | 4,7 MB | dieselben Profile wie SAMP-Net |
@@ -613,7 +613,7 @@ lokalen Modell-Caches und der Hugging-Face-API.
 Summen pro Profil (Download): `legacy` 4,69 GB · `8gb` 6,93 GB · `16gb` 14,55 GB ·
 `24gb` 19,32 GB · `24gb` mit `composition_model: "qwen2-vl-2b"` und
 `processing.mode: "single-pass"` 23,56 GB (die manuelle Überschreibung ersetzt
-SAMP-Net/U2-Net-P, statt sie zu ergänzen; außerhalb des kommerziellen Modus fällt Single-Pass bei `24gb` auf Multi-Pass zurück, wo Qwen2-VL keinen Pass hat, daher ist diese Summe dort nicht mehr erreichbar).
+SAMP-Net/U2-Net-P, statt sie zu ergänzen). Außerhalb des kommerziellen Modus gilt diese letzte Summe nicht mehr: Bei `24gb` fällt Single-Pass auf Multi-Pass zurück, das Qwen2-VL nicht verwendet.
 
 Zum Vergleich: Das Docker-Image selbst (vor jedem Modell-Download) wiegt bei
 `latest` 3,34 GB entpackt, bei `latest-cuda` 13,1 GB und bei `latest-cuda-legacy`

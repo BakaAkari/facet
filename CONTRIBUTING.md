@@ -99,7 +99,7 @@ pre-commit install
 ```
 
 CI also runs `mypy api/` as a blocking ratchet: the build fails when the error
-count rises above `mypy-baseline.txt` (now 0). Run it locally with
+count rises above the baseline in `mypy-baseline.txt` (currently 0). Run it locally with
 `python scripts/check_mypy_ratchet.py` from a venv holding only mypy.
 
 A `commit-msg` guard (`.githooks/commit-msg`) rejects commit messages that
