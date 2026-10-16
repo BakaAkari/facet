@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("cv2")
+pytest.importorskip("torch")
 
 from analyzers import CompositionAnalyzer  # noqa: E402
 from models.saliency_scorer import SaliencyScorer  # noqa: E402

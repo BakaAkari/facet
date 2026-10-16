@@ -201,6 +201,7 @@ def _stub_scorer():
 
 
 def test_below_min_subject_pixels_scores_null_with_zero_prominence():
+    pytest.importorskip("torch")
     import numpy as np
     from models.saliency_scorer import SaliencyScorer
     scorer = SaliencyScorer.__new__(SaliencyScorer)
