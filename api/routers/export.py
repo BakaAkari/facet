@@ -1061,6 +1061,10 @@ def api_cull_apply(
     action_paths = matching + sibling_matching if body.include_sequence_siblings else matching
     items, skipped = _resolve_cull_files(action_paths, body.include_companions)
     files = [f for _, fs in items for f in fs]
+    if want_rejected:
+        from utils.capture_sequences import require_unprotected_files
+        with get_db() as conn:
+            require_unprotected_files(conn, action_paths + files)
 
     def respond(dry_run, errors, **verb):
         return {
@@ -1206,6 +1210,8 @@ def api_photo_delete(
 
         items, skipped = _resolve_cull_files(action_paths, body.include_companions)
         files = [f for _, fs in items for f in fs]
+        from utils.capture_sequences import require_unprotected_files
+        require_unprotected_files(conn, action_paths + files)
 
         if body.dry_run:
             return PhotoDeleteResponse(

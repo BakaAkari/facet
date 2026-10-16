@@ -2552,7 +2552,9 @@ class Facet:
                 capture_output=True, text=True, check=True, timeout=30
             )
             data = json.loads(result.stdout)[0]
-            exif_data['date_taken'] = data.get('DateTimeOriginal') or data.get('CreateDate')
+            from utils.capture_sequences import pixel_shift_evidence
+            exif_data.update(pixel_shift_evidence(data))
+            exif_data['date_taken'] = data.get('SubSecDateTimeOriginal') or data.get('DateTimeOriginal') or data.get('CreateDate')
             exif_data['camera_model'] = data.get('Model')
             exif_data['lens_model'] = data.get('LensModel') or data.get('LensID')
             exif_data['iso'] = data.get('ISO')
@@ -2726,6 +2728,8 @@ class Facet:
                         :gps_latitude, :gps_longitude, datetime('now'), {DISPLAY_RENDER_VERSION}
                     )
                 '''), res)
+                from utils.capture_sequences import persist_capture_metadata
+                persist_capture_metadata(conn, res)
 
             # Refresh faces for every photo we just wrote (the UPSERT no longer
             # cascade-deletes them) — this also clears stale faces on a photo
@@ -2809,6 +2813,8 @@ class Facet:
         with get_connection(self.db_path, row_factory=False) as conn:
             for res, _, computed_columns in batch:
                 conn.execute(_photos_partial_upsert(computed_columns), res)
+                from utils.capture_sequences import persist_capture_metadata
+                persist_capture_metadata(conn, res)
 
             if refresh_faces:
                 replace_photo_faces(
@@ -2927,8 +2933,12 @@ def process_bursts(db_path, config_path=None):
     from utils.date_utils import parse_date
     from utils.selection import pick_lead
 
+    from utils.capture_sequences import detect_capture_sequences, protected_paths
+    detect_capture_sequences(db_path)
     with get_connection(db_path) as conn:
         rows = conn.execute(_BURST_ROWS_SQL).fetchall()
+        protected = protected_paths(conn, [r['path'] for r in rows])
+        rows = [r for r in rows if r['path'] not in protected]
 
         # Photos without phash are not part of burst detection.
         photos = [dict(r) for r in rows if r['phash'] is not None]

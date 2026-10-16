@@ -13,6 +13,10 @@
 // A call is rewritten to a live namespace access and runs at construction, after init.
 
 export const I18N = {
+  capture_sequences: {
+    pixel_shift: "capture_sequences.pixel_shift",
+    timelapse: "capture_sequences.timelapse",
+  },
   ui: {
     title: "ui.title",
     filters: {

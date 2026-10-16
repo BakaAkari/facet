@@ -542,6 +542,8 @@ def api_toggle_rejected(
                 current = row['is_rejected'] if row else 0
                 new_value = 0 if current else 1
                 if new_value == 1:
+                    from utils.capture_sequences import require_unprotected_files
+                    require_unprotected_files(conn, [body.photo_path])
                     conn.execute("""
                         INSERT INTO user_preferences (user_id, photo_path, is_rejected, star_rating, is_favorite)
                         VALUES (?, ?, 1, 0, 0)
@@ -557,6 +559,8 @@ def api_toggle_rejected(
                 row = conn.execute("SELECT is_rejected FROM photos WHERE path = ?", (body.photo_path,)).fetchone()
                 new_value = 0 if row['is_rejected'] else 1
                 if new_value == 1:
+                    from utils.capture_sequences import require_unprotected_files
+                    require_unprotected_files(conn, [body.photo_path])
                     conn.execute("UPDATE photos SET is_rejected = 1, star_rating = 0, is_favorite = 0 WHERE path = ?", (body.photo_path,))
                 else:
                     conn.execute("UPDATE photos SET is_rejected = 0 WHERE path = ?", (body.photo_path,))

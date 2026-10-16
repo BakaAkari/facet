@@ -347,8 +347,12 @@ def _load_candidates(conn, settings):
     the vast majority of the library.
     """
     rows = conn.execute(_LOAD_CANDIDATES_SQL).fetchall()
+    from utils.capture_sequences import protected_paths
+    protected = protected_paths(conn, [r['path'] for r in rows])
     photos = []
     for row in rows:
+        if row['path'] in protected:
+            continue
         captured_at = parse_date(row['date_taken'])
         if captured_at is None:
             continue

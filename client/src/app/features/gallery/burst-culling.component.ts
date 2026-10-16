@@ -150,11 +150,11 @@ function readStoredFaceSize(): number {
     : FACE_SIZE_DEFAULT_PX;
 }
 const GROUP_BY_VALUES = ['all', 'burst', 'similar', 'scene', 'bracket',
-                         'panorama', 'hdr_panorama'] as const;
+                         'panorama', 'hdr_panorama', 'pixel_shift', 'timelapse'] as const;
 type GroupBy = typeof GROUP_BY_VALUES[number];
 // Sets whose frames were shot to be combined: kept whole by default, and
 // never a source of comparison pairs.
-const KEEP_WHOLE_KINDS: readonly string[] = ['bracket', 'panorama', 'hdr_panorama'];
+const KEEP_WHOLE_KINDS: readonly string[] = ['bracket', 'panorama', 'hdr_panorama', 'pixel_shift', 'timelapse'];
 const SORT_VALUES = ['easiest', 'redundant', 'best', 'recent', 'needs_comparisons', 'chronological'];
 
 /** Thumbnail width the darkroom displays. Shared with the peaking pipeline so
@@ -383,6 +383,14 @@ class RunGeneration {
               <button mat-menu-item (click)="onGroupByChange('hdr_panorama')">
                 <mat-icon>{{ 'hdr_panorama' | cullGroupIcon }}</mat-icon>
                 <span [class.font-bold]="groupBy() === 'hdr_panorama'">{{ I18N.culling.group_by.hdr_panoramas | translate }}</span>
+              </button>
+              <button mat-menu-item (click)="onGroupByChange('pixel_shift')">
+                <mat-icon>burst_mode</mat-icon>
+                <span>{{ 'capture_sequences.pixel_shift' | translate }}</span>
+              </button>
+              <button mat-menu-item (click)="onGroupByChange('timelapse')">
+                <mat-icon>timelapse</mat-icon>
+                <span>{{ 'capture_sequences.timelapse' | translate }}</span>
               </button>
             </mat-menu>
             @if (groupBy() !== 'scene') {

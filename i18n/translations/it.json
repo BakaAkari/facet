@@ -1,4 +1,5 @@
 {
+  "capture_sequences": {"pixel_shift": "Pixel Shift · protetto", "timelapse": "Timelapse · protetto"},
   "ui": {
     "title": "Facet",
     "filters": {

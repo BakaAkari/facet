@@ -50,7 +50,9 @@ logger = logging.getLogger(__name__)
 
 # Kinds whose frames were shot to be combined, so the set is kept whole and no
 # comparison pair is ever recorded from choosing within it.
-_KEEP_WHOLE_KINDS = (BRACKET_KIND, PANORAMA, HDR_PANORAMA)
+from utils.capture_sequences import PROTECTED_KINDS  # noqa: E402
+
+_KEEP_WHOLE_KINDS = (BRACKET_KIND, PANORAMA, HDR_PANORAMA, *PROTECTED_KINDS)
 
 
 def _rejected_clause(user_id):
@@ -106,7 +108,7 @@ class SimilarSelectionBody(BaseModel):
 
 class CullingConfirmBody(BaseModel):
     group_id: int
-    type: Literal['burst', 'similar', 'scene', 'bracket', 'panorama', 'hdr_panorama']
+    type: Literal['burst', 'similar', 'scene', 'bracket', 'panorama', 'hdr_panorama', 'pixel_shift', 'timelapse']
     # Non-empty for every feed type: `select_burst_photos` and
     # `select_similar_photos` operate on the whole named group, so an empty
     # `paths` here would leave an empty `keep_paths` rejecting everything in
@@ -1124,7 +1126,7 @@ def _fetch_unreviewed_similar_groups(conn, threshold, vis_sql, vis_params, seed,
 
 _CULLING_SORTS = ('easiest', 'redundant', 'best', 'recent', 'needs_comparisons', 'chronological')
 _CULLING_GROUP_BY = ('all', 'burst', 'similar', 'scene', 'bracket',
-                     'panorama', 'hdr_panorama')
+                     'panorama', 'hdr_panorama', *PROTECTED_KINDS)
 
 # Natural direction of each sort mode. Every mode ranks largest-first except
 # `chronological`, which walks the shoot forward in time -- the order a
@@ -1958,7 +1960,7 @@ def _fetch_panorama_groups(conn, user_id, kind, vis_sql, vis_params, album_id=No
     groups = []
     for seq_id, members in groupby(rows, key=lambda r: r['sequence_group_id']):
         photos = [dict(m) for m in members]
-        if len(photos) < 2:
+        if len(photos) < 2 and kind not in PROTECTED_KINDS:
             continue
         for photo in photos:
             photo['burst_score'] = round(_compute_burst_score(photo), 2)
@@ -2710,6 +2712,8 @@ def override_sequence_group(
 
     with get_db() as conn:
         visible = _visible_paths_or_404(conn, paths, user_id)
+        from utils.capture_sequences import require_unprotected_files
+        require_unprotected_files(conn, visible)
         # Reuse the key already on these frames when there is one. Minting a
         # fresh `min(paths)` per call let two overlapping corrections land two
         # kinds under a single key, and the set was then labelled by whichever

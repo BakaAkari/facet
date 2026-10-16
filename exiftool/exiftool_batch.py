@@ -269,8 +269,11 @@ def parse_exif_data(raw_data):
         number = _safe_numeric(val)
         return None if number is None else storable_int(number)
 
+    from utils.capture_sequences import pixel_shift_evidence
+
     return {
-        'date_taken': raw_data.get('DateTimeOriginal') or raw_data.get('CreateDate'),
+        **pixel_shift_evidence(raw_data),
+        'date_taken': raw_data.get('SubSecDateTimeOriginal') or raw_data.get('DateTimeOriginal') or raw_data.get('CreateDate'),
         'camera_model': raw_data.get('Model'),
         'lens_model': raw_data.get('LensModel') or raw_data.get('LensID'),
         'iso': _safe_int(raw_data.get('ISO')),

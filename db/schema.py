@@ -80,6 +80,10 @@ PHOTOS_COLUMNS = [
     # Deliberate multi-frame sequences (--detect-sequences). A bracket is one
     # subject shot at several exposures, so its frames must not be read as
     # competing takes the way a burst's are.
+    ('pixel_shift_shots', 'INTEGER'),
+    ('pixel_shift_offset', 'TEXT'),
+    ('pixel_shift_info', 'TEXT'),
+    ('camera_serial', 'TEXT'),
     ('sequence_group_id', 'INTEGER'),
     ('sequence_kind', 'TEXT'),       # 'bracket' | 'panorama' | 'hdr_panorama'
     ('sequence_ev_offset', 'REAL'),  # exposure compensation vs the set's base frame (0.0 = base, + = brighter)

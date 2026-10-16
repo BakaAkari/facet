@@ -818,6 +818,9 @@ def detect_all_sequences(db_path, config_path, incremental=False, contain_failur
     from utils.sequence import detect_sequences
     from utils.panorama import detect_panoramas
 
+    from utils.capture_sequences import detect_capture_sequences
+
+    detect_capture_sequences(db_path)
     brackets = detect_sequences(db_path, config_path=config_path)
     if not contain_failure:
         return brackets, detect_panoramas(db_path, config_path=config_path,

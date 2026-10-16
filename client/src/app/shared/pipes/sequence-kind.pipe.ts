@@ -16,12 +16,16 @@ export const SEQUENCE_KIND_ICONS: Record<string, string> = {
   bracket: 'hdr_on',
   panorama: 'panorama_photosphere',
   hdr_panorama: 'vrpano',
+  pixel_shift: 'burst_mode',
+  timelapse: 'timelapse',
 };
 
 export const SEQUENCE_KIND_LABELS: Record<string, string> = {
   bracket: I18N.culling.bracket.label,
   panorama: I18N.culling.panorama.label,
   hdr_panorama: I18N.culling.panorama.hdr_label,
+  pixel_shift: 'capture_sequences.pixel_shift',
+  timelapse: 'capture_sequences.timelapse',
 };
 
 /**
@@ -49,7 +53,7 @@ export const SUPPRESSED_OVERRIDE = 'suppressed';
  * `SequenceOverrideService.set`) now cover `bracket` too, mirroring the
  * existing panorama correction.
  */
-export const SEQUENCE_KINDS_KEPT_WHOLE: readonly string[] = ['bracket', 'panorama', 'hdr_panorama'];
+export const SEQUENCE_KINDS_KEPT_WHOLE: readonly string[] = ['bracket', 'panorama', 'hdr_panorama', 'pixel_shift', 'timelapse'];
 
 /** Material icon for a photo's sequence kind, or '' when it belongs to no set. */
 @Pipe({ name: 'sequenceKindIcon', standalone: true })

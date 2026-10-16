@@ -1595,6 +1595,8 @@ def set_photos_rejected(conn, paths, user_id):
     ).fetchall()]
     if not visible:
         return 0
+    from utils.capture_sequences import require_unprotected_files
+    require_unprotected_files(conn, visible)
     if user_id and is_multi_user_enabled():
         conn.executemany(
             "INSERT INTO user_preferences (user_id, photo_path, is_rejected) "

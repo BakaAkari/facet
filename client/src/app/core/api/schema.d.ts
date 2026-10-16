@@ -5203,7 +5203,7 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "burst" | "similar" | "scene" | "bracket" | "panorama" | "hdr_panorama";
+            type: "burst" | "similar" | "scene" | "bracket" | "panorama" | "hdr_panorama" | "pixel_shift" | "timelapse";
         };
         /** CullingFacesBody */
         CullingFacesBody: {

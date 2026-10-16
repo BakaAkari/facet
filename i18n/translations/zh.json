@@ -1,4 +1,5 @@
 {
+  "capture_sequences": {"pixel_shift": "像素位移 · 免删保护", "timelapse": "延时摄影 · 免删保护"},
   "ui": {
     "title": "Facet",
     "filters": {

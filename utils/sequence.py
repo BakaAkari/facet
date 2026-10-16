@@ -272,8 +272,12 @@ _LOAD_PHOTOS_SQL = (
 def _load_photos(conn):
     """Every photo that can carry an EV, in capture order."""
     rows = conn.execute(_LOAD_PHOTOS_SQL).fetchall()
+    from utils.capture_sequences import protected_paths
+    protected = protected_paths(conn, [r['path'] for r in rows])
     photos = []
     for row in rows:
+        if row['path'] in protected:
+            continue
         ev = exposure_value(row['f_stop'], row['shutter_speed'], row['iso'])
         if ev is None:
             continue

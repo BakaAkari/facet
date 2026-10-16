@@ -69,7 +69,7 @@ export interface CullingSubject {
 /** A burst, similar, scene, bracket or panorama group surfaced for culling. */
 export interface CullingGroup {
   group_id: number;
-  type: 'burst' | 'similar' | 'scene' | 'bracket' | 'panorama' | 'hdr_panorama';
+  type: 'burst' | 'similar' | 'scene' | 'bracket' | 'panorama' | 'hdr_panorama' | 'pixel_shift' | 'timelapse';
   reason: string;
   photos: CullingPhoto[];
   best_path: string;
@@ -395,6 +395,8 @@ export class CullGroupLabelPipe implements PipeTransform {
     bracket: 'culling.group_by.brackets',
     panorama: 'culling.group_by.panoramas',
     hdr_panorama: 'culling.group_by.hdr_panoramas',
+    pixel_shift: 'capture_sequences.pixel_shift',
+    timelapse: 'capture_sequences.timelapse',
   };
 
   transform(kind: string): string {
