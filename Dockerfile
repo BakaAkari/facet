@@ -185,6 +185,7 @@ COPY models/ models/
 COPY optimization/ optimization/
 COPY processing/ processing/
 COPY utils/ utils/
+COPY scripts/backfill_capture_sequences.py scripts/backfill_capture_sequences.py
 COPY plugins/ plugins/
 COPY storage/ storage/
 COPY sync/ sync/
