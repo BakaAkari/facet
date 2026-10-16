@@ -43,8 +43,10 @@ def _make_processor(device, model_group):
     proc.model_manager = _FakeModelManager(device)
     proc.pass_groups = [model_group]
     proc.restricted = True
+    proc._decode_executor = None  # no scan running: the chunk decodes synchronously
     proc.metrics = {
         'io_time': 0.0,
+        'io_decode_time': 0.0,
         'model_load_time': 0.0,
         'inference_time': 0.0,
         'passes_executed': 0,

@@ -17,6 +17,7 @@ import functools
 import gc
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import List, Dict, Any
@@ -34,6 +35,7 @@ from processing.scorer import build_scoring_metrics
 from utils.device import clear_device_cache
 from utils.image_bounds import bound_to_inference_size
 from utils.image_loading import bgr_to_gray, pil_to_bgr
+from utils.system_memory import BYTES_PER_GB
 
 logger = logging.getLogger("facet.multi_pass")
 
@@ -98,6 +100,10 @@ class _CompositionError(Exception):
         self.original = original
 
 
+class _DecodeCancelled(Exception):
+    """The scan's decode stop flag was set: abandon the chunk's decode, record nothing."""
+
+
 def tagging_model_to_key(tagging_model, default=None):
     """Map a profile ``tagging_model`` string to its tagger key, or ``default``."""
     entry = TAGGING_MODELS.get(tagging_model)
@@ -123,6 +129,28 @@ class ChunkedMultiPassProcessor:
     # the allocator slack of the decode workers. A memory budget multiplies it by the chunk's
     # pixel count.
     RETAINED_BYTES_PER_PX = 4.75
+
+    # Mean source pixels per photo assumed before any chunk has been decoded. It is a
+    # mid-range guess, not a ceiling: it covers the 12-40 MP parity set on average, but is
+    # too low for a 45-61 MP body's first chunk. From the second chunk on the estimate is the
+    # previous chunk's measured MEAN, for the decoded set and for the in-flight buffers alike:
+    # a chunk that mixes sizes can exceed it (any worker may hold the largest frame), and so
+    # can chunk 0 on a high-resolution body. Only ``ram_cache_reserve_gb`` absorbs that gap;
+    # sizing the in-flight term from the largest photo instead was measured to refuse chunks
+    # the mean admitted (2.1 vs 1.2 GB for 4 workers), without a measured peak to justify it.
+    # Too high only costs a missed overlap or an early RAM-cache trim.
+    DEFAULT_DECODE_MEAN_PX = 20e6
+
+    # Bytes per source pixel ONE photo holds while it is being decoded, above what the chunk
+    # keeps of it afterwards: the full-size decode buffers a decode worker allocates and frees.
+    # This, times the photos in flight at once, is the only memory an overlapped decode adds to
+    # the synchronous path, which already holds the decoded chunk while group 0 loads.
+    # Measured on JPEGs: 0.40-0.62 GiB above the retained set for 4 workers on ~20 MP photos,
+    # i.e. 5-8 B/px per photo in flight; 16 covers a LibRaw demosaic (16-bit 4-channel working
+    # image plus the Bayer plane and the 8-bit output). That 16 B/px RAW figure is NOT
+    # measured (the JPEG set cannot measure a demosaic): it is derived from the LibRaw buffer
+    # layout and has not been checked against a RAW scan's peak.
+    DECODE_INFLIGHT_BYTES_PER_PX = 16.0
 
     # Default pass configuration
     DEFAULT_PASSES = [
@@ -188,11 +216,25 @@ class ChunkedMultiPassProcessor:
             'model_load_time': 0,
             'model_unload_time': 0,
             'inference_time': 0,
+            # Scan-thread time spent waiting for a chunk's decode (the part a decode
+            # overlapped with the first group's model load did not hide)
             'io_time': 0,
+            # Wall time of the decodes themselves, wherever they ran
+            'io_decode_time': 0.0,
+            # Chunks whose decode ran beside the first pass group's model load
+            'decode_overlapped_chunks': 0,
             # BGR / gray planes rebuilt from the retained PIL image by the face and
             # saliency passes (they are no longer kept for the whole chunk)
             'rebuild_time': 0.0,
         }
+
+        # Decode overlap (see _overlap_allowed) and RAM-cache trim state, per scan.
+        self._last_chunk_mean_px = None
+        self._next_group_pos = 0
+        self._decode_executor = None
+        self._decode_stop = None
+        self._decode_future = None
+        self._overlap_refusal_logged = False
 
     def reduce_chunk_size(self):
         """Reduce RAM chunk size when memory usage is high.
@@ -381,10 +423,24 @@ class ChunkedMultiPassProcessor:
         logger.info("Processing %d photos (initial chunk size: %d, auto-tuning: %s)...",
                     total, initial_chunk, tuning_label)
 
+        # Force KMeans' native thread-pool init (issue #55) here, on the main thread,
+        # before the decode executor exists and before any pass group's model load
+        # starts torch/transformers pools: an overlapped chunk-0 decode would otherwise
+        # run the one real warm-up on the decode thread, concurrently with that init.
+        # The call inside _load_images stays and is a no-op from here on.
+        from analyzers.form_facet import warmup
+        warmup()
+
         # Start resource monitor for dynamic chunk tuning
         from processing.resource_monitor import MultiPassResourceMonitor
         self._ram_monitor = MultiPassResourceMonitor(self, self.config)
         self._ram_monitor.start()
+
+        # One decode worker per scan (the pool inside _load_images is the parallelism);
+        # used only for chunks _overlap_allowed admits, shut down in the finally below.
+        self._decode_stop = threading.Event()
+        self._decode_future = None
+        self._decode_executor = self._make_decode_executor()
 
         pbar = tqdm(total=total, desc="Multi-pass processing") if show_progress else None
 
@@ -396,6 +452,11 @@ class ChunkedMultiPassProcessor:
                 chunk_end = min(offset + self.chunk_size, total)
                 chunk_paths = photo_paths[offset:chunk_end]
                 num_chunks_est = max(1, (total + self.chunk_size - 1) // self.chunk_size)
+
+                # Chunk 0 has no previous chunk to size from; the decode-overlap budget
+                # gate covers it instead.
+                if chunk_idx >= 1:
+                    self._trim_ram_cache_for_next_chunk(len(chunk_paths))
 
                 self._process_chunk(chunk_paths, chunk_idx, num_chunks_est)
 
@@ -414,6 +475,7 @@ class ChunkedMultiPassProcessor:
 
         finally:
             self._ram_monitor.stop()
+            self._shutdown_decode_executor()
             if pbar:
                 pbar.close()
 
@@ -449,35 +511,38 @@ class ChunkedMultiPassProcessor:
         """
         _ensure_imports()
 
-        # Load images into memory once
-        io_start = time.time()
-        images = self._load_images(paths)
-        self.metrics['io_time'] += time.time() - io_start
+        failed_stages: List[str] = []
+        supplementary = self._supplementary_models()
+
+        # Load images into memory once. When _overlap_allowed admits it, the decode runs
+        # on the scan's decode worker while this thread loads the first pass group's
+        # models, which the group's inference then receives already loaded.
+        first_group = self.pass_groups[0] if self.pass_groups else []
+        preloaded = None
+        if self._decode_executor is not None and self._overlap_allowed(paths, first_group):
+            images, preloaded = self._decode_beside_first_load(
+                paths, first_group, supplementary, failed_stages)
+        else:
+            io_start = time.time()
+            images = self._load_images(paths)
+            io_wall = time.time() - io_start
+            self.metrics['io_time'] += io_wall
+            self.metrics['io_decode_time'] += io_wall
+        self._record_chunk_pixels(images)
 
         # Track results for each photo
         results: dict[str, dict[str, Any]] = {path: {} for path in paths}
-        failed_stages: List[str] = []
-
-        # Supplementary/optional models — load failures skip rather than abort
-        supplementary = set(self.model_manager.get_active_profile().get('supplementary_pyiqa', []))
-        supplementary.add('saliency')  # BiRefNet is optional (may require HF auth)
-        supplementary.add('samp_net')  # SAMP-Net is optional (weights may be unavailable — composition is skipped)
-        # Extended-IQA scorers are heavy/experimental — load/VRAM failure skips the pass.
-        supplementary.update(('qrealign', 'aesthetic_v25', 'deqa'))
-        if licensing.is_commercial():
-            # The permissive face pass is the only commercial face stage, and
-            # Q-ReAlign is a required model whenever it owns aesthetic/quality
-            # (it stays supplementary beside an allow_unclear CLIP-MLP head).
-            supplementary.discard('faces_permissive')
-            if self._qrealign_is_primary():
-                supplementary.discard('qrealign')
 
         # Run each pass group
         for group_idx, model_group in enumerate(self.pass_groups):
-            # Load models for this pass
-            load_start = time.time()
-            loaded_models = self._load_pass_models(model_group, supplementary, failed_stages)
-            self.metrics['model_load_time'] += time.time() - load_start
+            self._next_group_pos = group_idx + 1
+            if group_idx == 0 and preloaded is not None:
+                loaded_models, preloaded = preloaded, None
+            else:
+                # Load models for this pass
+                load_start = time.time()
+                loaded_models = self._load_pass_models(model_group, supplementary, failed_stages)
+                self.metrics['model_load_time'] += time.time() - load_start
 
             # Run inference for each model in this pass
             infer_start = time.time()
@@ -509,11 +574,9 @@ class ChunkedMultiPassProcessor:
 
             # Unload models from this pass
             unload_start = time.time()
-            for model_name in model_group:
-                loaded_models.pop(model_name, None)
-                self.model_manager.unload_model(model_name, reclaim=False)
-            self._reclaim_freed_memory()
+            self._unload_group(model_group, loaded_models)
             self.metrics['model_unload_time'] += time.time() - unload_start
+        self._next_group_pos = 0
 
         if failed_stages:
             self._record_chunk_pass_failure(images, results, failed_stages)
@@ -530,6 +593,247 @@ class ChunkedMultiPassProcessor:
         # Free memory
         del images
         self._reclaim_freed_memory()
+
+    def _supplementary_models(self) -> set:
+        """Names whose load or inference failure skips the model instead of failing the chunk."""
+        # Supplementary/optional models — load failures skip rather than abort
+        supplementary = set(self.model_manager.get_active_profile().get('supplementary_pyiqa', []))
+        supplementary.add('saliency')  # BiRefNet is optional (may require HF auth)
+        supplementary.add('samp_net')  # SAMP-Net is optional (weights may be unavailable — composition is skipped)
+        # Extended-IQA scorers are heavy/experimental — load/VRAM failure skips the pass.
+        supplementary.update(('qrealign', 'aesthetic_v25', 'deqa'))
+        if licensing.is_commercial():
+            # The permissive face pass is the only commercial face stage, and
+            # Q-ReAlign is a required model whenever it owns aesthetic/quality
+            # (it stays supplementary beside an allow_unclear CLIP-MLP head).
+            supplementary.discard('faces_permissive')
+            if self._qrealign_is_primary():
+                supplementary.discard('qrealign')
+        return supplementary
+
+    def _unload_group(self, model_group: List[str], loaded_models: Dict[str, Any]):
+        """Drop the chunk's references to a pass group, unload it, reclaim once."""
+        for model_name in model_group:
+            loaded_models.pop(model_name, None)
+            self.model_manager.unload_model(model_name, reclaim=False)
+        self._reclaim_freed_memory()
+
+    # ------------------------------------------------------------------
+    # Decode overlapped with the first pass group's model load (S4)
+    # ------------------------------------------------------------------
+
+    def _make_decode_executor(self):
+        """The scan's single decode worker (a seam for tests)."""
+        from concurrent.futures import ThreadPoolExecutor
+        return ThreadPoolExecutor(max_workers=1, thread_name_prefix='facet-decode')
+
+    def _shutdown_decode_executor(self):
+        """Stop the decode worker without waiting for a decode that is still running.
+
+        The stop flag makes a running ``_load_images`` start no further photo, pending
+        futures are cancelled, and ``wait`` is used only when nothing is in flight (a
+        normal end of scan, where the join is immediate). After a KeyboardInterrupt
+        the scan therefore unwinds at once and the in-flight photos finish into a
+        discarded result on the worker.
+        """
+        executor, self._decode_executor = self._decode_executor, None
+        if executor is None:
+            return
+        if self._decode_stop is not None:
+            self._decode_stop.set()
+        future, self._decode_future = self._decode_future, None
+        in_flight = future is not None and not future.done()
+        executor.shutdown(wait=not in_flight, cancel_futures=True)
+
+    def _decode_estimate_bytes(self, n_paths: int) -> int:
+        """Bytes a chunk of ``n_paths`` photos holds once decoded (``RETAINED_BYTES_PER_PX``).
+
+        Sized from the previous chunk's mean pixel count, or ``DEFAULT_DECODE_MEAN_PX``
+        when no chunk has been decoded yet. The decode-overlap gate and the pre-chunk
+        RAM-cache trim share this one estimate.
+        """
+        return int(n_paths * self._previous_chunk_px() * self.RETAINED_BYTES_PER_PX)
+
+    def _previous_chunk_px(self) -> float:
+        """Mean source pixels per photo of the previous chunk.
+
+        ``DEFAULT_DECODE_MEAN_PX`` until a chunk has been decoded.
+        """
+        if self._last_chunk_mean_px is None:
+            return self.DEFAULT_DECODE_MEAN_PX
+        return self._last_chunk_mean_px
+
+    def _record_chunk_pixels(self, images: Dict[str, Dict]):
+        """Keep the decoded chunk's mean pixel count for the next chunk's estimate."""
+        sizes = [data['width'] * data['height'] for data in images.values()
+                 if isinstance(data.get('width'), int) and isinstance(data.get('height'), int)]
+        if sizes:
+            self._last_chunk_mean_px = sum(sizes) / len(sizes)
+
+    def _decode_inflight_bytes(self, n_paths: int) -> int:
+        """Decode buffers alive at once while a chunk of ``n_paths`` photos is decoded.
+
+        One photo per decode worker, each ``DECODE_INFLIGHT_BYTES_PER_PX`` of the previous
+        chunk's mean pixel count (``_previous_chunk_px``). A chunk mixing sizes can exceed
+        it; ``ram_cache_reserve_gb`` absorbs the gap. This is what an overlapped decode adds
+        to the synchronous path's peak: both hold the decoded chunk while group 0 loads.
+        """
+        in_flight = max(1, min(int(self.load_workers), n_paths))
+        return int(in_flight * self._previous_chunk_px() * self.DECODE_INFLIGHT_BYTES_PER_PX)
+
+    def _overlap_window(self, first_group: List[str]) -> List[str]:
+        """First-group models an overlapped decode could hide behind, ``[]`` for none.
+
+        Empty unless the device is CUDA and ``keep_in_ram`` is not ``"never"`` (on CPU and
+        MPS the loaded weights and the decode share system RAM, and ``"never"`` promises
+        the RAM back); otherwise the models that are neither resident nor in the RAM cache
+        (a cache restore is a host-to-device copy that leaves nothing to hide).
+        """
+        mm = self.model_manager
+        if getattr(mm, 'device', None) != 'cuda':
+            return []
+        if getattr(mm, 'keep_in_ram', None) == 'never':
+            return []
+        return [name for name in first_group if not mm.is_resident_or_cached(name)]
+
+    def _overlap_allowed(self, paths: List[str], first_group: List[str]) -> bool:
+        """Whether this chunk's decode may run beside the first group's model load.
+
+        Both of:
+        1. a window (``_overlap_window``): CUDA, ``keep_in_ram`` not ``"never"``, and some
+           first-group model neither resident nor in the RAM cache;
+        2. available memory >= the decode estimate + the decode's in-flight buffers
+           (``_decode_inflight_bytes``) + ``ram_cache_reserve_gb``.
+        The models' own size is not part of the budget: on CUDA their weights go to VRAM,
+        and the host memory a load does use (measured on the 16gb group 0: +0.56 GiB
+        private, +3.8 GiB of read-only mapped weight-file pages the OS can drop without
+        swapping) is spent by the synchronous path as well, beside the same decoded chunk.
+        It is checked after ``_trim_ram_cache_for_next_chunk``, which never evicts for the
+        in-flight buffers, so the overlap costs no cached model. Otherwise the chunk
+        decodes synchronously, exactly as before.
+        """
+        mm = self.model_manager
+        if not self._overlap_window(first_group):
+            return False
+        decode = self._decode_estimate_bytes(len(paths))
+        in_flight = self._decode_inflight_bytes(len(paths))
+        reserve = int(mm.ram_cache_reserve_gb * BYTES_PER_GB)
+        available = mm._available_bytes()
+        if available < decode + in_flight + reserve:
+            if not self._overlap_refusal_logged:
+                self._overlap_refusal_logged = True
+                logger.info(
+                    "  Chunk decode overlap off for this chunk: %.1f GB available < %.1f GB "
+                    "(decode %.1f + decode in flight %.1f + reserve %.1f); decoding first "
+                    "(logged once per scan)",
+                    available / BYTES_PER_GB, (decode + in_flight + reserve) / BYTES_PER_GB,
+                    decode / BYTES_PER_GB, in_flight / BYTES_PER_GB, reserve / BYTES_PER_GB)
+            return False
+        return True
+
+    def _decode_on_worker(self, paths: List[str], deferred_errors: list):
+        """Runs on the decode worker: decode the chunk, time it, defer error reports."""
+        start = time.perf_counter()
+        images = self._load_images(
+            paths, stop_event=self._decode_stop,
+            report_error=lambda path, stage, error: deferred_errors.append(
+                (path, stage, error)))
+        return images, time.perf_counter() - start
+
+    def _decode_beside_first_load(self, paths: List[str], first_group: List[str],
+                                  supplementary: set, failed_stages: List[str]):
+        """Decode ``paths`` on the worker while this thread loads ``first_group``.
+
+        Returns ``(images, loaded_models)``. A decode failure (the abandonment
+        ``RuntimeError`` included) re-raises after the group's freshly loaded models are
+        unloaded, so a failed chunk leaks no model. Per-photo load errors are reported
+        to ``on_error`` from this thread, after the decode, as the synchronous path does.
+        """
+        deferred_errors: list = []
+        future = self._decode_executor.submit(self._decode_on_worker, paths, deferred_errors)
+        self._decode_future = future
+
+        load_start = time.time()
+        loaded_models = self._load_pass_models(first_group, supplementary, failed_stages)
+        self.metrics['model_load_time'] += time.time() - load_start
+
+        io_start = time.time()
+        try:
+            images, decode_wall = future.result()
+        except BaseException:
+            self.metrics['io_time'] += time.time() - io_start
+            unload_start = time.time()
+            try:
+                self._report_deferred_errors(future, deferred_errors)
+            finally:
+                self._unload_group(first_group, loaded_models)
+                self.metrics['model_unload_time'] += time.time() - unload_start
+            raise
+        self.metrics['io_time'] += time.time() - io_start
+        self._report_deferred_errors(future, deferred_errors)
+        self.metrics['io_decode_time'] += decode_wall
+        self.metrics['decode_overlapped_chunks'] += 1
+        return images, loaded_models
+
+    def _report_deferred_errors(self, future, deferred_errors: list):
+        """Hand a finished decode's per-photo errors to ``on_error`` on this thread.
+
+        Only once the decode has finished: after an interrupt the worker may still be
+        appending, and a scan that is unwinding records nothing more.
+        """
+        if not future.done():
+            return
+        self._decode_future = None
+        if self.on_error:
+            for path, stage, error in deferred_errors:
+                self.on_error(path, stage, error)
+
+    # ------------------------------------------------------------------
+    # RAM-cache trim before a chunk's decode (S6b)
+    # ------------------------------------------------------------------
+
+    def _next_use_order(self) -> List[str]:
+        """Model names in the order they are next requested, soonest first.
+
+        The plan's groups run in forward order every chunk. Between chunks that is the
+        plan flattened; mid-chunk, while group ``k`` runs, it is groups ``k+1..n-1`` and
+        then ``0..k`` of the next chunk (``_next_group_pos`` is ``k+1``), without repeats.
+        The RAM cache evicts the farthest one, the end of this list, first.
+        """
+        groups = self.pass_groups or []
+        start = self._next_group_pos % len(groups) if groups else 0
+        order: List[str] = []
+        for group in groups[start:] + groups[:start]:
+            for name in group:
+                if name not in order:
+                    order.append(name)
+        return order
+
+    def _trim_ram_cache_for_next_chunk(self, n_next: int):
+        """Evict RAM-cached models when the next chunk's decode would not fit.
+
+        The need is the decode estimate of ``n_next`` photos plus the manager's
+        ``ram_cache_reserve_gb``; when available memory is below it, the cache gives
+        back models in Belady order (``_next_use_order``) until it is met or empty.
+        A manager without a numeric reserve (a stub) is left alone.
+
+        The decode's in-flight buffers are deliberately not in this need: the overlap
+        must never cost a cached model. ``_overlap_allowed`` runs after this trim and
+        decodes the chunk first when what is left does not also cover them.
+        """
+        mm = self.model_manager
+        reserve_gb = getattr(mm, 'ram_cache_reserve_gb', None)
+        if isinstance(reserve_gb, bool) or not isinstance(reserve_gb, (int, float)):
+            return
+        needed = self._decode_estimate_bytes(n_next) + int(reserve_gb * BYTES_PER_GB)
+        available = mm._available_bytes()
+        if available >= needed:
+            logger.debug("RAM cache trim not needed: %d available >= %d for %d photos",
+                         available, needed, n_next)
+            return
+        logger.debug("RAM cache trim: %d available < %d needed for %d photos",
+                     available, needed, n_next)
+        mm.evict_cpu_cache(needed_available_bytes=needed, next_use=self._next_use_order())
 
     def _reclaim_freed_memory(self):
         """Collect, clear the device cache and hand the freed heap back.
@@ -599,7 +903,8 @@ class ChunkedMultiPassProcessor:
             if self.on_error:
                 self.on_error(path, stage, f"required model pass failed: {stage}")
 
-    def _load_images(self, paths: List[str]) -> Dict[str, Dict]:
+    def _load_images(self, paths: List[str], stop_event=None,
+                     report_error=None) -> Dict[str, Dict]:
         """
         Load images from disk into memory and compute CPU-based metrics.
 
@@ -620,6 +925,13 @@ class ChunkedMultiPassProcessor:
 
         Args:
             paths: List of photo paths
+            stop_event: Optional ``threading.Event``; once set, no further photo is
+                started (checked before each submit and at the top of each photo's
+                work) and the decode is abandoned with ``_DecodeCancelled`` without
+                recording anything. Set by ``process_directory`` when the scan unwinds.
+            report_error: Optional ``(path, stage, error)`` callable that receives the
+                per-photo failures instead of ``on_error``; the overlapped decode uses
+                it to hand them to the scan thread.
 
         Returns:
             Dict mapping path to image data including all pre-computed metrics
@@ -650,7 +962,14 @@ class ChunkedMultiPassProcessor:
         except ImportError:
             chunk_exif = {}
 
+        report = report_error if report_error is not None else self.on_error
+
+        def _stopped():
+            return stop_event is not None and stop_event.is_set()
+
         def _load_one(path):
+            if _stopped():
+                raise _DecodeCancelled()
             pil_img, img_cv = load_image_from_path(path)
             if pil_img is None:
                 return None
@@ -759,46 +1078,66 @@ class ChunkedMultiPassProcessor:
             with ThreadPoolExecutor(
                 max_workers=self.load_workers, thread_name_prefix='imgload'
             ) as pool:
-                futures = {pool.submit(_load_one, path): path for path in paths}
+                futures = {}
+                for path in paths:
+                    if _stopped():
+                        break
+                    futures[pool.submit(_load_one, path)] = path
                 for future, path in futures.items():
+                    if _stopped():
+                        # Pending photos never start; the with-exit waits only for
+                        # the in-flight ones, whose results are discarded.
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        raise _DecodeCancelled()
                     try:
                         data = future.result()
                         if data is not None:
                             images[path] = data
-                        elif self.on_error:
-                            self.on_error(path, 'load', 'failed to load image')
+                        elif report:
+                            report(path, 'load', 'failed to load image')
+                    except _DecodeCancelled:
+                        raise
                     except _CompositionError as e:
-                        self._record_composition_failure(path, e)
+                        self._record_composition_failure(path, e, report)
                     except RuntimeError:
                         raise  # decode abandonment budget exhausted - fail fast
                     except Exception as e:
                         logger.error("Failed to load %s: %s", path, e)
-                        if self.on_error:
-                            self.on_error(path, 'load', e)
+                        if report:
+                            report(path, 'load', e)
+                if _stopped():
+                    raise _DecodeCancelled()
         else:
             for path in paths:
                 try:
                     data = _load_one(path)
                     if data is not None:
                         images[path] = data
-                    elif self.on_error:
-                        self.on_error(path, 'load', 'failed to load image')
+                    elif report:
+                        report(path, 'load', 'failed to load image')
+                except _DecodeCancelled:
+                    raise
                 except _CompositionError as e:
-                    self._record_composition_failure(path, e)
+                    self._record_composition_failure(path, e, report)
                 except RuntimeError:
                     raise
                 except Exception as e:
                     logger.error("Failed to load %s: %s", path, e)
-                    if self.on_error:
-                        self.on_error(path, 'load', e)
+                    if report:
+                        report(path, 'load', e)
 
         return images
 
-    def _record_composition_failure(self, path: str, error: _CompositionError):
-        """One photo's composition analysis raised: skip it, record it, keep the chunk."""
+    def _record_composition_failure(self, path: str, error: _CompositionError, report=None):
+        """One photo's composition analysis raised: skip it, record it, keep the chunk.
+
+        ``report`` is the ``(path, stage, error)`` sink ``_load_images`` was given;
+        ``None`` means ``on_error``.
+        """
         logger.error("Composition analysis failed for %s: %s", path, error.original)
-        if self.on_error:
-            self.on_error(path, 'composition', error.original)
+        report = report if report is not None else self.on_error
+        if report:
+            report(path, 'composition', error.original)
 
     # PyIQA models list
     PYIQA_MODELS = ['topiq', 'hyperiqa', 'dbcnn', 'musiq', 'musiq-koniq', 'clipiqa+',
@@ -1508,7 +1847,11 @@ class ChunkedMultiPassProcessor:
                 logger.info("  RAM cache: %d/%d hits (%.0f%%)", hits, cache_total, 100 * hits / cache_total)
 
             logger.info("Time breakdown:")
-            logger.info("  I/O: %.1fs (%.0f%%)", m['io_time'], 100 * m['io_time'] / total)
+            logger.info("  I/O wait (scan thread blocked on decode): %.1fs (%.0f%%)",
+                        m['io_time'], 100 * m['io_time'] / total)
+            logger.info("  Decode wall: %.1fs (%d of %d chunks overlapped with model loading)",
+                        m['io_decode_time'], m['decode_overlapped_chunks'],
+                        m['chunks_processed'])
             logger.info("  Model load: %.1fs (%.0f%%)", m['model_load_time'], 100 * m['model_load_time'] / total)
             logger.info("  Inference: %.1fs (%.0f%%)", m['inference_time'], 100 * m['inference_time'] / total)
             logger.info("  Model unload: %.1fs (%.0f%%)", m['model_unload_time'], 100 * m['model_unload_time'] / total)

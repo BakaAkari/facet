@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 
-from utils.system_memory import effective_memory
+from utils.system_memory import BYTES_PER_GB, effective_memory
 
 logger = logging.getLogger("facet.resources")
 
@@ -24,7 +24,10 @@ class MultiPassResourceMonitor(threading.Thread):
     limit, whichever binds -- see utils.system_memory.effective_memory) and
     auto-tunes the chunk size of ChunkedMultiPassProcessor.
 
-    - High RAM (>85%): immediately reduces chunk size and evicts CPU-cached models
+    - High RAM (>85%): immediately reduces chunk size; while available memory is
+      also below the model manager's ``ram_cache_reserve_gb`` it evicts RAM-cached
+      models, in the order the next chunk will NOT need them first, until that
+      reserve is available again (not the whole cache)
     - A chunk whose HIGH-WATER mark stayed under 65%: grows the next chunk
     - Tracks adjustments for summary reporting
 
@@ -56,6 +59,9 @@ class MultiPassResourceMonitor(threading.Thread):
         # boundary -- what the chunk actually had to survive.
         self._peak_percent = 0.0
         self.adjustments = []  # list of (direction, old_size, new_size)
+        # A failing tick is logged once; a persistently failing one stays quiet
+        # after that so it cannot flood the log every interval.
+        self._warned_failure = False
 
     def run(self):
         if not self.processor.auto_tuning_enabled:
@@ -71,23 +77,56 @@ class MultiPassResourceMonitor(threading.Thread):
             if self.stop_event.is_set():
                 break
 
-            try:
-                mem_percent = effective_memory().percent
-                self._peak_percent = max(self._peak_percent, mem_percent)
+            self._tick()
 
-                if mem_percent > self.high_threshold:
-                    old = self.processor.chunk_size
-                    if self.processor.reduce_chunk_size():
-                        self._record('reduce', old, mem_percent)
-                    # Evict CPU-cached models to free RAM
-                    mm = getattr(self.processor, 'model_manager', None)
-                    if mm is not None:
-                        evict = getattr(mm, 'evict_cpu_cache', None)
-                        if evict:
-                            evict()
+    def _tick(self):
+        """One reading: shrink the chunk above the limit, then evict below the reserve.
 
-            except Exception:
-                pass  # Don't crash the monitor
+        Never raises (the thread must survive), but the first failure is logged:
+        a silently failing tick would turn eviction off without a trace.
+        """
+        try:
+            reading = effective_memory()
+            mem_percent = reading.percent
+            self._peak_percent = max(self._peak_percent, mem_percent)
+
+            if mem_percent > self.high_threshold:
+                old = self.processor.chunk_size
+                if self.processor.reduce_chunk_size():
+                    self._record('reduce', old, mem_percent)
+                self._evict_below_reserve(reading.available)
+
+        except Exception as e:
+            if not self._warned_failure:
+                self._warned_failure = True
+                logger.warning("RAM monitor tick failed (chunk tuning / cache eviction may "
+                               "be off for this scan): %s", e, exc_info=True)
+
+    def _evict_below_reserve(self, available):
+        """Evict RAM-cached models only while ``available`` is under the reserve.
+
+        The target is the model manager's ``ram_cache_reserve_gb`` and the order
+        the processor's ``_next_use_order()`` (farthest next use goes first), so
+        a chunk under memory pressure keeps the models it is about to need. A
+        manager without a reserve (an older stub) gets today's evict-everything
+        call; a processor without an order evicts in cache order.
+        """
+        mm = getattr(self.processor, 'model_manager', None)
+        if mm is None:
+            return
+        evict = getattr(mm, 'evict_cpu_cache', None)
+        if not evict:
+            return
+        reserve_gb = getattr(mm, 'ram_cache_reserve_gb', None)
+        if reserve_gb is None:
+            evict()
+            return
+        reserve_bytes = int(reserve_gb * BYTES_PER_GB)
+        if available >= reserve_bytes:
+            return
+        order_fn = getattr(self.processor, '_next_use_order', None)
+        next_use = order_fn() if order_fn is not None else None
+        evict(needed_available_bytes=reserve_bytes, next_use=next_use)
 
     def note_chunk_complete(self):
         """Decide from the finished chunk's peak whether the next may be larger.
