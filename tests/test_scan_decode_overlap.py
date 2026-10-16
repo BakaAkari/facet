@@ -27,7 +27,9 @@ from unittest import mock
 
 import pytest
 
-from processing.multi_pass import ChunkedMultiPassProcessor
+pytest.importorskip("torch")
+
+from processing.multi_pass import ChunkedMultiPassProcessor  # noqa: E402
 
 GIB = 1024 ** 3
 TIMEOUT = 5.0

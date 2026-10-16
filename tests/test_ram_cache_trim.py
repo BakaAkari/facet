@@ -22,9 +22,11 @@ from unittest import mock
 
 import pytest
 
-from processing.multi_pass import ChunkedMultiPassProcessor
-from processing.resource_monitor import MultiPassResourceMonitor
-from utils.system_memory import EffectiveMemory
+pytest.importorskip("torch")
+
+from processing.multi_pass import ChunkedMultiPassProcessor  # noqa: E402
+from processing.resource_monitor import MultiPassResourceMonitor  # noqa: E402
+from utils.system_memory import EffectiveMemory  # noqa: E402
 
 GIB = 1024 ** 3
 TOTAL = 32 * GIB
