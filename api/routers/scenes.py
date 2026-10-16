@@ -24,6 +24,7 @@ from api.db_helpers import (
     HIDE_BURSTS_SQL, scope_sql,
 )
 from api.models.albums import ScenesResponse
+from db.stats_cache import cache_stats_best_effort
 from utils.date_utils import parse_date
 
 logger = logging.getLogger(__name__)
@@ -306,11 +307,7 @@ def compute_scenes(conn, user_id=None, album_id=None, date_from=None, date_to=No
                 scenes.append(scene)
 
     if use_cache:
-        conn.execute(
-            "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-            (cache_key, json.dumps(scenes), time.time()),
-        )
-        conn.commit()
+        cache_stats_best_effort(conn, [(cache_key, json.dumps(scenes))])
     return scenes
 
 

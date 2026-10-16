@@ -26,6 +26,7 @@ from api.db_helpers import (
 )
 from api.models.albums import AlbumPhotosResponse, SharedAlbumResponse
 from api.top_picks import get_top_picks_score_sql, with_top_picks_alias
+from db.stats_cache import cache_stats_best_effort
 from api.types import VALID_SORT_COLS, available_sort_options, normalize_params, order_by_clause
 
 router = APIRouter(tags=["albums"])
@@ -337,11 +338,7 @@ def _smart_album_cover(conn, album_row):
     if cached and (time.time() - cached['updated_at']) < _COVER_CACHE_TTL:
         return cached['value'] or None
     path = _compute_smart_album_cover(conn, album_row, owner_id)
-    conn.execute(
-        "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-        (cache_key, path or '', time.time()),
-    )
-    conn.commit()
+    cache_stats_best_effort(conn, [(cache_key, path or '')])
     return path
 
 

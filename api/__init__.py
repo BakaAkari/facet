@@ -369,6 +369,11 @@ async def lifespan(app: FastAPI):
         import threading
         def _precompute_capsules():
             try:
+                # Two full-library scans at once slow both: wait for the index build
+                # (returns at once when none runs), and skip it if shutdown ended it.
+                from api.schema_startup import INTERRUPTED
+                if index_build.wait() == INTERRUPTED:
+                    return
                 from api.database import get_db_connection
                 from api.routers.capsules import _set_cached_capsules
                 from analyzers.capsule_generator import generate_all_capsules

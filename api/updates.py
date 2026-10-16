@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 
+from db.stats_cache import cache_stats_best_effort
 from utils.version import current_version, is_newer
 
 logger = logging.getLogger("facet.updates")
@@ -101,11 +102,7 @@ def check_for_update(conn, force=False):
             return _result(current, stored)
 
     fetched = _fetch_latest(settings['check_url']) or {'latest': None, 'release_url': ''}
-    conn.execute(
-        "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-        (CACHE_KEY, json.dumps(fetched), time.time()),
-    )
-    conn.commit()
+    cache_stats_best_effort(conn, [(CACHE_KEY, json.dumps(fetched))])
     return _result(current, fetched)
 
 

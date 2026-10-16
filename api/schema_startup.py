@@ -123,6 +123,12 @@ class PhotoIndexBuild:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def wait(self) -> str | None:
+        """Block until the build thread ends; return its ``run`` result (None if never started)."""
+        if self._thread is not None:
+            self._thread.join()
+        return self.result
+
     def stop(self, timeout=30.0) -> bool:
         """Interrupt the build and wait for its thread; True when the thread has ended."""
         self._stop.set()

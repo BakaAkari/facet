@@ -25,7 +25,7 @@ from api.models.media import (
     MediaLocationNameResponse,
 )
 from db import person_not_hidden_clause
-from db.stats_cache import METRIC_RANGES_KEY
+from db.stats_cache import METRIC_RANGES_KEY, cache_stats_best_effort
 
 router = APIRouter(prefix="/api/filter_options", tags=["filter_options"])
 logger = logging.getLogger(__name__)
@@ -356,24 +356,26 @@ async def focal_lengths(user: Optional[CurrentUser] = Depends(get_optional_user)
     return await _cached_filter_query('focal_lengths', 'focal_lengths', query, vis)
 
 
-async def _store_color_cache(conn, temps, hue_buckets):
+def _store_color_cache_sync(temps, hue_buckets):
+    with get_db() as conn:
+        cache_stats_best_effort(conn, [
+            ('color_temps', json.dumps(temps)),
+            ('color_hue_buckets', json.dumps(hue_buckets)),
+        ])
+
+
+async def _store_color_cache(temps, hue_buckets):
     """Persist the colour facets into ``stats_cache`` (best-effort).
 
     Lets repeated dropdown opens skip the full ``dominant_hue`` scan. Failures
     (e.g. a missing table before init) are swallowed so a cache miss never
-    breaks the actual response.
+    breaks the actual response, and the write is skipped while the gallery index
+    build or another writer holds the lock (``cache_stats_best_effort``). It runs
+    on its own short-lived connection in a worker thread, so its lock wait never
+    blocks the event loop.
     """
-    now = time.time()
     try:
-        await conn.execute(
-            "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-            ('color_temps', json.dumps(temps), now),
-        )
-        await conn.execute(
-            "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-            ('color_hue_buckets', json.dumps(hue_buckets), now),
-        )
-        await conn.commit()
+        await asyncio.to_thread(_store_color_cache_sync, temps, hue_buckets)
     except sqlite3.Error:
         logger.debug("Failed to cache color facets", exc_info=True)
 
@@ -436,7 +438,7 @@ async def colors(user: Optional[CurrentUser] = Depends(get_optional_user)):
                     counts[name] += 1
             hue_buckets = [(name, counts[name]) for name in HUE_BUCKETS if counts[name]]
             if use_cache:
-                await _store_color_cache(conn, temps, hue_buckets)
+                await _store_color_cache(temps, hue_buckets)
             return {'temps': temps, 'hue_buckets': hue_buckets}
         except sqlite3.Error:
             logger.exception("Failed to query colors")
@@ -649,11 +651,7 @@ def _compute_metric_ranges():
         # empty result would keep the sidebar blank for a whole TTL after the
         # first scan lands.
         if ranges:
-            conn.execute(
-                "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-                (METRIC_RANGES_KEY, json.dumps(ranges), time.time()),
-            )
-            conn.commit()
+            cache_stats_best_effort(conn, [(METRIC_RANGES_KEY, json.dumps(ranges))])
         return ranges
 
 

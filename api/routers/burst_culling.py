@@ -34,6 +34,7 @@ from api.db_helpers import (
 from api.similarity_groups import compute_similarity_groups
 from api.routers.scenes import compute_scenes, apply_scene_cull, SceneConfirmBody
 from processing.burst_score import burst_weights_from_config, compute_burst_score
+from db.stats_cache import cache_stats_best_effort
 from utils.date_utils import parse_date
 from db.sequence_overrides import (
     clear_sequence_overrides, existing_group_key, set_sequence_overrides,
@@ -2242,11 +2243,7 @@ def _shoot_type_evidence(conn, user_id, album_id, date_from, date_to):
             pass
 
     evidence = _query_shoot_type_evidence(conn, user_id, album_id, date_from, date_to)
-    conn.execute(
-        "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-        (cache_key, json.dumps(evidence), time.time()),
-    )
-    conn.commit()
+    cache_stats_best_effort(conn, [(cache_key, json.dumps(evidence))])
     return evidence
 
 
