@@ -657,6 +657,11 @@ WEIGHT_CONFIG_SNAPSHOTS_COLUMNS = [
     ('accuracy_after', 'REAL'),  # Accuracy after weights were applied
     ('comparisons_used', 'INTEGER'),
     ('created_by', 'TEXT'),  # 'manual' or 'auto_optimization'
+    # The category's modifiers.bonus when the snapshot was taken, so undo restores
+    # the bonus an optimizer apply re-centred together with the weights. NULL = not
+    # recorded (rows written before the column, calibrate.py snapshots, categories
+    # with no categories[] entry): a restore then leaves the bonus alone.
+    ('category_bonus', 'REAL'),
 ]
 
 WEIGHT_CONFIG_SNAPSHOTS_INDEXES = [

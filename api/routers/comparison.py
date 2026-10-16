@@ -1534,6 +1534,10 @@ def api_save_weight_snapshot(
         # Get current weights
         config = server_scoring_config()
         weights = config.get_weights(body.category)
+        # get_weights merges the category's modifiers in, so the bonus is the
+        # category's current one; a category that is not in categories[] has none
+        bonus = weights.get('bonus')
+        category_bonus = float(bonus) if isinstance(bonus, (int, float)) else None
 
         with get_db() as conn:
             snapshot_id = record_weight_snapshot(
@@ -1543,6 +1547,7 @@ def api_save_weight_snapshot(
                 accuracy_before=body.accuracy_before,
                 accuracy_after=body.accuracy_after,
                 comparisons_used=body.comparisons_used,
+                category_bonus=category_bonus,
                 db=conn,
             )
             conn.commit()
@@ -1579,12 +1584,16 @@ def api_restore_weights(
             raise HTTPException(status_code=500, detail='Corrupted snapshot data')
         category = snapshot['category']
 
-        # Snapshot the current weights before overwriting, so a restore can be undone
+        # Snapshot the current weights (and bonus) before overwriting, so a restore
+        # can be undone. A snapshot that recorded the category's bonus gives it back
+        # in the same locked write as the weights; one that did not (NULL: written
+        # before the column, or by calibrate.py) leaves the current bonus alone.
         update_category_weights(
             str(_CONFIG_PATH), category, 'auto:pre_restore', get_db,
             not_found_detail=f'Category "{category}" not found in config',
             weights=weights,
             replace_weights=True,
+            bonus=snapshot.get('category_bonus'),
         )
 
         reload_config()

@@ -33,6 +33,9 @@ CLI::
 
 import json
 import logging
+import os
+import sqlite3
+import time
 from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 from scipy.optimize import minimize
@@ -40,10 +43,14 @@ from scipy.special import expit
 from scipy.stats import binom
 from db import DEFAULT_DB_PATH, get_connection
 from config import ScoringConfig
-from config.category_filter import with_face_defaults
+from config.percentile_normalizer import PercentileNormalizer
 from config.scoring_config import resolve_scoring_config_path
 from config_resolve import load_resolved
-from processing.scorer import build_metric_vector, SCORING_METRIC_KEYS
+from db.scoring_overrides import get_photo_scoring_overrides
+from processing.scorer import (
+    Facet, SCORING_METRIC_KEYS, SERVED_ROW_COLUMNS, build_metric_vector,
+    fold_quality_weight, unavailable_for_config,
+)
 
 logger = logging.getLogger("facet.optimizer")
 
@@ -59,6 +66,14 @@ _WEIGHT_UPPER_BOUND = 0.60
 
 # One-sided significance level of the held-out McNemar test.
 _GATE_ALPHA = 0.05
+
+# How long the percentile snapshot an optimizer instance read stays current. A
+# per-request optimizer never reaches it; the long-lived one the burst-culling
+# router keeps would otherwise score on the snapshot of its first call forever.
+_NORMALIZER_TTL_SECONDS = 300.0
+
+# Range the viewer accepts for a category's ``modifiers.bonus``.
+_BONUS_MIN, _BONUS_MAX = -5.0, 5.0
 
 
 def _pairwise_objective(w, D, y, rw, w0, lam):
@@ -217,6 +232,8 @@ class WeightOptimizer:
         self.db_path = db_path
         self.config_path = resolve_scoring_config_path(config_path)
         self._cfg: Optional[ScoringConfig] = None
+        self._normalizer: Optional[PercentileNormalizer] = None
+        self._normalizer_read_at: Optional[float] = None
 
     @property
     def cfg(self) -> ScoringConfig:
@@ -230,15 +247,50 @@ class WeightOptimizer:
             self._cfg = ScoringConfig(self.config_path, validate=False)
         return self._cfg
 
-    def _metric_vector(self, row: dict, category: Optional[str]) -> List[float]:
-        """Build the production metric vector for one photo, in component order.
+    def _get_normalizer(self, conn=None) -> Optional[PercentileNormalizer]:
+        """The percentile normalizer the last ``--recompute-average`` scored with.
 
-        Uses the photo's own determined category when none is supplied so the
-        category-dependent terms (leading-lines blend, isolation) match scoring.
-        Values are clamped to 0-10 exactly as the scorer clamps them.
+        Rebuilt from the persisted ``percentiles_snapshot`` (a fresh compute
+        over a large library takes over a minute) and cached for a few minutes.
+        None when no snapshot exists or the database does not: the stored
+        columns are then what is served. ``conn`` reuses a caller's open
+        connection.
         """
-        cat = category or self.cfg.determine_category(with_face_defaults(row))
-        vec = build_metric_vector(row, self.cfg, cat)
+        now = time.monotonic()
+        if self._normalizer_read_at is not None and now - self._normalizer_read_at < _NORMALIZER_TTL_SECONDS:
+            return self._normalizer
+        settings = self.cfg.get_normalization_settings()
+        normalizer = None
+        try:
+            if conn is not None:
+                normalizer = PercentileNormalizer.from_snapshot(conn, settings)
+            elif os.path.exists(self.db_path):
+                with get_connection(self.db_path) as own:
+                    normalizer = PercentileNormalizer.from_snapshot(own, settings)
+        except sqlite3.Error:
+            logger.warning("Could not read the percentile snapshot; features use stored columns",
+                           exc_info=True)
+        self._normalizer, self._normalizer_read_at = normalizer, now
+        return normalizer
+
+    def _metric_vector(self, row: dict, category: Optional[str]) -> List[float]:
+        """Build the metric vector the scorer serves for one photo, in component order.
+
+        The row is first rewritten exactly as ``update_all_aggregates`` rewrites
+        it (``Facet.prepare_scoring_row``: percentile-normalized sharpness,
+        colour and eye sharpness, group-portrait flag, histogram exposure),
+        in ``category`` when one is supplied, so the optimizer trains on what
+        production weights. The photo's own category (override and scoring
+        context honoured) is used when none is supplied, so the
+        category-dependent terms (leading-lines blend, isolation) match scoring.
+        Values are clamped to 0-10 exactly as the scorer clamps them. The
+        ranker and keeper inference paths come through here too, so they build
+        the features they were trained on.
+        """
+        cfg = self.cfg
+        prepared = Facet.prepare_scoring_row(dict(row), cfg, self._get_normalizer(), category=category)
+        cat = category or Facet._determine_photo_category(prepared, cfg)
+        vec = build_metric_vector(prepared, cfg, cat, unavailable=unavailable_for_config(cfg))
         return [max(0.0, min(10.0, vec.get(c, 0.0))) for c in self.SCORE_COMPONENTS]
 
     def _fetch_comparison_data(
@@ -309,6 +361,17 @@ class WeightOptimizer:
             ph = ','.join('?' * len(chunk))
             for pr in conn.execute(f"SELECT * FROM photos WHERE path IN ({ph})", chunk):
                 photos[pr['path']] = dict(pr)
+        # A sticky per-photo category / scoring context decides how a photo is
+        # served when no comparison category pins it (pooled runs)
+        try:
+            overrides = get_photo_scoring_overrides(conn, path_list)
+        except sqlite3.OperationalError:  # a database from before the table existed
+            overrides = {}
+        for path, override in overrides.items():
+            if path in photos:
+                photos[path]['category_override'] = override['category_override']
+                photos[path]['scoring_context'] = override['scoring_context']
+        self._get_normalizer(conn)
 
         comparisons = []
         features_a, features_b, winners, row_weights = [], [], [], []
@@ -694,45 +757,119 @@ class WeightOptimizer:
             'comparisons_used': len(all_data),
         }
 
-    def _load_current_weights(self, category: Optional[str]) -> Dict[str, float]:
-        """Load current weights from scoring_config.json.
+    @staticmethod
+    def _find_category_entry(config: dict, category: Optional[str]) -> Optional[dict]:
+        """The ``categories[]`` entry named ``category`` (None for the v3 blocks)."""
+        for cat_entry in config.get('categories', []):
+            if cat_entry.get('name') == category:
+                return cat_entry
+        return None
 
+    def _load_current_weights(self, category: Optional[str]) -> Dict[str, float]:
+        """The weights the scorer SERVES for ``category``, from scoring_config.json.
+
+        ``calculate_aggregate_logic`` folds ``quality`` into ``aesthetic`` before
+        weighting (``fold_quality_weight``), so the fold is applied here too and
+        the result is renormalised over the optimizer's components: the
+        optimizer's prior, its accuracy baseline and an apply's bonus shift are
+        then all measured against the weights production scores with.
         Components are config metric keys (see SCORING_METRIC_KEYS), so the
         '<key>_percent' lookup is direct - no DB-column translation.
         """
+        uniform = {c: 1.0 / len(self.SCORE_COMPONENTS) for c in self.SCORE_COMPONENTS}
         try:
             config = load_resolved(self.config_path)
 
             cat = category or 'others'
 
             # Try v4 categories array first, then v3 flat dicts
-            cat_weights = {}
-            for cat_entry in config.get('categories', []):
-                if cat_entry.get('name') == cat:
-                    cat_weights = cat_entry.get('weights', {})
-                    break
+            entry = self._find_category_entry(config, cat)
+            cat_weights = entry.get('weights', {}) if entry else {}
             if not cat_weights:
                 if 'category_weights' in config and cat in config['category_weights']:
                     cat_weights = config['category_weights'][cat]
                 elif 'weights' in config and cat in config['weights']:
                     cat_weights = config['weights'][cat]
 
-            # Convert percent values to decimal weights
-            weights = {}
-            for key in self.SCORE_COMPONENTS:
-                percent_key = f"{key}_percent"
-                weights[key] = cat_weights.get(percent_key, 0.0) / 100.0
+            # Percent values to decimal weights, 'quality' included, then the
+            # scorer's own fold
+            decimal = {key[:-len('_percent')]: value / 100.0
+                       for key, value in cat_weights.items() if key.endswith('_percent')}
+            served = fold_quality_weight(decimal)
+            weights = {key: float(served.get(key, 0.0)) for key in self.SCORE_COMPONENTS}
 
             # If all weights are 0, use uniform distribution
-            if sum(weights.values()) == 0:
-                return {c: 1.0 / len(self.SCORE_COMPONENTS) for c in self.SCORE_COMPONENTS}
+            total = sum(weights.values())
+            if total <= 0:
+                return uniform
 
-            return weights
+            return {key: value / total for key, value in weights.items()}
 
         except Exception as e:
             logger.warning("Could not load weights from config: %s", e)
             # Return default uniform weights
-            return {c: 1.0 / len(self.SCORE_COMPONENTS) for c in self.SCORE_COMPONENTS}
+            return uniform
+
+    @staticmethod
+    def _round_percent_weights(new_weights: Dict[str, float], log: bool = False) -> Dict[str, float]:
+        """``new_weights`` as the config stores them: percent, one decimal, summing to 100.
+
+        Rounding to a tenth of a percent can leave the total a hair off 100, so
+        the largest weight absorbs the difference. Shared by the write and by the
+        bonus projection, so the shift is measured on the weights that land.
+        """
+        percent = {c: round(w * 100, 1) for c, w in new_weights.items()}
+        total = sum(percent.values())
+        if total > 0 and abs(total - 100.0) > 0.01:
+            largest = max(percent, key=lambda c: percent[c])
+            adjustment = 100.0 - total
+            percent[largest] = round(percent[largest] + adjustment, 1)
+            if log:
+                logger.info("Adjusted %s_percent by %+.1f%% to ensure 100%% total", largest, adjustment)
+        return percent
+
+    def _projected_mean_shift(self, new_weights: Dict[str, float], category: Optional[str]) -> Optional[float]:
+        """Mean change of ``category``'s scores if ``new_weights`` replace the served ones.
+
+        ``mean over the category's photos of V @ (w_new - w_served)``, with ``V``
+        the metric vector as served (``_metric_vector``) and ``w_served`` the
+        folded current weights. The pairwise likelihood is blind to a constant
+        added to a whole category, so without this the apply moves the
+        category's level against every other category. None when there is
+        nothing to measure: no ``categories[]`` entry, no database, or no photo
+        stored in the category.
+        """
+        if self._find_category_entry(load_resolved(self.config_path), category) is None:
+            return None
+        if not os.path.exists(self.db_path):
+            logger.info("No database at %s: bonus not re-centred", self.db_path)
+            return None
+        served = self._load_current_weights(category)
+        rounded = self._round_percent_weights(new_weights)
+        diff = np.array([rounded[c] / 100.0 - served[c] if c in rounded else 0.0
+                         for c in self.SCORE_COMPONENTS])
+        total = np.zeros(len(self.SCORE_COMPONENTS))
+        count = 0
+        try:
+            with get_connection(self.db_path) as conn:
+                self._get_normalizer(conn)
+                cursor = conn.execute(
+                    f"SELECT {', '.join(SERVED_ROW_COLUMNS)} FROM photos WHERE category = ?", (category,))
+                while True:
+                    batch = cursor.fetchmany(1000)
+                    if not batch:
+                        break
+                    for row in batch:
+                        total += self._metric_vector(dict(row), category)
+                        count += 1
+        except sqlite3.Error:
+            logger.warning("Could not project the %s category's mean shift: bonus not re-centred",
+                           category, exc_info=True)
+            return None
+        if count == 0:
+            logger.info("No photos stored in category %s: bonus not re-centred", category)
+            return None
+        return float(total @ diff / count)
 
     def apply_optimized_weights(
         self,
@@ -743,23 +880,37 @@ class WeightOptimizer:
         """
         Apply optimized weights to scoring_config.json.
 
+        The category's ``modifiers.bonus`` is re-centred in the same write by the
+        projected mean shift of the category's scores, so applying new weights
+        changes how the category's photos rank among themselves, not where the
+        category sits against the others. A category with no ``categories[]``
+        entry (the v3 ``others`` block) has no bonus and is left as is.
+
+        The quality weight is folded into aesthetic and set to 0, so the served
+        weights equal ``new_weights`` (which are over the served weight space).
+
         Args:
             new_weights: Dict of component -> weight (0.0 to 1.0)
             category: Category to update
-            backup: Record a pre-apply weight snapshot before modifying
+            backup: Record a pre-apply weight snapshot (weights and bonus)
+                    before modifying
 
         Returns:
             The snapshot id when backup=True (else None)
         """
         from api.config import CONFIG_WRITE_LOCK
+        # Measured before the lock (it reads every photo of the category). A
+        # weights writer landing in between leaves a residual of its own size.
+        mean_shift = self._projected_mean_shift(new_weights, category)
         with CONFIG_WRITE_LOCK:
-            return self._apply_weights_locked(new_weights, category, backup)
+            return self._apply_weights_locked(new_weights, category, backup, mean_shift)
 
     def _apply_weights_locked(
         self,
         new_weights: Dict[str, float],
         category: str,
-        backup: bool
+        backup: bool,
+        mean_shift: Optional[float] = None,
     ) -> Optional[int]:
         """Rewrite one category's weights with the config lock already held.
 
@@ -773,18 +924,21 @@ class WeightOptimizer:
         writer shares. Nothing here may call
         ``reload_config``, which reaches the same lock through ``_load_config``
         and would deadlock against the frame above.
+
+        ``mean_shift`` is the projected mean change of the category's scores
+        (:meth:`_projected_mean_shift`); the bonus read here, inside the lock, is
+        moved by minus that, clamped to the viewer's range, in the same write.
         """
         # Load the resolved config: the file is only the operator's override
         config = load_resolved(self.config_path)
 
         # Update weights for the category — v4 categories array first, v3 fallback
+        entry = self._find_category_entry(config, category)
         cat_weights = None
-        for cat_entry in config.get('categories', []):
-            if cat_entry.get('name') == category:
-                if 'weights' not in cat_entry:
-                    cat_entry['weights'] = {}
-                cat_weights = cat_entry['weights']
-                break
+        if entry is not None:
+            if 'weights' not in entry:
+                entry['weights'] = {}
+            cat_weights = entry['weights']
 
         if cat_weights is None:
             # v3 fallback
@@ -794,6 +948,10 @@ class WeightOptimizer:
                 config['weights'][category] = {}
             cat_weights = config['weights'][category]
 
+        # The bonus a restore must give back: only a categories[] entry has one
+        # (the scorer reads a missing one as 0)
+        bonus_old = float((entry.get('modifiers') or {}).get('bonus', 0) or 0) if entry is not None else None
+
         # Snapshot the current weights before overwriting (restorable from the viewer)
         snapshot_id = None
         if backup:
@@ -802,14 +960,22 @@ class WeightOptimizer:
                 snapshot_id = record_weight_snapshot(
                     category, dict(cat_weights),
                     created_by='auto:optimizer', db=self.db_path,
+                    category_bonus=bonus_old,
                 )
                 logger.info("Recorded pre-apply weight snapshot (id=%s)", snapshot_id)
             except Exception:
                 logger.warning("Could not record pre-apply weight snapshot", exc_info=True)
 
-        # Components are config metric keys - write '<key>_percent' directly
-        for component, weight in new_weights.items():
-            cat_weights[f"{component}_percent"] = round(weight * 100, 1)
+        # Components are config metric keys - write '<key>_percent' directly,
+        # rounded to a tenth of a percent and summing to exactly 100
+        for component, percent in self._round_percent_weights(new_weights, log=True).items():
+            cat_weights[f"{component}_percent"] = percent
+
+        # The new weights are over the SERVED weight space (quality already folded
+        # into aesthetic), so quality must stop contributing: left in place it
+        # would be folded into the fitted aesthetic weight a second time.
+        if 'quality_percent' in cat_weights:
+            cat_weights['quality_percent'] = 0
 
         # Drop stale '<base>_percent' keys whose base is not a real scoring metric
         # (e.g. DB-column-named keys a pre-alignment apply may have left behind).
@@ -829,15 +995,21 @@ class WeightOptimizer:
                     if k.endswith('_percent') and k[:-len('_percent')] not in valid_metric_keys]:
             del cat_weights[key]
 
-        # Post-rounding normalization to ensure weights sum to exactly 100%
-        percent_keys = [f"{c}_percent" for c in new_weights.keys()]
-        total = sum(cat_weights[k] for k in percent_keys if k in cat_weights)
-        if total > 0 and abs(total - 100.0) > 0.01:
-            # Adjust largest weight to compensate for rounding error
-            adjustment = 100.0 - total
-            largest_key = max(percent_keys, key=lambda k: cat_weights.get(k, 0))
-            cat_weights[largest_key] = round(cat_weights[largest_key] + adjustment, 1)
-            logger.info("Adjusted %s by %+.1f%% to ensure 100%% total", largest_key, adjustment)
+        # Re-centre the category bonus so the mean score of the category's photos
+        # stays where it was
+        if entry is None or bonus_old is None:
+            logger.info("no category entry for %s, bonus not re-centred", category)
+        elif mean_shift is not None:
+            wanted = bonus_old - mean_shift
+            new_bonus = max(_BONUS_MIN, min(_BONUS_MAX, wanted))
+            logger.info("Projected mean score shift of %s: %+.2f (bonus %.2f -> %.2f)",
+                        category, mean_shift, bonus_old, new_bonus)
+            if wanted != new_bonus:
+                logger.warning(
+                    "Bonus for %s is clamped to [%g, %g]: a residual mean shift of %+.2f remains",
+                    category, _BONUS_MIN, _BONUS_MAX, new_bonus - wanted)
+            if abs(new_bonus - bonus_old) >= 0.005:
+                entry.setdefault('modifiers', {})['bonus'] = round(new_bonus, 2)
 
         # Save through the shared config writer rather than a local
         # open()+os.replace(): it is the one primitive that keeps the three

@@ -150,6 +150,34 @@ class PercentileNormalizer:
         except (json.JSONDecodeError, TypeError):
             return None
 
+    @classmethod
+    def from_snapshot(cls, conn, settings):
+        """The normalizer the last ``--recompute-average`` scored with, or None.
+
+        ``update_all_aggregates`` rewrites tech_sharpness / color_score /
+        eye_sharpness from their raw columns in memory, never on disk, so the
+        stored values alone are not what the scorer serves. This rebuilds that
+        normalizer read-only from the ``percentiles_snapshot`` the recompute
+        persists to ``stats_cache`` (a fresh compute over a 127k library takes
+        over a minute, too slow for a request handler).
+
+        ``settings`` is ``ScoringConfig.get_normalization_settings()``. Returns
+        None when the method is not ``percentile`` or no snapshot exists: no
+        percentile recompute has then ever run, so the stored columns ARE what
+        is served.
+        """
+        if settings.get('method') != 'percentile':
+            return None
+        snap = cls.load_persisted(conn)
+        if not snap:
+            logger.info("No persisted percentile snapshot: scores are read un-normalized")
+            return None
+        norm = cls(None, target_percentile=snap.get('target_percentile', 95),
+                   per_category=settings.get('per_category', False))
+        norm.percentiles = snap.get('percentiles') or {}
+        norm.category_percentiles = snap.get('category_percentiles') or {}
+        return norm
+
     def normalize_with_category(self, metric, raw_value, category):
         """Apply category-specific normalization.
 

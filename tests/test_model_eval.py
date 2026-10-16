@@ -388,15 +388,15 @@ def test_end_to_end_applies_persisted_percentile_snapshot(eval_db):
     scorer.config = ScoringConfig(None)
     ro = ec.ro_connection(eval_db)
     try:
-        norm = me.load_normalizer(ro, scorer.config)
+        norm = PercentileNormalizer.from_snapshot(ro, scorer.config.get_normalization_settings())
         assert norm is not None
         row = me.fetch_metric_rows(ro, ['/eval/p0.jpg'])['/eval/p0.jpg']
     finally:
         ro.close()
-    m = me._production_metrics(scorer, row, norm)
+    m = Facet.prepare_scoring_row(dict(row), scorer.config, norm)
     assert m['tech_sharpness'] == pytest.approx(norm.normalize('raw_sharpness_variance', 400.0))
     assert m['tech_sharpness'] != 1.0
-    assert me._production_metrics(scorer, row, None)['tech_sharpness'] == 1.0
+    assert Facet.prepare_scoring_row(dict(row), scorer.config, None)['tech_sharpness'] == 1.0
 
 
 def test_end_to_end_rejects_bad_candidate_name(eval_db, tmp_path):

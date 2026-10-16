@@ -627,6 +627,27 @@ def fold_quality_weight(w):
     return {**w, 'aesthetic': w.get('aesthetic', 0.0) + w.get('quality', 0.0), 'quality': 0.0}
 
 
+# The photo columns the scorer reads to recompute an aggregate and a category from
+# a stored row (--recompute-average), without the clip_embedding BLOB. Shared with
+# the weight optimizer, which re-serves a category's rows to measure what an apply
+# does to its mean score.
+SERVED_ROW_COLUMNS = (
+    'path', 'aesthetic', 'face_count', 'face_quality', 'eye_sharpness', 'face_sharpness',
+    'face_ratio', 'tech_sharpness', 'color_score', 'exposure_score', 'comp_score',
+    'isolation_bonus', 'is_blink', 'iso', 'f_stop', 'focal_length', 'shadow_clipped', 'highlight_clipped',
+    'is_silhouette', 'histogram_spread', 'is_monochrome', 'contrast_score', 'tags',
+    'leading_lines_score', 'histogram_bimodality',
+    'raw_sharpness_variance', 'raw_color_entropy', 'raw_eye_sharpness',
+    'shutter_speed', 'is_group_portrait', 'mean_luminance', 'scoring_model', 'quality_score',
+    'noise_sigma', 'mean_saturation', 'power_point_score', 'dynamic_range_stops',
+    'histogram_data', 'topiq_score',
+    'aesthetic_iaa', 'face_quality_iqa', 'liqe_score',
+    'qrealign_score', 'aesthetic_v25', 'deqa_score',
+    'subject_sharpness', 'subject_prominence', 'subject_placement', 'bg_separation',
+    'form_symmetry', 'form_balance', 'form_edge_entropy', 'form_fractal', 'color_harmony',
+)
+
+
 def unavailable_for_config(cfg):
     """Metric keys this install cannot compute, memoised on the config object.
 
@@ -1243,7 +1264,8 @@ class Facet:
                 return None
         return None
 
-    def _determine_photo_category(self, m, cfg):
+    @staticmethod
+    def _determine_photo_category(m, cfg):
         """
         Determine which weight category applies to this photo.
         Honors a sticky per-photo category override first, then delegates to
@@ -1286,7 +1308,7 @@ class Facet:
             'is_monochrome': m.get('is_monochrome', 0),
             'mean_luminance': safe_float(m.get('mean_luminance'), 0.5),
             'iso': m.get('iso'),
-            'shutter_speed': self._parse_shutter_speed(m.get('shutter_speed')),
+            'shutter_speed': Facet._parse_shutter_speed(m.get('shutter_speed')),
             'focal_length': m.get('focal_length'),
             'f_stop': m.get('f_stop'),
         })
@@ -1613,6 +1635,89 @@ class Facet:
             logger.error("Error scoring %s: %s", original_path, e)
             return None
 
+    @staticmethod
+    def prepare_scoring_row(row_dict, cfg, normalizer, category=None):
+        """Rewrite a stored photo row into the row the scorer actually scores.
+
+        ``update_all_aggregates`` never persists these rewrites, so a stored row
+        is not what ``calculate_aggregate_logic`` weights: sharpness, colour and
+        eye sharpness are re-derived from their ``raw_*`` columns with the
+        percentile ``normalizer`` (per category when it is configured to be),
+        ``is_group_portrait`` follows the current ``min_faces_for_group`` and
+        ``exposure_score`` is rebuilt from the stored histogram. The single place
+        that transform lives: the recompute, the model evaluation and the weight
+        optimizer's training features all call it, so none can drift from it.
+
+        Mutates and returns ``row_dict``. ``category`` None means the photo's own
+        category (``category_override`` / ``scoring_context`` honoured).
+        """
+        # Apply percentile normalization if available
+        if normalizer:
+            # The category the photo is normalized in: the caller's when it supplies
+            # one (the weight optimizer serves a comparison's photos as that
+            # category), else the photo's own
+            if category is None:
+                category = Facet._determine_photo_category(row_dict, cfg)
+            per_category_enabled = bool(normalizer.per_category)
+            raw_sharp = row_dict.get('raw_sharpness_variance')
+            if raw_sharp is not None and isinstance(raw_sharp, (int, float)):
+                if per_category_enabled:
+                    normalized = normalizer.normalize_with_category('raw_sharpness_variance', raw_sharp, category)
+                else:
+                    normalized = normalizer.normalize('raw_sharpness_variance', raw_sharp)
+                if normalized is not None:
+                    row_dict['tech_sharpness'] = normalized
+
+            raw_color = row_dict.get('raw_color_entropy')
+            if raw_color is not None and isinstance(raw_color, (int, float)):
+                if per_category_enabled:
+                    normalized = normalizer.normalize_with_category('raw_color_entropy', raw_color, category)
+                else:
+                    normalized = normalizer.normalize('raw_color_entropy', raw_color)
+                if normalized is not None:
+                    row_dict['color_score'] = normalized
+
+            raw_eye = row_dict.get('raw_eye_sharpness')
+            if raw_eye is not None and isinstance(raw_eye, (int, float)):
+                if per_category_enabled:
+                    normalized = normalizer.normalize_with_category('raw_eye_sharpness', raw_eye, category)
+                else:
+                    normalized = normalizer.normalize('raw_eye_sharpness', raw_eye)
+                if normalized is not None:
+                    row_dict['eye_sharpness'] = normalized
+
+        # Recompute is_group_portrait based on current config threshold
+        face_count = row_dict.get('face_count') or 0
+        min_faces_for_group = cfg.get_face_detection_settings().get('min_faces_for_group', 4)
+        new_is_group = 1 if face_count >= min_faces_for_group else 0
+        row_dict['is_group_portrait'] = new_is_group
+
+        # Recompute exposure_score from stored histogram if available
+        decoded_histogram = unpack_histogram(row_dict.get('histogram_data'))
+        if decoded_histogram is not None:
+            hist = decoded_histogram['luma']
+            total = float(hist.sum())
+            if total > 0:
+                # Back to plain floats: the per-bin loops below are far
+                # slower over NumPy scalars, and this runs per row.
+                norm_hist = (hist / total).tolist()
+                mean_luminance = sum(i * norm_hist[i] for i in range(256)) / 255.0
+                variance = sum(((i / 255.0 - mean_luminance) ** 2) * norm_hist[i] for i in range(256))
+                spread = (variance ** 0.5) * 255.0
+                shadow_mass = sum(norm_hist[i] for i in range(30))    # 0-29 (matches get_histogram_data)
+                highlight_mass = sum(norm_hist[i] for i in range(225, 256))  # 225-255 (matches get_histogram_data)
+                bimodality = row_dict.get('histogram_bimodality') or 0
+                is_sil = row_dict.get('is_silhouette', 0)
+                luminance_penalty = abs(mean_luminance - 0.5) * 8
+                spread_bonus = min(4.0, spread / 20.0)
+                bimodality_penalty = max(0, bimodality - 1.0) * 0.6
+                clip_pen = 0
+                if not is_sil:
+                    clip_pen = shadow_mass * 4.0 + highlight_mass * 5.0
+                row_dict['exposure_score'] = max(0, min(10.0, 7.0 - luminance_penalty + spread_bonus - bimodality_penalty - clip_pen))
+
+        return row_dict
+
     def update_all_aggregates(self, use_embeddings=True, normalizer=None, category_filter=None):
         """
         RE-CALCULATION FEATURE: Updates scores using existing DB data (no images needed).
@@ -1652,21 +1757,7 @@ class Facet:
             # otherwise a 127k library streams ~0.5GB of embeddings into RAM only
             # to discard them (honours the BLOB-exclusion invariant). histogram_data
             # stays: it is decoded below to recompute exposure_score.
-            recalc_cols = [
-                'path', 'aesthetic', 'face_count', 'face_quality', 'eye_sharpness', 'face_sharpness',
-                'face_ratio', 'tech_sharpness', 'color_score', 'exposure_score', 'comp_score',
-                'isolation_bonus', 'is_blink', 'iso', 'f_stop', 'focal_length', 'shadow_clipped', 'highlight_clipped',
-                'is_silhouette', 'histogram_spread', 'is_monochrome', 'contrast_score', 'tags',
-                'leading_lines_score', 'histogram_bimodality',
-                'raw_sharpness_variance', 'raw_color_entropy', 'raw_eye_sharpness',
-                'shutter_speed', 'is_group_portrait', 'mean_luminance', 'scoring_model', 'quality_score',
-                'noise_sigma', 'mean_saturation', 'power_point_score', 'dynamic_range_stops',
-                'histogram_data', 'topiq_score',
-                'aesthetic_iaa', 'face_quality_iqa', 'liqe_score',
-                'qrealign_score', 'aesthetic_v25', 'deqa_score',
-                'subject_sharpness', 'subject_prominence', 'subject_placement', 'bg_separation',
-                'form_symmetry', 'form_balance', 'form_edge_entropy', 'form_fractal', 'color_harmony',
-            ]
+            recalc_cols = list(SERVED_ROW_COLUMNS)
             if use_embeddings:
                 recalc_cols.append('clip_embedding')
             cols_sql = ', '.join(recalc_cols)
@@ -1716,67 +1807,10 @@ class Facet:
                     except Exception as e:
                         logger.warning("Embedding recalculation failed for %s: %s", row_dict.get('path', 'unknown'), e)
 
-                # Determine category for this photo (needed for per-category normalization and storage)
-                category = self._determine_photo_category(row_dict, self.config)
-
-                # Apply percentile normalization if available
-                if normalizer:
-                    raw_sharp = row_dict.get('raw_sharpness_variance')
-                    if raw_sharp is not None and isinstance(raw_sharp, (int, float)):
-                        if per_category_enabled:
-                            normalized = normalizer.normalize_with_category('raw_sharpness_variance', raw_sharp, category)
-                        else:
-                            normalized = normalizer.normalize('raw_sharpness_variance', raw_sharp)
-                        if normalized is not None:
-                            row_dict['tech_sharpness'] = normalized
-
-                    raw_color = row_dict.get('raw_color_entropy')
-                    if raw_color is not None and isinstance(raw_color, (int, float)):
-                        if per_category_enabled:
-                            normalized = normalizer.normalize_with_category('raw_color_entropy', raw_color, category)
-                        else:
-                            normalized = normalizer.normalize('raw_color_entropy', raw_color)
-                        if normalized is not None:
-                            row_dict['color_score'] = normalized
-
-                    raw_eye = row_dict.get('raw_eye_sharpness')
-                    if raw_eye is not None and isinstance(raw_eye, (int, float)):
-                        if per_category_enabled:
-                            normalized = normalizer.normalize_with_category('raw_eye_sharpness', raw_eye, category)
-                        else:
-                            normalized = normalizer.normalize('raw_eye_sharpness', raw_eye)
-                        if normalized is not None:
-                            row_dict['eye_sharpness'] = normalized
-
-                # Recompute is_group_portrait based on current config threshold
-                face_count = row_dict.get('face_count') or 0
-                min_faces_for_group = self.config.get_face_detection_settings().get('min_faces_for_group', 4)
-                new_is_group = 1 if face_count >= min_faces_for_group else 0
-                row_dict['is_group_portrait'] = new_is_group
-
-                # Recompute exposure_score from stored histogram if available
-                decoded_histogram = unpack_histogram(row_dict.get('histogram_data'))
-                if decoded_histogram is not None:
-                    hist = decoded_histogram['luma']
-                    total = float(hist.sum())
-                    if total > 0:
-                        # Back to plain floats: the per-bin loops below are far
-                        # slower over NumPy scalars, and this runs per row.
-                        norm_hist = (hist / total).tolist()
-                        mean_luminance = sum(i * norm_hist[i] for i in range(256)) / 255.0
-                        variance = sum(((i / 255.0 - mean_luminance) ** 2) * norm_hist[i] for i in range(256))
-                        spread = (variance ** 0.5) * 255.0
-                        shadow_mass = sum(norm_hist[i] for i in range(30))    # 0-29 (matches get_histogram_data)
-                        highlight_mass = sum(norm_hist[i] for i in range(225, 256))  # 225-255 (matches get_histogram_data)
-                        bimodality = row_dict.get('histogram_bimodality') or 0
-                        is_sil = row_dict.get('is_silhouette', 0)
-                        luminance_penalty = abs(mean_luminance - 0.5) * 8
-                        spread_bonus = min(4.0, spread / 20.0)
-                        bimodality_penalty = max(0, bimodality - 1.0) * 0.6
-                        clip_pen = 0
-                        if not is_sil:
-                            clip_pen = shadow_mass * 4.0 + highlight_mass * 5.0
-                        row_dict['exposure_score'] = max(0, min(10.0, 7.0 - luminance_penalty + spread_bonus - bimodality_penalty - clip_pen))
+                # The row exactly as the scorer serves it: category, percentile-normalized
+                # sharpness/colour/eye, group-portrait flag and histogram exposure
+                Facet.prepare_scoring_row(row_dict, self.config, normalizer)
+                new_is_group = row_dict['is_group_portrait']
 
                 # Recalculate aggregate and category with current config
                 new_score, category = self.calculate_aggregate_logic(row_dict)
