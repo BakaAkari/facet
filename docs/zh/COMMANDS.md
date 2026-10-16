@@ -20,7 +20,7 @@
 | `python facet.py /path --pass tags` | 仅运行标签标注阶段（模型取决于 VRAM 档位） |
 | `python facet.py /path --pass composition` | 仅运行 SAMP-Net 构图模式检测 |
 | `python facet.py /path --pass faces` | 仅运行 InsightFace 人脸检测 |
-| `python facet.py /path --pass embeddings` | 仅运行 CLIP/SigLIP 特征向量提取 |
+| `python facet.py /path --pass embeddings` | 仅运行 CLIP/SigLIP 特征向量提取（只带单个 `--pass` 的运行不写入标签） |
 | `python facet.py /path --pass saliency` | 仅运行 BiRefNet 主体显著性检测 |
 | `python facet.py /path --db custom.db` | 使用自定义数据库文件 |
 | `python facet.py /path --config my.json` | 使用自定义评分配置 |
@@ -110,7 +110,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 
 | 命令 | 说明 |
 |---------|-------------|
-| `python facet.py --recompute-average` | 从已存储的特征向量重新计算综合评分（可再次推导；不做数据库快照——如需回退，请恢复某个权重快照并重新计算） |
+| `python facet.py --recompute-average` | 从已存储的特征向量重新计算综合评分（可再次推导；不做数据库快照——如需回退，请恢复某个权重快照并重新计算）。从旧版本升级后，先运行 `--recompute-silhouette`，再把本命令运行两次：对一个上次由旧代码汇总的库，第一遍可能留下第二遍仍会改动的行 |
 | `python facet.py --recompute-category portrait` | 只重新计算单个类别的评分 |
 | `python facet.py --tag-untagged` | 只为尚无标签的照片打标签，使用已存储的特征向量（不读取图像文件）。这与扫描结束时所做的工作相同；用它来补齐缺口，而不必重新标注已经有标签的照片 |
 | `python facet.py --recompute-tags` | 使用所配置的模型重新标注全部照片 |
@@ -121,7 +121,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --detect-junk` | 在新增／尚未评估的照片中，通过对已存储特征向量做零样本 CLIP 判别，标出非摄影类杂图（截屏、文档、票据、表情包、幻灯片）；每次扫描结束时自动运行。判定干净的照片会被标记为 `not_junk`，因此重新运行时不会再次扫描它们；加上 `--dry-run --verbose` 可预览逐张照片的分数而不写入 |
 | `python facet.py --recompute-junk` | 为整个照片库重新评估 `junk_kind`（所有已存储特征向量的照片） |
 | `python facet.py --recompute-saliency` | `[GPU]` 从已存储的缩略图重新计算主体显著性指标（BiRefNet_dynamic）——照片库所在卷离线时也能运行。会跳过已有 `subject_bbox` 的照片（可续跑）；`--force` 则全部重做。所有档位都启用了显著性（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。某张照片的显著性失败（例如显存不足）时，会记录一条 ERROR 且不写入：从未评分的行保持 NULL，并会在下次运行时再次被选中；使用 `--force` 时，已有显著性的行会保留其已存储的值。在 CUDA 上，批大小由空闲显存推算。 |
-| `python facet.py --recompute-composition-cpu` | 用基于规则的方法重新计算构图（CPU，任意档位） |
+| `python facet.py --recompute-composition-cpu` | 用基于规则的方法重新计算构图（CPU，任意档位）。缩略图没有主体框的照片，其 `power_point_score` 为 NULL（遗留的中性 5.0 会被改写为 NULL；无法解码的缩略图保留其原值） |
 | `python facet.py --recompute-composition-gpu` | `[GPU]` 用 SAMP-Net 重新计算构图 |
 | `python facet.py --recompute-iqa` | `[GPU]` 从已存储的缩略图重新计算补充 IQA 指标（TOPIQ IAA、NR-Face、LIQE）。所有档位都已启用（legacy 档位在 CPU 上运行，较慢）；强烈建议使用 GPU。仅填充为 NULL 的列。NR-Face 会跳过未检测到人脸的照片；LIQE 会跳过已存储缩略图短边小于 224 px 的照片（在汇总中计数，不存储任何内容）；NR-Face 拒绝评分的照片会记入 `iqa_declined` 表，在该照片被重新扫描之前不再重试（升级 pyiqa 或 NR-Face 权重不会清除这些记录：请用 `--force` 重新扫描，或运行 `--refresh-thumbnails`）；其他任何失败（显存不足、意外错误）保持 NULL，并会被下次运行再次选中。已存储的值（包括旧版本写入的中性 5.0）绝不会被替换：请先用 `--repair-neutral-iqa` 清除。见[补充画质模型](#补充画质模型) |
 | `python facet.py --detect-text` | 通过对已存储缩略图做 OCR，把图像中的文字（招牌、海报、文件）提取到 `ocr_text`，使其可在照片库搜索框中被检索到。会跳过已评估过的照片，因此重新运行时只读取新照片。需手动开启：要求 `scoring_config.json` 中的 `ocr.enabled` 并 `pip install easyocr`——参见 [配置 — OCR](CONFIGURATION.md#ocr) |
@@ -147,6 +147,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --score-topiq` | 对每张带有已存储缩略图的照片，用 TOPIQ 重新计算 `topiq_score`（需要 GPU）。没有 NULL 过滤，因此会覆盖现有值；TOPIQ 无法评分的照片保留其已存储的值 |
 | `python facet.py --backfill-focal-35mm` | 为缺少等效 35mm 焦距的照片从 EXIF 回填该值 |
 | `python facet.py --backfill-clipping` | 从已存储的直方图推导各通道的溢出百分比。仅使用数据库（不解码图像）且可续跑；直方图早于 RGB 格式的照片保持未知（NULL） |
+| `python facet.py --recompute-silhouette` | 用基于人脸的规则（参见 [SCORING.md](SCORING.md)），根据已存储的缩略图和人脸框重新推导 `is_silhouette`。仅操作数据库（不解码原图）、可续跑（分批提交），并且只重写这一列；遵守全局 `--dry-run`（报告会改变什么，不写入任何内容）。报告按照片已存储的人脸框与缩略图的关系对照片分类（`exact`、`scaled`、`count_mismatch`（未经验证的细化）、`other`）；无法定位的框与没有人脸的照片一样写为 0。`face_count` 为 NULL，或有人脸但没有已存储缩略图的照片保留其标志，并计为 `skipped_face_count_null` / `skipped_no_thumbnail`。之后运行 `--recompute-average`，让评分和类别跟上新的标志 |
 | `python facet.py --repair-int-columns` | 修复 `photos` 表中实际存储为 REAL 的 INTEGER 列——SQLite 的类型亲和性并非约束，因此外部工具写入的小数 ISO 会原样保留为 REAL。就地对每个值取整（SQLite 无法以整数保存的值——非有限值，或超过 2^53——置为 NULL），其余一概不动。仅使用数据库（不解码图像）。API 在读取时会对未修复的行取整，因此图库无需本命令即可正常显示；但筛选和排序比较的是实际存储的值，运行本命令可避免显示为 ISO 63 的照片被 ISO 区间筛选漏掉 |
 | `python facet.py --repair-neutral-iqa` | 清除 1.20 之前的版本为模型无法评分的照片写入 `aesthetic_iaa`、`face_quality_iqa` 和 `liqe_score` 的中性 5.0：这三列中所有恰好等于 5.0 的值在同一个事务中置为 NULL，并丢弃缓存的图库取值范围。按列打印数量。不会改动 `aesthetic`、`topiq_score`、`aesthetic_v25` 或 `quality_score`（这些列里真实的 5.00 无法与假值区分，而且在 `legacy`/`8gb` 上 `aesthetic` 就是 CLIP+MLP 的列）。恰好四舍五入为 5.00 的真实值也会被清除，之后由 `--recompute-iqa` 根据已存储的缩略图回填，因此回填的值可能略有不同。之后运行 `--recompute-iqa` 重新填充各列，再运行 `--recompute-average`；修复本身不会改变任何综合评分，因为 NULL 按中性计算。正在运行的查看器会在修复后继续使用其内存中的指标范围，最长一小时或直到重启（只有恰好等于 5.0 的数值计数会变化）。仅使用数据库（不解码图像）；与 `--dry-run` 同用会被拒绝（退出码 2）；不在任何 `--upgrade-db` 链中 |
 | `python facet.py --compute-recommendations` | 分析数据库并显示评分摘要 |
@@ -182,6 +183,8 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 
 需要 `transformers`（约 3 GB VRAM）。在 CUDA 上，批大小由空闲显存推算（1024 px 下每张图片约 2.4 GiB，范围 1 至 8 张），遇到显存不足错误时减半，直至一张图片。如果某张照片的显著性仍然失败，则记录一条 ERROR 且不存入任何值：从未评分的照片保持 NULL（并在综合评分中按中性计算，与显著性功能出现之前扫描的照片一样），使用 `--recompute-saliency` 与 `--pass saliency` 时，已有显著性的照片保留其已存储的值（对该照片进行完整重新扫描，例如 `--force`，则会为其存入 NULL，与从未评分的照片相同），`--recompute-saliency` 会再次选中它。见[主体显著性维度](SCORING.md#主体显著性维度)。
 
+检测不到主体的照片，其主体清晰度、主体位置和背景分离度存为 NULL（自构图遍起，没有主体框时 `power_point_score` 也是如此），主体突出程度为 0.0，`subject_bbox` 为 NULL；旧版本存的是中性的 5.0。已有的行保留该 5.0，直到 `--recompute-saliency`（它会重新选取没有 `subject_bbox` 的照片）和 `--recompute-composition-cpu` 将其重写。NULL 指标在综合评分中仍按中性计分；参见 [SCORING.md](SCORING.md)。
+
 ### 标签模型
 
 标签模型按 VRAM 档位选择：
@@ -194,6 +197,8 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `24gb` | Qwen3.5-4B | 更大的多模态模型。 |
 
 所有标注器都会把输出映射到所配置的标签词表。用 `--recompute-tags` 以档位默认模型重新标注，或用 `--recompute-tags-vlm` 进行基于 VLM 的重新标注。
+
+**标签何时写入。** 在 CLIP 相似度配置档（`legacy`/`8gb`，以及未安排 VLM 标签器遍的 `16gb`/`24gb`）上，多遍扫描在嵌入向量遍中就完成打标签，因此扫描时的类别和综合评分已经能看到标签；扫描后的打标签步骤只是给仍无标签的照片准备的回退。只带单个 `--pass` 的运行（例如 `--pass embeddings`）不写入标签，而在 CLIP 配置档上运行 `--pass tags` 仍会停止并指向 `--recompute-tags`。已有的行保留其类别，直到运行 `--recompute-average`。
 
 ### 特征向量模型
 
@@ -282,8 +287,8 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | 命令 | 说明 |
 |---------|-------------|
 | `python facet.py --comparison-stats` | 显示成对比较的统计信息 |
-| `python facet.py --optimize-weights` | 根据比较结果优化并保存权重（所有来源，按可靠性加权）；只有当留出集 k 折准确率优于当前权重时才会应用 |
-| `python facet.py --optimize-weights --optimize-force` | 即使未通过准确率门槛也应用优化后的权重 |
+| `python facet.py --optimize-weights` | 根据比较优化并保存权重（所有来源，按可靠性加权）；仅当通过按照片分组的留出检验（单侧 McNemar 检验 p < 0.05，且比当前权重至少高 2 个百分点）时才应用。应用时还会重新居中该类别的 `modifiers.bonus`；参见 [SCORING.md](SCORING.md) |
+| `python facet.py --optimize-weights --optimize-force` | 即使未通过留出检验（或检验无法运行）也应用优化后的权重 |
 | `python facet.py --optimize-weights --optimize-sources vote,culling` | 把训练数据限定为指定的比较来源 |
 | `python facet.py --optimize-weights --optimize-category portrait` | 只在一个类别上训练，并写入其 v4 `categories[].weights` 块 |
 | `python facet.py --auto-tune-categories` | **仅限超级管理员**（多用户模式下需传入 `--user`）：报告各类别的比较标注是否足以自动调优共享的全局权重。目前为占位实现——只报告就绪程度；自动应用的循环因标注不足而暂缓 |
@@ -350,7 +355,7 @@ python /opt/facet/viewer.py      # 仍然读取 /opt/facet/scoring_config.json�
 |---------|-------------|
 | `python tag_existing.py` | 使用已存储的 CLIP 特征向量，为尚无标签的照片添加标签 |
 | `python tag_existing.py --dry-run` | 预览标签但不保存 |
-| `python tag_existing.py --threshold 0.25` | 自定义相似度阈值（默认：0.22） |
+| `python tag_existing.py --threshold 0.25` | 自定义相似度阈值（默认：当前配置档的 `tag_threshold_percent`，0.08） |
 | `python tag_existing.py --max-tags 3` | 限制每张照片的标签数量（默认：5） |
 | `python tag_existing.py --force` | 重新标注全部照片 |
 | `python tag_existing.py --db custom.db` | 使用自定义数据库 |
@@ -377,7 +382,7 @@ python /opt/facet/viewer.py      # 仍然读取 /opt/facet/scoring_config.json�
 |---------|-------------|
 | `python database.py` | 初始化／升级表结构（同时构建图库覆盖索引，扫描在启动时也会这样做；查看器启动时会在后台构建缺失的索引，参见 [VIEWER.md](VIEWER.md#图库索引与计数缓存)） |
 | `python database.py --info` | 显示表结构信息 |
-| `python database.py --migrate-tags` | 填充 photo_tags 查找表（查询快 10-50 倍） |
+| `python database.py --migrate-tags` | 一次性引导 photo_tags 查找表（查询快 10-50 倍）。填充之后，扫描、`--recompute-tags`、`--recompute-tags-vlm` 和 `tag_existing.py` 会逐张照片保持其同步；从未填充过的表不会被隐式填充，在此之前读取方使用 `LIKE` 回退 |
 | `python database.py --rebuild-fts` | 从照片描述／标签重建 FTS5 全文检索索引 |
 | `python database.py --populate-vec` | 从特征向量填充 sqlite-vec 向量检索表 |
 | `python database.py --refresh-stats` | 刷新统计缓存 |

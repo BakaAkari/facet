@@ -215,6 +215,10 @@ Each category has:
 
 > **Form & color-harmony weights.** Every category's `weights` block carries five explainable metric keys — `symmetry_percent`, `balance_percent`, `edge_entropy_percent`, `fractal_percent`, and `color_harmony_percent` — populated by `--recompute-form`. They ship at `0` in every category, so aggregates stay byte-identical until you give one a weight (then re-run `--recompute-average`). Weights within a category must still sum to 100.
 
+> **`quality_percent` counts toward `aesthetic`.** The quality metric has no score of its own, so a category's `quality_percent` is added to its `aesthetic_percent` before scoring: the effective aesthetic weight is `aesthetic_percent + quality_percent`, and the weights still sum to 100. See [SCORING.md](SCORING.md).
+
+> **The shipped `astro` category needs a dark frame.** Its filters are `tag_match_mode: "any"` plus `luminance_max: 0.30`, so a bright scene that CLIP tags `aurora` or `stars` is not `astro`. Arrays replace wholesale (see [Defaults and your override](#defaults-and-your-override)): a `scoring_config.json` that carries its own `categories` array keeps its own `astro` entry and never receives the guard. Add `"luminance_max": 0.30` under `astro.filters` (or delete the array); `python facet.py --doctor` prints a "Config notice" when your `astro` entry has no `luminance_max`. Run `--recompute-average` afterwards.
+
 ---
 
 ## Scoring Contexts
@@ -326,29 +330,19 @@ Both levers persist in one side table, `photo_scoring_overrides(photo_path PK, s
 
 ## Thresholds
 
-Detection thresholds for automatic categorization.
+Scoring thresholds. Only `blink_penalty_percent` is left: whether a photo is a portrait, a night shot or a long exposure is decided by each category's `filters` (see [Categories](#categories)), not by this block.
 
 ```json
 {
   "thresholds": {
-    "portrait_face_ratio_percent": 5,
-    "blink_penalty_percent": 50,
-    "night_luminance_threshold": 0.15,
-    "night_iso_threshold": 3200,
-    "long_exposure_shutter_threshold": 1.0,
-    "astro_shutter_threshold": 10.0
+    "blink_penalty_percent": 50
   }
 }
 ```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `portrait_face_ratio_percent` | `5` | Face > 5% of frame = portrait |
 | `blink_penalty_percent` | `50` | Score multiplier when blink detected (0.5x) |
-| `night_luminance_threshold` | `0.15` | Mean luminance below this = night |
-| `night_iso_threshold` | `3200` | ISO above this = low-light |
-| `long_exposure_shutter_threshold` | `1.0` | Shutter > 1s = long exposure |
-| `astro_shutter_threshold` | `10.0` | Shutter > 10s = astrophotography |
 
 ---
 
@@ -410,7 +404,7 @@ Controls exposure analysis and clipping detection.
 |---------|---------|-------------|
 | `shadow_clip_threshold_percent` | `15` | Flag if > 15% pixels pure black |
 | `highlight_clip_threshold_percent` | `10` | Flag if > 10% pixels pure white |
-| `silhouette_detection` | `true` | Detect intentional silhouettes |
+| `silhouette_detection` | `true` | When `true`, a photo flagged `is_silhouette` skips the clipping penalty in its aggregate score. The flag itself is not configurable: it comes from a fixed, face-aware rule (see [SCORING.md](SCORING.md)) |
 
 ---
 
@@ -424,11 +418,8 @@ Score penalties for technical issues.
     "noise_sigma_threshold": 4.0,
     "noise_max_penalty_points": 1.5,
     "noise_penalty_per_sigma": 0.3,
-    "bimodality_threshold": 2.5,
-    "bimodality_penalty_points": 0.5,
     "leading_lines_blend_percent": 30,
     "oversaturation_threshold": 0.9,
-    "oversaturation_pixel_percent": 5,
     "oversaturation_penalty_points": 0.5
   }
 }
@@ -439,11 +430,8 @@ Score penalties for technical issues.
 | `noise_sigma_threshold` | `4.0` | Noise above this triggers penalty |
 | `noise_max_penalty_points` | `1.5` | Maximum noise penalty |
 | `noise_penalty_per_sigma` | `0.3` | Points per sigma above threshold |
-| `bimodality_threshold` | `2.5` | Histogram bimodality coefficient |
-| `bimodality_penalty_points` | `0.5` | Penalty for bimodal histograms |
 | `leading_lines_blend_percent` | `30` | Blend into comp_score |
 | `oversaturation_threshold` | `0.9` | Mean saturation threshold |
-| `oversaturation_pixel_percent` | `5` | Reserved for pixel-level detection |
 | `oversaturation_penalty_points` | `0.5` | Oversaturation penalty |
 
 **Noise penalty formula:**
@@ -530,14 +518,14 @@ Selects which models are used per VRAM profile.
       "model_name": "google/siglip2-so400m-patch16-naflex",
       "backend": "transformers",
       "embedding_dim": 1152,
-      "similarity_threshold_percent": 8,
+      "tag_threshold_percent": 8,
       "search_threshold_percent": 5
     },
     "clip_legacy": {
       "model_name": "ViT-L-14",
       "pretrained": "laion2b_s32b_b82k",
       "embedding_dim": 768,
-      "similarity_threshold_percent": 22,
+      "tag_threshold_percent": 8,
       "search_threshold_percent": 15
     },
     "qwen2_vl": {
@@ -580,12 +568,12 @@ Selects which models are used per VRAM profile.
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | SigLIP 2 NaFlex embedding model (16gb/24gb) |
 | `clip.backend` | `"transformers"` | `"transformers"` (SigLIP 2 NaFlex) or `"open_clip"` (legacy) |
 | `clip.embedding_dim` | `1152` | Embedding dimensions (1152 for SigLIP 2) |
-| `clip.similarity_threshold_percent` | `8` | Minimum CLIP cosine similarity for a **tag** match (`--tag-existing`, scan auto-tagging) — **not** the semantic-search gate below |
+| `clip.tag_threshold_percent` | `8` | Tag gate of the `16gb`/`24gb` profiles' SigLIP 2 tagger (scan, `--recompute-tags`, `tag_existing.py`): minimum cosine similarity for a **tag** match — **not** the semantic-search gate below. Replaces `similarity_threshold_percent`, which is no longer read |
 | `clip.search_threshold_percent` | `5` | Semantic-search cosine gate for `GET /api/search` (`/api/config`'s `search_threshold_default`), **not** the tag-match threshold above. Must be a whole number in `0-50` — the gallery's sidebar slider tops out at 50, and the client's percent round-trip (`Math.round(search_threshold_default * 100)`) is only lossless for an integer. Calibrated against a 34-row validation sample of real SigLIP-2 embeddings (issue #145): the default admits all 21 known true positives **and** 3 of the 13 known negatives — a deliberate lean toward recall over precision. A stricter `5.5%` would have admitted zero of the negatives but was rejected because the issue reporter had measured a genuine match at `0.051` cosine similarity on their own library; excluding a confirmed real match was judged worse than letting a few negatives through, especially since the gallery's 0-50% slider lets a user tighten (or loosen) a specific search after the fact. |
 | `clip_legacy.model_name` | `"ViT-L-14"` | Legacy CLIP model (legacy/8gb profiles) |
 | `clip_legacy.pretrained` | `"laion2b_s32b_b82k"` | Legacy pre-trained weights |
 | `clip_legacy.embedding_dim` | `768` | Legacy embedding dimensions |
-| `clip_legacy.similarity_threshold_percent` | `22` | Tag-match threshold for legacy CLIP — **not** the semantic-search gate below |
+| `clip_legacy.tag_threshold_percent` | `8` | Tag gate of the `legacy`/`8gb` profiles' CLIP ViT-L-14 tagger — **not** the semantic-search gate below. ViT-L-14 cosines sit at 0.15-0.35, so at 8 the gate never filters and `tagging.max_tags` decides the count |
 | `clip_legacy.search_threshold_percent` | `15` | Semantic-search cosine gate for `GET /api/search` on the legacy/8gb (open_clip) profile — preserves the threshold Facet used before this key existed. Same whole-number-in-`0-50` constraint as `clip.search_threshold_percent` above. |
 | `qwen2_vl.model_path` | `"Qwen/Qwen2-VL-2B-Instruct"` | HuggingFace path for the manual `composition_model: "qwen2-vl-2b"` opt-in — no profile selects it by default |
 | `qwen3_5_2b.model_path` | `"Qwen/Qwen3.5-2B"` | Tagging model for 16gb profile |
@@ -617,6 +605,8 @@ When `vram_profile` is `"auto"` (default), the system detects available GPU VRAM
 | ≥ 14GB | `16gb` |
 | ≥ 6GB | `8gb` |
 | No GPU | `legacy` (uses system RAM) |
+
+A CUDA device counts only when PyTorch reports at least one (`device_count() > 0`). A build that answers `torch.cuda.is_available()` with no visible device — for example with `CUDA_VISIBLE_DEVICES=''` on Windows — is treated as no GPU: the scan runs on the processor, reports 0 GB of VRAM and selects `legacy`, instead of stopping with "Invalid device id". `FACET_DEVICE=cuda` with no visible device is the documented error for an unavailable forced accelerator.
 
 **Cards with 10-14GB can opt in to the full feature set.** Auto-detect is unchanged: below 14GB it still selects `8gb`. A 10-14GB card can instead run the `16gb` profile (SigLIP 2 embeddings, TOPIQ, Qwen3.5-2B tagging, Q-ReAlign, saliency) by setting `"vram_profile": "16gb"` or `FACET_VRAM_PROFILE=16gb`. The pass planner then splits the models into four passes that fit (three on a card that reports 11.8 GiB or more) (see [Dynamic Pass Grouping](#dynamic-pass-grouping)), saliency, which used to run out of memory here, now sizes its batch from the free VRAM, and a photo it still cannot score stores NULL and logs an ERROR instead of a neutral score. **Switching an existing `8gb` library to `16gb` changes the embedding model** (CLIP ViT-L-14 768-dim → SigLIP 2 1152-dim), so the library would mix two embedding dimensions: rescan it or run `--recompute-embeddings` to re-embed it. See *Semantic search and a library embedded under a different profile* under [Models](#models) for how search behaves until you do.
 
@@ -1509,7 +1499,7 @@ General tagging settings. The tagging model is configured per-profile in `models
 | `enabled` | `true` | Enable tagging |
 | `max_tags` | `5` | Maximum tags per photo |
 
-**Note:** CLIP-specific settings like `similarity_threshold_percent` are in the `models.clip` section.
+**Note:** The CLIP/SigLIP tag gate is `tag_threshold_percent` in the active profile's clip block (`models.clip` for `16gb`/`24gb`, `models.clip_legacy` for `legacy`/`8gb`; `vram_profile: "auto"` resolves to the detected profile first). The old `similarity_threshold_percent` key is no longer read, with no alias: if your file still carries it, copy a value you customised to `tag_threshold_percent` (the config load and `python facet.py --doctor` name the old key).
 
 At the end of a scan, the tagging step loads the profile's embedding model only when it has something to tag. It is skipped, with a log line, when `enabled` is `false` or when no photo has both a stored embedding and an empty tag list. A scan whose pending photos the tagger can never tag (every similarity under the threshold) still loads the model on each run. `python tag_existing.py`, `--force` and `python facet.py --tag-untagged` are not affected.
 
@@ -1703,7 +1693,7 @@ Web gallery display and behavior.
 | `default_category` | `""` | Default category filter |
 | `edition_password` | `""` | Password to unlock edition mode (empty = every edit is refused; the install is read-only) |
 | **comparison_mode** | | |
-| `min_comparisons_for_optimization` | `50` | Minimum for optimization |
+| `min_comparisons_for_optimization` | `50` | Minimum number of decisive (A/B, not tie) comparisons in the category before weights are suggested |
 | `pair_selection_strategy` | `"learning"` | Pair strategy: `learning` (embedding-diversity cold-start + rank-disagreement once trained), `uncertainty`, `boundary`, `active`, `random` |
 | `candidate_pool_size` | `200` | Random candidate pool the `learning` strategy samples pairs within |
 | `show_current_scores` | `true` | Show scores during comparison |

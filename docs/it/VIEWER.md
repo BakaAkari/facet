@@ -157,6 +157,8 @@ python database.py --migrate-user-preferences --user alice
 
 I filtri di intervallo su Estetica IAA, Qualità volto IQA, LIQE e Aesthetic V2.5 includono solo le foto che hanno un punteggio. Una foto che un modello non ha potuto valutare viene memorizzata come NULL (prima portava un 5,0 neutro), quindi anche un filtro che parte da 0 la esclude, e un ordinamento crescente per Estetica (IAA), Qualità volto (IQA) o LIQE la mette in fondo, nella galleria e negli album (smart e condivisi compresi). Vedi [Dimensioni IQA supplementari](SCORING.md#dimensioni-iqa-supplementari).
 
+Anche i filtri di intervallo su Nitidezza soggetto, Posizionamento soggetto, Separazione sfondo e Punti di forza trovano solo foto con una misura: una foto senza soggetto rilevabile memorizza NULL in quelle colonne (prima portava un 5.0 neutro), quindi persino un filtro che parte da 0 la esclude, e il pannello dei dettagli e il tooltip omettono la riga. La prominenza del soggetto è 0.0 per una foto così. Vedi [SCORING.md](SCORING.md).
+
 ### Modelli compositivi
 
 Filtra per modelli rilevati da SAMP-Net (il modello ne emette esattamente questi 8,
@@ -363,7 +365,7 @@ Ricerca ibrida che combina la somiglianza degli embedding CLIP/SigLIP (70%) con 
 - Usa lo stesso modello di embedding del profilo VRAM attivo (SigLIP 2 per 16gb/24gb, CLIP ViT-L-14 per legacy/8gb), oppure quello tra `models.clip`/`clip_legacy` che corrisponde effettivamente alla dimensione di embedding memorizzata se i due non coincidono (vedi [docs/CONFIGURATION.md](CONFIGURATION.md))
 - `scope=text` limita la query alle corrispondenze FTS5 letterali nel testo OCR/didascalia e salta la ricerca tramite embedding
 - Controllato da `viewer.features.show_semantic_search` (predefinito: `true`)
-- La soglia coseno usa di default `models.clip.search_threshold_percent` (5%) / `models.clip_legacy.search_threshold_percent` (15%) — valori calibrati per backend, distinti dalla soglia di corrispondenza dei tag `similarity_threshold_percent`. Il `search_threshold_default` di `/api/config` inizializza il cursore di soglia 0-50% della galleria, che copre l'intero intervallo: una ricerca può essere restretta oltre il valore predefinito o allargata di nuovo fino a `0%` per singola query; una soglia esattamente `0%` continua a rifiutare una similarità coseno negativa, non è "nessun filtro". Il valore predefinito del 5% per SigLIP favorisce deliberatamente il recall rispetto alla precisione — vedi `clip.search_threshold_percent` in [docs/CONFIGURATION.md](CONFIGURATION.md) per il compromesso di quella calibrazione
+- La soglia coseno usa di default `models.clip.search_threshold_percent` (5%) / `models.clip_legacy.search_threshold_percent` (15%) — valori calibrati per backend, distinti dalla soglia di corrispondenza dei tag `tag_threshold_percent`. Il `search_threshold_default` di `/api/config` inizializza il cursore di soglia 0-50% della galleria, che copre l'intero intervallo: una ricerca può essere restretta oltre il valore predefinito o allargata di nuovo fino a `0%` per singola query; una soglia esattamente `0%` continua a rifiutare una similarità coseno negativa, non è "nessun filtro". Il valore predefinito del 5% per SigLIP favorisce deliberatamente il recall rispetto alla precisione — vedi `clip.search_threshold_percent` in [docs/CONFIGURATION.md](CONFIGURATION.md) per il compromesso di quella calibrazione
 - Ogni risultato riporta due campi di similarità: `similarity` è il punteggio combinato embedding (70%) + FTS (30%) usato per il ranking; `embedding_similarity` è la similarità coseno grezza effettivamente confrontata con la soglia sopra, presente solo quando è stato calcolato un punteggio di embedding per quella foto (assente — mai `null` — per una corrispondenza solo FTS o `scope=text`)
 
 ## Album
@@ -721,7 +723,7 @@ Coppie di foto affiancate. Scegli un vincitore, segna un pareggio o salta. Una b
 
 ### Scheda Suggerimenti pesi
 
-Mostra i pesi appresi dai confronti rispetto ai pesi correnti, affiancati, con l'accuratezza del modello prima/dopo. Le prime 10 foto attuali e le prime 10 foto previste dopo il ricalcolo vengono visualizzate in anteprima in colonne adiacenti. **Applica** scrive i pesi suggeriti; **Ricalcola** rivaluta la categoria per applicarli (entrambi richiedono la modalità di modifica).
+Mostra i pesi appresi dai confronti rispetto ai pesi correnti, affiancati, con l'accuratezza del modello prima/dopo. Le prime 10 foto attuali e le prime 10 foto previste dopo il ricalcolo vengono visualizzate in anteprima in colonne adiacenti. **Applica** scrive i pesi suggeriti; **Ricalcola** rivaluta la categoria per applicarli (entrambi richiedono la modalità di modifica). **Applica** viene offerto solo quando il server riporta `suggest_changes`, cioè quando la soglia riservata di McNemar raggruppata per foto (la stessa di `--optimize-weights`) è superata; altrimenti i pesi suggeriti sono mostrati solo a titolo informativo. A differenza di `--optimize-weights`, **Applica** scrive attraverso lo stesso percorso di una modifica manuale nella scheda Pesi (`POST /api/config/update_weights`) e non ricentra il bonus della categoria, quindi il punteggio medio della categoria può spostarsi.
 
 ### Scheda Pesi
 
@@ -729,7 +731,7 @@ Editor manuale dei pesi: un cursore per ogni metrica della categoria selezionata
 
 ### Scheda Istantanee
 
-Salva i pesi correnti come istantanea denominata e ripristina qualsiasi istantanea precedente.
+Salva i pesi correnti come istantanea denominata e ripristina qualsiasi istantanea precedente. Un'istantanea registra anche il bonus della categoria (`modifiers.bonus`), e ripristinarla riporta il bonus insieme ai pesi; le istantanee registrate prima di questa modifica, da `calibrate.py` o per `others` non portano bonus e lo lasciano intatto.
 
 ### Priorità delle categorie e contesti di punteggio
 
@@ -1040,6 +1042,8 @@ python database.py --refresh-stats   # Precalcola le aggregazioni
 python database.py --optimize        # Deframmenta il database
 ```
 
+`--migrate-tags` è l'avvio una tantum della tabella di ricerca dei tag. Una volta popolata, le scansioni, `--recompute-tags`, `--recompute-tags-vlm` e `tag_existing.py` la mantengono aggiornata foto per foto, quindi i filtri non mostrano tag obsoleti; una tabella mai popolata non viene riempita implicitamente e i filtri dei tag usano il ripiego `LIKE` fino a quel momento.
+
 ### Indici della galleria e cache dei conteggi
 
 Il conteggio della galleria, il suo riepilogo delle foto nascoste e ogni pagina leggono le stesse colonne di visibilità nelle loro clausole di occultamento (occhi chiusi, raffiche, duplicati, bracketing, panorami, scartate, spazzatura). Otto indici di copertura (`idx_gallery_aggregate`, `idx_gallery_date_desc`, `idx_gallery_date_asc`, `idx_gallery_category`, `idx_gallery_camera`, `idx_star_rating_path`, `idx_gallery_iaa_asc` e `idx_stats_categories`, definiti in `db/schema.py`) contengono queste colonne accanto alla colonna di ordinamento, così queste query vengono servite dall'indice invece di scorrere l'intera tabella `photos`. Su una libreria da 130k foto, la pagina predefinita della galleria è passata da circa 1,2 s a circa 30 ms.
@@ -1257,7 +1261,7 @@ I tipi TypeScript del client sono generati da questo schema in `client/src/app/c
 | `GET /api/comparison/confidence` | `[Edition]` Metriche di confidenza per i punteggi appresi |
 | `GET /api/comparison/photo_metrics` | Metriche grezze delle foto |
 | `GET /api/comparison/category_weights` | `[Edition]` Pesi/filtri della categoria |
-| `GET /api/comparison/learned_weights` | `[Edition]` Pesi suggeriti dai confronti |
+| `GET /api/comparison/learned_weights` | `[Edition]` Pesi suggeriti dai confronti (`suggest_changes` è la decisione di McNemar riservata) |
 | `POST /api/comparison/preview_score` | Anteprima con pesi personalizzati |
 | `POST /api/comparison/suggest_filters` | Analizza i conflitti dei filtri |
 | `POST /api/comparison/override_category` | `[Edition]` Imposta una sovrascrittura di categoria persistente per singola foto (convalidata rispetto ai nomi di categoria configurati; sopravvive al ricalcolo successivo) |
@@ -1322,10 +1326,10 @@ I tipi TypeScript del client sono generati da questo schema in `client/src/app/c
 
 | Endpoint | Descrizione |
 |----------|-------------|
-| `POST /api/config/update_weights` | Aggiorna i pesi di valutazione |
+| `POST /api/config/update_weights` | Aggiorna i pesi di valutazione (è anche ciò che chiama **Applica** nella scheda Suggerimenti pesi; non ricentra il bonus della categoria) |
 | `GET /api/config/weight_snapshots` | `[Edition]` Elenca le istantanee dei pesi salvate |
 | `POST /api/config/save_snapshot` | Salva i pesi correnti come istantanea |
-| `POST /api/config/restore_weights` | Ripristina i pesi da un'istantanea |
+| `POST /api/config/restore_weights` | Ripristina i pesi da un'istantanea (e il bonus della categoria, quando l'istantanea lo ha registrato) |
 | `GET /api/config/category_priorities` | `[Edition]` Elenca le categorie nell'attuale ordine di priorità (valutazione) |
 | `POST /api/config/category_priorities` | `[Edition]` Riordina la priorità di valutazione delle categorie; permuta i valori di priorità esistenti sul nuovo ordine invece di rinumerare |
 | `GET /api/config/scoring_contexts` | Elenca i contesti di punteggio configurati, ciascuno con il proprio ordine di categoria effettivo risolto |

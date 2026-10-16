@@ -19,10 +19,10 @@ Photos are classified into a category, then scored with that category's weights.
 | Priority | Category | Detection Method |
 |----------|----------|------------------|
 | 8 | `art` | Tags: painting, statue, drawing, cartoon, anime |
-| 10 | `astro` | Tags: aurora, astrophotography, stars, milky way |
+| 10 | `astro` | Tags: aurora, astrophotography, stars, milky way, AND mean luminance ≤ 0.30 |
 | 15 | `concert` | Tags: concert |
 | 35 | `group_portrait` | Face ratio ≥ 5% AND is_group_portrait |
-| 42 | `silhouette` | Has face AND is_silhouette |
+| 42 | `silhouette` | Has face AND `is_silhouette` (the largest face is dark against a brighter surround) |
 | 45 | `portrait` | Face ratio ≥ 5%, not silhouette/group/mono |
 | 46 | `portrait_bw` | Monochrome portrait (face ≥ 5%) |
 | 55 | `macro` | Tags: macro, insect, butterfly, dewdrop, ... |
@@ -36,6 +36,12 @@ Photos are classified into a category, then scored with that category's weights.
 | 999 | `default` | Fallback (no filter) |
 
 Other tag-based categories include `aerial`, `food`, `sports`, `vehicle`, `travel`, `fashion`, `candid`, `product`, `architecture`, `urban`, `golden_hour`, `blue_hour`, `cinematic`, `vintage`, `abstract`, `minimalist`, `dramatic`, and `weather`.
+
+On the CLIP-tagging profiles (`legacy`/`8gb`, and `16gb`/`24gb` when the VLM tagger is not scheduled) a multi-pass scan tags the photo during the embeddings pass, before its category and aggregate are computed, so the scan-time category sees the tags just as `--recompute-average` does; the post-scan tag step is only a fallback for photos still untagged. A single `--pass NAME` run does not tag.
+
+**Silhouette.** `is_silhouette` is a face-aware pixel rule (see the filter table below), not a tag or a histogram test. The stored flag steers the aggregate as well as the category: a silhouette skips the clipping penalty in `aggregate` (`exposure.silhouette_detection`), while `exposure_score` itself always carries the clipping penalty. Re-derive stored flags with `python facet.py --recompute-silhouette`, then `--recompute-average`.
+
+**Astro.** A photo needs an astro tag *and* a mean luminance of at most 0.30 (`luminance_max`): a bright scene that CLIP tags `aurora` or `stars` is not astro, and a photo with no stored luminance never matches. A `scoring_config.json` with its own `categories` array keeps its own `astro` entry and does not get this guard until you add `"luminance_max": 0.30` to `astro.filters`; `python facet.py --doctor` says whether yours is missing it.
 
 ## Scoring Contexts
 
@@ -138,7 +144,7 @@ Each category in `scoring_config.json` has these components:
 |--------|-------------|
 | `has_face` | At least one face detected |
 | `is_monochrome` | Saturation < 5% |
-| `is_silhouette` | Backlit with heavy shadows/highlights |
+| `is_silhouette` | The largest face is dark and its surround is bright: the mean luma of the central 60% of the face box is below 0.12 and the band around the box (0.2 to 0.75 box-widths out, clipped to the frame) is brighter by more than 0.20. A face-aware pixel measurement; the CLIP `silhouette` tag and the whole-frame histogram no longer set it. A photo without a face is never a silhouette |
 | `is_group_portrait` | face_count >= `min_faces_for_group` (configurable, default: 4) |
 
 ### Tag Filters
@@ -156,7 +162,7 @@ All weights use the `_percent` suffix. They are normalized by `get_weights()`, s
 | Key | Metric | Source | Best For |
 |-----|--------|--------|----------|
 | `aesthetic_percent` | Visual appeal | TOPIQ or CLIP+MLP | All |
-| `quality_percent` | Legacy quality | Redistributed into `aesthetic` (no separate signal) | — |
+| `quality_percent` | Legacy quality | Added to `aesthetic_percent` before scoring (no separate signal) | — |
 | `face_quality_percent` | Face clarity | InsightFace | Portraits |
 | `eye_sharpness_percent` | Eye sharpness | InsightFace landmarks | Portraits |
 | `tech_sharpness_percent` | Overall sharpness | Laplacian variance | Landscapes |
@@ -179,6 +185,8 @@ All weights use the `_percent` suffix. They are normalized by `get_weights()`, s
 | `subject_placement_percent` | Subject rule-of-thirds | BiRefNet | All |
 | `bg_separation_percent` | Background separation | BiRefNet | Portraits, macro |
 
+**`quality_percent` counts toward `aesthetic`.** The quality metric has no score of its own, so a category's `quality_percent` is added to its `aesthetic_percent` before scoring: the effective aesthetic weight is `aesthetic_percent + quality_percent`, and the weights still sum to 100. Before this was fixed, the `quality` share scored a metric that was always 0 and so dropped out of the aggregate; a library aggregated by older code rises slightly (and changes no category) on its next `--recompute-average`.
+
 ## Modifiers
 
 Adjust scoring behavior per category:
@@ -187,9 +195,6 @@ Adjust scoring behavior per category:
 |----------|------|-------------|
 | `bonus` | float | Added to final score (e.g., 0.5) |
 | `noise_tolerance_multiplier` | float | Scale noise penalty (0.5 = half) |
-| `iso_tolerance_multiplier` | float | Scale ISO penalty |
-| `min_saturation_bonus` | float | Bonus for high saturation |
-| `contrast_bonus` | float | Bonus for high contrast |
 | `_skip_clipping_penalty` | bool | Skip exposure clipping penalty |
 | `_skip_oversaturation_penalty` | bool | Skip oversaturation penalty |
 | `_clipping_multiplier` | float | Scale clipping penalty |
@@ -207,6 +212,8 @@ Four dimensions derived from BiRefNet subject segmentation:
 | `bg_separation_percent` | Background separation | Edge gradient difference at the subject boundary (bokeh quality). |
 
 Use `subject_sharpness_percent` and `bg_separation_percent` for portrait/wildlife; `subject_prominence_percent` for macro.
+
+**No subject, no number.** When no subject is found, `subject_sharpness`, `subject_placement` and `bg_separation` are stored as NULL (as is `power_point_score` when there is no subject box), `subject_prominence` is 0.0 and `subject_bbox` is NULL; earlier versions stored a neutral 5.0. The gallery's min/max range filters on those metrics skip a NULL (`min_subject_sharpness=0` no longer returns a photo without a subject), SQL averages ignore it and the UI shows it as absent. The aggregate still scores a NULL as the neutral 5.0, so no aggregate moves. Existing rows keep their 5.0 until `--recompute-saliency` and `--recompute-composition-cpu` rewrite them.
 
 **When saliency fails.** On CUDA the saliency batch size is derived from the free VRAM (about 2.4 GiB per image at 1024 px, between 1 and 8 images) and is halved after an out-of-memory error, down to one image. A photo whose saliency still fails logs an ERROR and stores nothing: a photo that was never scored keeps NULL in all five saliency columns (`subject_sharpness`, `subject_prominence`, `subject_placement`, `bg_separation`, `subject_bbox`), and `--recompute-saliency` and `--pass saliency` keep a photo's stored values when its saliency fails. A full rescan of the photo (for example `--force`) stores NULL for it, as for a never-scored photo. Facet never writes a neutral number in place of a failed result. In the aggregate a NULL scores neutral (5.0), exactly like a photo scanned before saliency existed, so it neither helps nor hurts the score. `--recompute-saliency` selects such a photo again (see [Subject Saliency](COMMANDS.md#subject-saliency)).
 
@@ -383,19 +390,20 @@ Beyond explicit A/B votes, two more label streams feed the optimizer:
    pairs with `python facet.py --sync-label-comparisons` (`source='rating'`).
    Re-running re-syncs from the current labels, so retracted ratings disappear.
 
-The optimizer weighs each source by reliability (vote 1.0, rating 0.7,
-culling 0.5) when maximizing the Bradley-Terry likelihood. It trains on the
-exact 0-10 metric vector the scorer uses (including `liqe`, `aesthetic_iaa`,
-`face_quality_iqa` and the subject-saliency metrics), so optimized weights map
-directly onto production scoring.
+The optimizer weighs each source by reliability (vote 1.0, rating 0.7, culling 0.5) when maximizing the Bradley-Terry likelihood. A **tie** counts as half a win plus half a loss: evidence that two photos score alike, at the same strength as a decisive vote (`include_ties` still drops them). The fit is **anchored to the current weights** by an L2 prior (`l2_regularization`, strength 100), so with few comparisons the suggestion stays close to the weights you have and moves further as votes accumulate. It trains on each photo as the scorer serves it: the same 0-10 metric vector the aggregate reads (including `liqe`, `aesthetic_iaa`, `face_quality_iqa` and the subject-saliency metrics), with the percentile-normalised eye sharpness, technical sharpness and colour, the rebuilt exposure score and the group-portrait flag. The percentiles come from the snapshot `--recompute-average` persisted; before the first `--recompute-average` the stored columns are read instead. It starts from, and writes, the **served** weights: `quality_percent` is folded into `aesthetic` the way the scorer folds it, and applying writes `quality_percent: 0` for the categories that carry it.
 
-Weights are **applied only if they generalize**: the final weights are fit on
-all comparisons, but the decision to write them is gated on held-out k-fold
-accuracy, not training accuracy. If the held-out gain over the current weights
-is below the threshold (default 2 pp) the run reports the numbers and writes
-nothing — pass `--optimize-force` to override. Optimization is per-category and
-needs labelled comparisons **for that category**; categories with no votes
-cannot be tuned from data.
+Weights are **applied only if they generalize**. The final weights are fit on all comparisons, but the decision to write them is a held-out gate: 5-fold cross-validation with **photo-grouped folds** (no photo is in both the training pairs and the held-out pairs of a fold), pooled over the folds and compared with the current weights on the same held-out pairs by a **one-sided exact McNemar test**. They are applied only when `p < 0.05` **and** the held-out gain is at least 2 pp (`min_improvement`); otherwise the run logs the numbers and writes nothing — pass `--optimize-force` to override. If the gate cannot run (too few independent photo groups) the CLI does not fall back to training accuracy: it applies nothing unless forced. Optimization is per-category and needs **decisive** labelled comparisons (A or B won) **for that category**: `min_comparisons` counts those, ties and other categories do not satisfy it; categories with no votes cannot be tuned from data. The log shows, for example:
+
+```
+Held-out accuracy:      69.2% +/- 4.0 (5-fold, photo-grouped) - the honest estimate
+Held-out gain:          +8.5 pp over the current weights on the same 389 pairs
+McNemar (one-sided):    p = 0.0006 (only the fit right: 66, only the current weights right: 33)
+NOT applying: the held-out gate needs p < 0.05 and a gain of at least 2.0 pp. ...   (logged when the gate fails)
+```
+
+Applying a result with `--optimize-weights` changes how the category's photos rank among themselves, not where the category sits against the others: in the same config write as the weights, `modifiers.bonus` is moved by minus the projected mean score shift of the category's photos (clamped to [-5, 5]; a clamp is logged as a residual), so the category's mean aggregate stays put. A category with no `categories[]` entry (`others`) has no bonus and is not re-centred. The weight snapshot recorded before the write carries the bonus, and restoring a snapshot restores weights **and** bonus (snapshots recorded before this change, by `calibrate.py` or for `others` carry none and leave the bonus untouched). Documented residual: the viewer writes weights through `POST /api/config/update_weights`, for its **Apply** button as for a hand edit in the Weights tab, and that route does not re-centre the bonus (only `--optimize-weights` does).
+
+**After upgrading, retrain the personal ranker and the keeper heads, then run `--recompute-average`.** The optimizer, the ranker and the keeper heads share one feature vector, which now is the served one (normalised eye, technical and colour metrics); a saved model cannot detect the change.
 
 Recommended cadence:
 
@@ -414,18 +422,7 @@ This is the same in-viewer slider workflow described in
 [Option A: Via Viewer](#option-a-via-viewer-recommended) above — see there
 for the full save/recompute flow.
 
-**Suggest Weights** also answers a narrower question than the CV gate above:
-how well do this category's *current, live* weights already agree with your
-own comparisons? Clicking it returns `accuracy_before` — the percentage of
-that category's labelled pairs (A/B votes, culling, and rating-derived
-pairs) whose winner the live weights predict correctly — next to
-`accuracy_after`, the same figure for the suggested weights. Both are shown
-side by side in the Weight Suggestions tab and in the A/B Compare tab's
-sidebar every time you run it (`GET /api/comparison/learned_weights`,
-`optimization/weight_optimizer.py:optimize_weights_direct`). Like the CLI
-gate, this needs `min_comparisons_for_optimization` (default 30) labelled
-pairs for that category — the button reports the shortfall instead of a
-number below that.
+**Suggest Weights** also answers a narrower question than the held-out gate above: how well do this category's *current, live* weights already agree with your own comparisons? Clicking it returns `accuracy_before` — the percentage of that category's labelled pairs (A/B votes, culling, and rating-derived pairs) whose winner the live weights predict correctly — next to `accuracy_after`, the same figure for the suggested weights; both are in-sample figures. They are shown side by side in the Weight Suggestions tab and in the A/B Compare tab's sidebar every time you run it (`GET /api/comparison/learned_weights`, `optimization/weight_optimizer.py:optimize_weights_direct`). Whether **Apply** is offered follows the same held-out McNemar gate as the CLI, not the in-sample gain: `suggest_changes` is true only when the gate passes (the request runs the cross-validation only when the in-sample gain already reaches 2 pp; `?use_cv=true` runs it unconditionally). Like the CLI, this needs `min_comparisons_for_optimization` (shipped default 50) decisive A/B comparisons for that category — below that the button reports the shortfall ("Need at least N decisive comparisons (have K)") instead of a number.
 
 ## Adding Custom Categories
 

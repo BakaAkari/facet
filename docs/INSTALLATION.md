@@ -485,6 +485,8 @@ Set `FACET_DEVICE=cpu` to disable acceleration, or `FACET_DEVICE=mps` to require
 fail clearly if it is unavailable). InsightFace stays on the processor because it is an
 ONNX Runtime model, not a PyTorch one.
 
+A CUDA device counts only when PyTorch reports at least one (`device_count() > 0`): with `CUDA_VISIBLE_DEVICES=''` the automatic choice is the processor, and `FACET_DEVICE=cuda` stops with the same "requested, but that device is not available" error as an unavailable `mps`.
+
 Metal has no dedicated video memory, so `vram_profile: "auto"` is sized from total
 unified memory:
 

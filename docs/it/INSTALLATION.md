@@ -500,6 +500,8 @@ Imposta `FACET_DEVICE=cpu` per disattivare l'accelerazione, oppure `FACET_DEVICE
 per richiederla (e fallire in modo chiaro se non è disponibile). InsightFace resta sul
 processore perché è un modello ONNX Runtime, non un modello PyTorch.
 
+Un dispositivo CUDA conta solo se PyTorch ne segnala almeno uno (`device_count() > 0`): con `CUDA_VISIBLE_DEVICES=''` la scelta automatica è la CPU, e `FACET_DEVICE=cuda` si ferma con lo stesso errore «requested, but that device is not available» di un `mps` non disponibile.
+
 Metal non ha memoria video dedicata, quindi `vram_profile: "auto"` viene dimensionato
 sulla memoria unificata totale:
 

@@ -224,6 +224,10 @@ Chaque catégorie possède :
 
 > **Poids de forme et d'harmonie colorimétrique.** Le bloc `weights` de chaque catégorie porte cinq clés de métriques explicables — `symmetry_percent`, `balance_percent`, `edge_entropy_percent`, `fractal_percent` et `color_harmony_percent` — renseignées par `--recompute-form`. Elles sont livrées à `0` dans chaque catégorie, si bien que les agrégats restent identiques au bit près jusqu'à ce que vous en pondériez une (relancez alors `--recompute-average`). La somme des poids d'une catégorie doit toujours faire 100.
 
+> **`quality_percent` compte comme `aesthetic`.** La métrique de qualité n'a pas de score propre : le `quality_percent` d'une catégorie est donc ajouté à son `aesthetic_percent` avant le calcul — le poids esthétique effectif est `aesthetic_percent + quality_percent` et les poids totalisent toujours 100. Voir [SCORING.md](SCORING.md).
+
+> **La catégorie `astro` fournie exige une image sombre.** Ses filtres sont `tag_match_mode: "any"` plus `luminance_max: 0.30` : une scène lumineuse que CLIP étiquette `aurora` ou `stars` n'est pas `astro`. Les tableaux sont remplacés en bloc (voir [Valeurs par défaut et votre surcharge](#valeurs-par-défaut-et-votre-surcharge)) : un `scoring_config.json` avec son propre tableau `categories` garde sa propre entrée `astro` et ne reçoit jamais la garde. Ajoutez `"luminance_max": 0.30` à `astro.filters` (ou supprimez le tableau) ; `python facet.py --doctor` affiche un « Config notice » quand votre entrée `astro` n'a pas de `luminance_max`. Lancez ensuite `--recompute-average`.
+
 ---
 
 ## Contextes de notation
@@ -335,29 +339,19 @@ Les deux leviers sont conservés dans une seule table annexe, `photo_scoring_ove
 
 ## Seuils
 
-Seuils de détection pour la catégorisation automatique.
+Seuils de score. Seul `blink_penalty_percent` subsiste : qu'une photo soit un portrait, une prise de nuit ou une longue pose est décidé par les `filters` de chaque catégorie (voir [Catégories](#catégories)), pas par ce bloc.
 
 ```json
 {
   "thresholds": {
-    "portrait_face_ratio_percent": 5,
-    "blink_penalty_percent": 50,
-    "night_luminance_threshold": 0.15,
-    "night_iso_threshold": 3200,
-    "long_exposure_shutter_threshold": 1.0,
-    "astro_shutter_threshold": 10.0
+    "blink_penalty_percent": 50
   }
 }
 ```
 
 | Réglage | Défaut | Description |
 |---------|--------|-------------|
-| `portrait_face_ratio_percent` | `5` | Visage > 5 % du cadre = portrait |
 | `blink_penalty_percent` | `50` | Multiplicateur de score en cas de clignement détecté (0,5x) |
-| `night_luminance_threshold` | `0.15` | Luminance moyenne inférieure à cette valeur = nuit |
-| `night_iso_threshold` | `3200` | ISO supérieur à cette valeur = faible luminosité |
-| `long_exposure_shutter_threshold` | `1.0` | Vitesse d'obturation > 1 s = pose longue |
-| `astro_shutter_threshold` | `10.0` | Vitesse d'obturation > 10 s = astrophotographie |
 
 ---
 
@@ -419,7 +413,7 @@ Contrôle l'analyse de l'exposition et la détection des écrêtages.
 |---------|--------|-------------|
 | `shadow_clip_threshold_percent` | `15` | Signaler si > 15 % des pixels sont noir pur |
 | `highlight_clip_threshold_percent` | `10` | Signaler si > 10 % des pixels sont blanc pur |
-| `silhouette_detection` | `true` | Détecter les silhouettes intentionnelles |
+| `silhouette_detection` | `true` | Si `true`, une photo marquée `is_silhouette` ignore la pénalité d'écrêtage dans son score agrégé. Le drapeau lui-même n'est pas configurable : il provient d'une règle fixe fondée sur le visage (voir [SCORING.md](SCORING.md)) |
 
 ---
 
@@ -433,11 +427,8 @@ Pénalités de score pour les problèmes techniques.
     "noise_sigma_threshold": 4.0,
     "noise_max_penalty_points": 1.5,
     "noise_penalty_per_sigma": 0.3,
-    "bimodality_threshold": 2.5,
-    "bimodality_penalty_points": 0.5,
     "leading_lines_blend_percent": 30,
     "oversaturation_threshold": 0.9,
-    "oversaturation_pixel_percent": 5,
     "oversaturation_penalty_points": 0.5
   }
 }
@@ -448,11 +439,8 @@ Pénalités de score pour les problèmes techniques.
 | `noise_sigma_threshold` | `4.0` | Un bruit supérieur déclenche une pénalité |
 | `noise_max_penalty_points` | `1.5` | Pénalité de bruit maximale |
 | `noise_penalty_per_sigma` | `0.3` | Points par sigma au-dessus du seuil |
-| `bimodality_threshold` | `2.5` | Coefficient de bimodalité de l'histogramme |
-| `bimodality_penalty_points` | `0.5` | Pénalité pour les histogrammes bimodaux |
 | `leading_lines_blend_percent` | `30` | Mélange dans comp_score |
 | `oversaturation_threshold` | `0.9` | Seuil de saturation moyenne |
-| `oversaturation_pixel_percent` | `5` | Réservé à la détection au niveau du pixel |
 | `oversaturation_penalty_points` | `0.5` | Pénalité de sursaturation |
 
 **Formule de pénalité de bruit :**
@@ -539,14 +527,14 @@ Sélectionne les modèles utilisés selon le profil VRAM.
       "model_name": "google/siglip2-so400m-patch16-naflex",
       "backend": "transformers",
       "embedding_dim": 1152,
-      "similarity_threshold_percent": 8,
+      "tag_threshold_percent": 8,
       "search_threshold_percent": 5
     },
     "clip_legacy": {
       "model_name": "ViT-L-14",
       "pretrained": "laion2b_s32b_b82k",
       "embedding_dim": 768,
-      "similarity_threshold_percent": 22,
+      "tag_threshold_percent": 8,
       "search_threshold_percent": 15
     },
     "qwen2_vl": {
@@ -589,12 +577,12 @@ Sélectionne les modèles utilisés selon le profil VRAM.
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | Modèle d'embedding SigLIP 2 NaFlex (16gb/24gb) |
 | `clip.backend` | `"transformers"` | `"transformers"` (SigLIP 2 NaFlex) ou `"open_clip"` (legacy) |
 | `clip.embedding_dim` | `1152` | Dimensions de l'embedding (1152 pour SigLIP 2) |
-| `clip.similarity_threshold_percent` | `8` | Similarité cosinus CLIP minimale pour une correspondance d'**étiquette** (`--tag-existing`, étiquetage automatique au scan) — **pas** le seuil de recherche sémantique ci-dessous |
+| `clip.tag_threshold_percent` | `8` | Seuil d'étiquetage du tagger SigLIP 2 des profils `16gb`/`24gb` (scan, `--recompute-tags`, `tag_existing.py`) : similarité cosinus minimale pour une correspondance d'**étiquette** — **pas** le seuil de recherche sémantique ci-dessous. Remplace `similarity_threshold_percent`, qui n'est plus lu |
 | `clip.search_threshold_percent` | `5` | Seuil de similarité cosinus pour la recherche sémantique de `GET /api/search` (exposé via `/api/config` sous `search_threshold_default`), **pas** le seuil de correspondance d'étiquette ci-dessus. Doit être un nombre entier compris entre `0` et `50` — le curseur de la barre latérale de la galerie s'arrête à 50, et la conversion en pourcentage côté client (`Math.round(search_threshold_default * 100)`) n'est sans perte que pour un entier. Calibré sur un échantillon de validation de 34 lignes d'embeddings SigLIP 2 réels (issue #145) : la valeur par défaut admet les 21 vrais positifs connus **et** 3 des 13 négatifs connus — un choix délibéré en faveur du rappel plutôt que de la précision. Une valeur plus stricte de `5,5%` n'aurait admis aucun négatif, mais a été rejetée car la personne ayant signalé le problème avait mesuré une correspondance réelle à `0.051` de similarité cosinus sur sa propre bibliothèque ; exclure une correspondance réelle confirmée a été jugé pire que laisser passer quelques négatifs, d'autant que le curseur 0-50% de la galerie permet de resserrer (ou desserrer) une recherche donnée après coup. |
 | `clip_legacy.model_name` | `"ViT-L-14"` | Modèle CLIP historique (profils legacy/8gb) |
 | `clip_legacy.pretrained` | `"laion2b_s32b_b82k"` | Poids pré-entraînés historiques |
 | `clip_legacy.embedding_dim` | `768` | Dimensions de l'embedding historique |
-| `clip_legacy.similarity_threshold_percent` | `22` | Seuil de correspondance d'étiquette pour le CLIP historique — **pas** le seuil de recherche sémantique ci-dessous |
+| `clip_legacy.tag_threshold_percent` | `8` | Seuil d'étiquetage du tagger CLIP ViT-L-14 des profils `legacy`/`8gb` — **pas** le seuil de recherche sémantique ci-dessous. Les cosinus de ViT-L-14 se situent entre 0.15 et 0.35 : à 8, le seuil ne filtre jamais et `tagging.max_tags` décide du nombre d'étiquettes |
 | `clip_legacy.search_threshold_percent` | `15` | Seuil de similarité cosinus pour la recherche sémantique de `GET /api/search` sur le profil legacy/8gb (open_clip) — préserve le seuil que Facet utilisait avant l'existence de cette clé. Même contrainte d'entier compris entre `0` et `50` que `clip.search_threshold_percent` ci-dessus. |
 | `qwen2_vl.model_path` | `"Qwen/Qwen2-VL-2B-Instruct"` | Chemin HuggingFace pour l'option manuelle `composition_model: "qwen2-vl-2b"` — aucun profil ne la sélectionne par défaut |
 | `qwen3_5_2b.model_path` | `"Qwen/Qwen3.5-2B"` | Modèle d'étiquetage pour le profil 16gb |
@@ -627,6 +615,8 @@ Lorsque `vram_profile` vaut `"auto"` (par défaut), le système détecte la VRAM
 | ≥ 14 Go | `16gb` |
 | ≥ 6 Go | `8gb` |
 | Pas de GPU | `legacy` (utilise la RAM système) |
+
+Un périphérique CUDA ne compte que si PyTorch en signale au moins un (`device_count() > 0`). Un build qui répond `torch.cuda.is_available()` sans périphérique visible — par exemple avec `CUDA_VISIBLE_DEVICES=''` sous Windows — est traité comme sans GPU : le scan utilise le processeur, signale 0 Go de VRAM et sélectionne `legacy`, au lieu de s'arrêter sur « Invalid device id ». `FACET_DEVICE=cuda` sans périphérique visible est l'erreur documentée d'un accélérateur forcé indisponible.
 
 **Les cartes de 10 à 14 Go peuvent choisir l'ensemble complet des fonctionnalités.** La détection automatique ne change pas : en dessous de 14 Go, elle sélectionne toujours `8gb`. Une carte de 10 à 14 Go peut à la place exécuter le profil `16gb` (embeddings SigLIP 2, TOPIQ, tagging Qwen3.5-2B, Q-ReAlign, saillance) en définissant `"vram_profile": "16gb"` ou `FACET_VRAM_PROFILE=16gb`. Le planificateur de passes répartit alors les modèles en quatre passes qui tiennent (trois sur une carte qui annonce 11,8 GiB ou plus) (voir [Regroupement dynamique des passes](#regroupement-dynamique-des-passes)), la saillance, qui manquait de mémoire ici auparavant, dimensionne désormais son lot d'après la VRAM libre, et une photo qu'elle ne peut toujours pas noter enregistre NULL et journalise une ERROR au lieu d'un score neutre. **Passer une bibliothèque `8gb` existante à `16gb` change le modèle d'embeddings** (CLIP ViT-L-14 en 768 dimensions → SigLIP 2 en 1152 dimensions), de sorte que la bibliothèque mélangerait deux dimensions d'embedding : relancez un scan ou exécutez `--recompute-embeddings` pour la ré-embarquer. Voir *Recherche sémantique et bibliothèque embarquée sous un profil différent* dans [Modèles](#modèles) pour le comportement de la recherche d'ici là.
 
@@ -1527,7 +1517,7 @@ Réglages généraux d'étiquetage. Le modèle d'étiquetage est configuré par 
 | `enabled` | `true` | Activer l'étiquetage |
 | `max_tags` | `5` | Nombre maximal d'étiquettes par photo |
 
-**Note :** les réglages spécifiques à CLIP comme `similarity_threshold_percent` se trouvent dans la section `models.clip`.
+**Note :** Le seuil d'étiquetage CLIP/SigLIP est `tag_threshold_percent` dans le bloc clip du profil actif (`models.clip` pour `16gb`/`24gb`, `models.clip_legacy` pour `legacy`/`8gb` ; `vram_profile: "auto"` est d'abord résolu vers le profil détecté). L'ancienne clé `similarity_threshold_percent` n'est plus lue, sans alias : si votre fichier la contient encore, reportez une valeur personnalisée dans `tag_threshold_percent` (le chargement de la configuration et `python facet.py --doctor` nomment l'ancienne clé).
 
 En fin de scan, l'étape d'étiquetage ne charge le modèle d'embeddings du profil que lorsqu'elle a quelque chose à étiqueter. Elle est ignorée, avec une ligne de journal, lorsque `enabled` vaut `false` ou lorsqu'aucune photo n'a à la fois un embedding stocké et une liste de tags vide. Un scan dont les photos en attente ne peuvent jamais être étiquetées (toute similarité sous le seuil) charge toujours le modèle à chaque exécution. `python tag_existing.py`, `--force` et `python facet.py --tag-untagged` ne sont pas concernés.
 
@@ -1721,7 +1711,7 @@ Affichage et comportement de la galerie web.
 | `default_category` | `""` | Filtre de catégorie par défaut |
 | `edition_password` | `""` | Mot de passe pour déverrouiller le mode édition (vide = toute modification est refusée ; l'installation est en lecture seule) |
 | **comparison_mode** | | |
-| `min_comparisons_for_optimization` | `50` | Minimum pour l'optimisation |
+| `min_comparisons_for_optimization` | `50` | Nombre minimal de comparaisons décisives (A/B, hors égalité) de la catégorie avant de suggérer des poids |
 | `pair_selection_strategy` | `"learning"` | Stratégie de paires : `learning` (démarrage à froid par diversité d'embeddings + désaccord de rang une fois entraîné), `uncertainty`, `boundary`, `active`, `random` |
 | `candidate_pool_size` | `200` | Bassin candidat aléatoire au sein duquel la stratégie `learning` échantillonne les paires |
 | `show_current_scores` | `true` | Afficher les scores pendant la comparaison |
