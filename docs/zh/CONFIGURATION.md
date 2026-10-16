@@ -148,11 +148,11 @@ python database.py --compact-config
 | `password_hash` | string | PBKDF2-HMAC-SHA256 哈希（`salt_hex:dk_hex`）。由 `--add-user` 命令行生成。 |
 | `display_name` | string | 显示在界面顶栏 |
 | `role` | string | `user`、`admin` 或 `superadmin` |
-| `directories` | array | 该用户的私有照片目录；条目按扫描器写入时的样子与已存储路径比较：在 Windows 和 macOS 上以及任何系统上的 UNC 或盘符条目，忽略 ASCII 大小写，而在其他主机（例如 Linux）上比较区分大小写（case-sensitive），因此请按扫描器存储的写法填写每个条目（已知限制：非 ASCII 的大小写差异，以及在无法解析映射驱动器的主机上使用映射驱动器） |
+| `directories` | array | 该用户的私有照片目录。条目如何匹配，参见[共享目录](#共享目录) |
 
 ### 共享目录
 
-`shared_directories` 键（与用户对象同级）列出对所有用户可见的目录。 `directories` 与 `shared_directories` 中的条目按扫描器写入时的样子与已存储路径比较：在 Windows 和 macOS 上以及任何系统上的 UNC 或盘符条目，忽略 ASCII 大小写，而在其他主机（例如 Linux）上比较区分大小写（case-sensitive），因此请按扫描器存储的写法填写每个条目（已知限制：非 ASCII 的大小写差异，以及在无法解析映射驱动器的主机上使用映射驱动器）。
+`shared_directories` 键（与用户对象同级）列出对所有用户可见的目录。`directories` 与 `shared_directories` 中的条目会与扫描器存储的路径比较。在 Windows 和 macOS 上，以及任何主机上的 UNC 或盘符条目，会忽略 ASCII 大小写；在其他主机（例如 Linux）上区分大小写，因此请完全按扫描器存储的写法填写每个条目。已知限制：非 ASCII 的大小写差异，以及在无法解析映射驱动器的主机上使用映射驱动器。空白条目不授予任何访问权限。
 
 ### 角色
 
@@ -213,9 +213,9 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 
 > **形式与色彩和谐权重。** 每个类别的 `weights` 块都带有五个可解释的指标键 — `symmetry_percent`、`balance_percent`、`edge_entropy_percent`、`fractal_percent` 和 `color_harmony_percent` — 由 `--recompute-form` 填充。它们在所有类别中出厂值都是 `0`，因此在你给其中某一项赋予权重之前，聚合评分保持逐字节不变（赋权之后请重新运行 `--recompute-average`）。同一类别内部的权重总和仍必须为 100。
 
-> **`quality_percent` 按 `aesthetic` 计算。** 画质指标没有独立评分，因此类别的 `quality_percent` 会在计算前并入其 `aesthetic_percent`：实际美观度权重为 `aesthetic_percent + quality_percent`，权重总和仍为 100。参见 [SCORING.md](SCORING.md)。
+> **`quality_percent` 按 `aesthetic` 计算。** 画质指标没有独立评分，因此类别的 `quality_percent` 会在计算前并入其 `aesthetic_percent`。权重总和仍为 100。参见 [SCORING.md](SCORING.md)。
 
-> **内置的 `astro` 类别要求画面偏暗。** 其过滤条件是 `tag_match_mode: "any"` 加上 `luminance_max: 0.30`，因此被 CLIP 标为 `aurora` 或 `stars` 的明亮场景不属于 `astro`。数组会整体替换（参见[默认值与你的覆盖配置](#默认值与你的覆盖配置)）：带有自己 `categories` 数组的 `scoring_config.json` 会保留它自己的 `astro` 条目，永远不会获得这道防护。请在 `astro.filters` 中加入 `"luminance_max": 0.30`（或删除该数组）；当你的 `astro` 条目没有 `luminance_max` 时，`python facet.py --doctor` 会打印一条 “Config notice”。然后运行 `--recompute-average`。
+> **内置的 `astro` 类别要求画面偏暗。** 除了其中一个标签外，它还要求 `luminance_max: 0.30`（平均亮度不高于 0.30），因此被标为 `aurora` 或 `stars` 的明亮场景不属于 `astro`。数组会整体替换（参见[默认值与你的覆盖配置](#默认值与你的覆盖配置)）：带有自己 `categories` 数组的 `scoring_config.json` 会保留它自己的 `astro` 条目，不会获得这个过滤条件。请在 `astro.filters` 中加入 `"luminance_max": 0.30`，或删除该数组。当你的 `astro` 条目没有 `luminance_max` 时，`python facet.py --doctor` 会打印一条 “Config notice”。然后运行 `--recompute-average`（升级后，请先运行 `--recompute-silhouette`，再运行两次 `--recompute-average`；参见 [COMMANDS.md](COMMANDS.md)）。
 
 ---
 
@@ -328,7 +328,7 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 
 ## 阈值
 
-评分阈值。现在只剩 `blink_penalty_percent`：一张照片是不是人像、夜景或长曝光，由各类别的 `filters` 决定（参见[类别](#类别)），而不是由这个块决定。
+评分阈值。现在只剩 `blink_penalty_percent`。一张照片是不是人像、夜景或长曝光，由各类别的 `filters` 决定（参见[类别](#类别)），而不是由这个块决定。
 
 ```json
 {
@@ -560,18 +560,18 @@ penalty = min(noise_max_penalty_points, (noise_sigma - threshold) * noise_penalt
 |---------|---------|-------------|
 | `vram_profile` | `"auto"` | 生效的配置档（`auto`、`legacy`、`8gb`、`16gb`、`24gb`）。可在运行时由 `FACET_VRAM_PROFILE` 环境变量覆盖（见下文）。 |
 | `keep_in_ram` | `"auto"` | 在多遍处理的各分块之间把模型留在内存中（`"auto"`、`"always"`、`"never"`）。`auto` 会先检查可用内存再决定是否缓存。 |
-| `ram_cache_reserve_gb` | `4.0`（可选，随附文件中没有） | 模型缓存在接纳一个模型时，必须为其保留的可用内存（GB）。在 `"auto"` 下，仅当可用内存超过该模型的声明大小加上此预留量时，模型才会留在内存中（相等则拒绝）；`"always"` 跳过该检查，`"never"` 不缓存任何内容。值越小缓存越积极，值越大则给主机其余部分留出更多空间。必须是 >= 0 的数字；任何其他值（字符串、负数、`true`）都会让扫描在启动时报错并终止，错误信息会指明该键。在内存压力下，缓存只淘汰到恢复此预留量为止，先淘汰最晚才会再用到的模型，而不是被清空（见“多遍处理的工作方式”） |
+| `ram_cache_reserve_gb` | `4.0`（可选，随附文件中没有） | 模型缓存在保留一个模型时，必须为其余部分留出的可用内存（GB）。在 `"auto"` 下，仅当可用内存大于该模型的声明大小加上此预留量时，模型才会留在内存中；`"always"` 跳过该检查，`"never"` 不缓存任何内容。值越小缓存越多，值越大则给主机其余部分留出更多空间。必须是 >= 0 的数字；任何其他值（字符串、负数、`true`）都会让扫描在启动时报错并终止，错误信息会指明该键。在内存压力下，缓存会释放模型，直到有这么多可用内存为止，先释放最晚才会再用到的模型，而不是清空自己（见“多遍处理的工作方式”） |
 | `profiles.*.supplementary_pyiqa` | `["topiq_iaa", "topiq_nr_face", "liqe"]` | 本配置档要运行的 PyIQA 模型（四个配置档都运行完整集合） |
 | `profiles.*.saliency_enabled` | `true`（所有配置档） | 本配置档是否运行 BiRefNet 主体显著性 |
 | `clip.model_name` | `"google/siglip2-so400m-patch16-naflex"` | SigLIP 2 NaFlex 嵌入模型（16gb/24gb） |
 | `clip.backend` | `"transformers"` | `"transformers"`（SigLIP 2 NaFlex）或 `"open_clip"`（旧版） |
 | `clip.embedding_dim` | `1152` | 嵌入维度（SigLIP 2 为 1152） |
-| `clip.tag_threshold_percent` | `8` | `16gb`/`24gb` 配置档中 SigLIP 2 标签器的标签阈值（扫描、`--recompute-tags`、`tag_existing.py`）：判定**标签**匹配所需的最小余弦相似度——**不是**下方的语义搜索阈值。取代 `similarity_threshold_percent`，后者已不再读取 |
+| `clip.tag_threshold_percent` | `8` | `16gb`/`24gb` 配置档中 SigLIP 2 标签器（扫描、`--recompute-tags`、`tag_existing.py`）判定**标签**匹配所需的最小余弦相似度。**不是**下方的语义搜索阈值。取代 `similarity_threshold_percent`，后者已不再读取 |
 | `clip.search_threshold_percent` | `5` | `GET /api/search` 语义搜索的余弦阈值（通过 `/api/config` 的 `search_threshold_default` 暴露给客户端），**不是**上面的标签匹配阈值。必须是 `0-50` 之间的整数——图库侧边栏滑块的上限是 50，客户端的百分比换算（`Math.round(search_threshold_default * 100)`）只有对整数才不会失真。基于一份包含 34 行真实 SigLIP 2 嵌入的验证样本校准得出（issue #145）：默认值下 21 个已知真正例**全部**被保留，同时 13 个已知负例中也有 3 个被保留——这是刻意偏向召回率而非精确率的取舍。更严格的 `5.5%` 本可以让负例全部被拒，但因为该 issue 的报告者在自己的图库中测得一个真实匹配的余弦相似度恰为 `0.051` 而被否决；排除一个已确认的真实匹配，被认为比放过几个负例更糟，尤其是图库的 0-50% 滑块本就允许用户事后针对某次搜索收紧（或放宽）阈值。 |
 | `clip_legacy.model_name` | `"ViT-L-14"` | 旧版 CLIP 模型（legacy/8gb 配置档） |
 | `clip_legacy.pretrained` | `"laion2b_s32b_b82k"` | 旧版预训练权重 |
 | `clip_legacy.embedding_dim` | `768` | 旧版嵌入维度 |
-| `clip_legacy.tag_threshold_percent` | `8` | `legacy`/`8gb` 配置档中 CLIP ViT-L-14 标签器的标签阈值——**不是**下方的语义搜索阈值。ViT-L-14 的余弦值落在 0.15 到 0.35 之间，因此取 8 时阈值永远不会过滤任何标签，由 `tagging.max_tags` 决定保留多少 |
+| `clip_legacy.tag_threshold_percent` | `8` | `legacy`/`8gb` 配置档中 CLIP ViT-L-14 标签器的同一个标签阈值。**不是**下方的语义搜索阈值。无论如何，标签数量的上限都由 `tagging.max_tags` 决定 |
 | `clip_legacy.search_threshold_percent` | `15` | legacy/8gb（open_clip）配置档上 `GET /api/search` 语义搜索的余弦阈值——保留了 Facet 在引入该键之前一直使用的阈值。与上面 `clip.search_threshold_percent` 相同，必须是 `0-50` 之间的整数。 |
 | `qwen2_vl.model_path` | `"Qwen/Qwen2-VL-2B-Instruct"` | 手动启用 `composition_model: "qwen2-vl-2b"` 时使用的 HuggingFace 路径 — 没有任何配置档默认选用它 |
 | `qwen3_5_2b.model_path` | `"Qwen/Qwen3.5-2B"` | 16gb 配置档的标签模型 |
@@ -603,9 +603,9 @@ penalty = min(noise_max_penalty_points, (noise_sigma - threshold) * noise_penalt
 | ≥ 6GB | `8gb` |
 | 无 GPU | `legacy`（使用系统内存） |
 
-只有当 PyTorch 报告至少一个 CUDA 设备（`device_count() > 0`）时，CUDA 设备才算数。一个对 `torch.cuda.is_available()` 回答真、却没有任何可见设备的构建——例如在 Windows 上设置了 `CUDA_VISIBLE_DEVICES=''`——被视为没有 GPU：扫描改用 CPU，报告 0 GB 显存并选择 `legacy`，而不是以 “Invalid device id” 中止。没有可见设备时设置 `FACET_DEVICE=cuda`，会得到文档记载的“强制加速器不可用”错误。
+只有当 PyTorch 能看到至少一个设备时，CUDA GPU 才算数。没有可见设备时（例如 `CUDA_VISIBLE_DEVICES=''`），扫描改用 CPU，报告 0 GB 显存并选择 `legacy`；以前这种情况会以 “Invalid device id” 中止。没有可见设备时设置 `FACET_DEVICE=cuda`，会以 “FACET_DEVICE=cuda was requested, but that device is not available” 中止。
 
-**10-14GB 的显卡可以自行启用完整功能集。** 自动检测保持不变：低于 14GB 时仍会选择 `8gb`。10-14GB 的显卡可以改为运行 `16gb` 配置档（SigLIP 2 嵌入、TOPIQ、Qwen3.5-2B 标签、Q-ReAlign、显著性），方法是设置 `"vram_profile": "16gb"` 或 `FACET_VRAM_PROFILE=16gb`。此时遍次规划器会把模型拆成四个放得下的遍次（显卡报告 11.8 GiB 或更多时为三个）（见[动态遍次分组](#动态遍次分组)），此前在这里会显存不足的显著性，现在按空闲显存确定批大小；仍无法评分的照片会存入 NULL 并记录一条 ERROR，而不是存入中性分数。**把已有的 `8gb` 照片库切换到 `16gb` 会更换嵌入模型**（CLIP ViT-L-14 的 768 维 → SigLIP 2 的 1152 维），照片库里会混入两种嵌入维度：请重新扫描，或运行 `--recompute-embeddings` 重新生成嵌入。在此之前搜索的行为见[模型](#模型)一节中的*语义搜索与在不同配置档下建立索引的照片库*。
+**10-14GB 的显卡可以自行启用完整功能集。** 自动检测保持不变：低于 14GB 时仍会选择 `8gb`。10-14GB 的显卡可以改为运行 `16gb` 配置档（SigLIP 2 嵌入、TOPIQ、Qwen3.5-2B 标签、Q-ReAlign、显著性），方法是设置 `"vram_profile": "16gb"` 或 `FACET_VRAM_PROFILE=16gb`。此时遍次规划器会把模型拆成四个放得下的遍次，显卡报告 11.8 GiB 或更多时为三个（见[动态遍次分组](#动态遍次分组)）。此前在这里会显存不足的显著性，现在按空闲显存确定批大小；仍无法评分的照片会存入 NULL 并记录一条 ERROR，而不是存入中性分数。**把已有的 `8gb` 照片库切换到 `16gb` 会更换嵌入模型**（CLIP ViT-L-14 的 768 维 → SigLIP 2 的 1152 维），照片库里会混入两种嵌入维度：请重新扫描，或运行 `--recompute-embeddings` 重新生成嵌入。在此之前搜索的行为见[模型](#模型)一节中的*语义搜索与在不同配置档下建立索引的照片库*。
 
 ### `FACET_VRAM_PROFILE` 环境变量覆盖
 
@@ -705,7 +705,7 @@ SRCC = 在 KonIQ-10k 基准上的斯皮尔曼等级相关系数（1.0 = 完美�
 
 **`gpu_batch_size`** - 在 GPU 上一次前向传播中一起处理多少张图片。受显存限制。会被自动调优：GPU 显存超出限制时下调。
 
-**`ram_chunk_size`** - 在两次模型遍次之间于内存中缓存多少张图片（仅多遍模式）。每个分块只加载一次图片，从而减少磁盘 I/O。受有效内存上限约束（见下文 `memory_limit_percent`）。双向自动调优：占用超过上限时立即下调，而上调只发生在分块边界，并且只有当整个分块的*峰值*占用都低于上限时才会上调。之所以要看峰值，是因为一个分块并不是一次读数 — 各遍次之间每次卸载模型都会让占用几乎跌到谷底，而按谷底扩张，正是让 `ram_chunk_size` 在一个 8GB 容器里从 10 涨到 500、并让下一个分块被 OOM 杀死的原因。 分块只保留解码后的图像（各遍次运行期间每个源像素约 4.4 字节，此前约 8.1 字节）：需要 BGR 数组或灰度平面的遍次会从该图像重建它们，而不是让分块在整个生命周期内同时持有两者。这并不改变 `ram_chunk_size` 的调优方式，只是降低了给定大小的分块所占用的内存。
+**`ram_chunk_size`** - 在两次模型遍次之间于内存中缓存多少张图片（仅多遍模式）。每个分块只加载一次图片，从而减少磁盘 I/O。受有效内存上限约束（见下文 `memory_limit_percent`）。双向自动调优：占用超过上限时立即下调，而上调只发生在分块边界，并且只有当整个分块的*峰值*占用都低于上限时才会上调。之所以要看峰值，是因为一个分块并不是一次读数 — 各遍次之间每次卸载模型都会让占用几乎跌到谷底，而按谷底扩张，正是让 `ram_chunk_size` 在一个 8GB 容器里从 10 涨到 500、并让下一个分块被 OOM 杀死的原因。现在，分块不再在解码后的图像之外，再为每张照片保留一份 OpenCV 彩色副本和一份灰度副本；需要它们的遍次会在运行时重建。这使分块在各遍次运行期间占用的内存从每个源像素约 8.1 字节降到约 4.4 字节（在 20 MP 照片上实测）。`ram_chunk_size` 的调优方式不变，只是给定大小的分块占用更少内存。
 
 ### 设置参考
 
@@ -743,7 +743,7 @@ SRCC = 在 KonIQ-10k 基准上的斯皮尔曼等级相关系数（1.0 = 完美�
 |------|-------------|
 | `auto` | 始终以多遍运行（默认）；只有 `single-pass` 会选择单遍 |
 | `multi-pass` | 顺序加载模型（显存有限时可用） |
-| `single-pass` | 一次加载全部模型（需要大显存）。需要 CLIP+MLP 美学评分头，因此适用于 `legacy`/`8gb` 配置档；在 `16gb`/`24gb`（美学使用 TOPIQ）上，非商业模式下会记录警告并以多遍运行 |
+| `single-pass` | 一次加载全部模型（需要大显存）。需要 CLIP+MLP 美学模型，因此适用于 `legacy`/`8gb` 配置档。在 `16gb`/`24gb`（美学使用 TOPIQ）上，会记录警告并以多遍运行，商业模式除外（参见[许可](#许可licensing)） |
 
 ### 多遍处理的工作方式
 
@@ -755,11 +755,11 @@ SRCC = 在 KonIQ-10k 基准上的斯皮尔曼等级相关系数（1.0 = 完美�
 
 每张图片在每个分块中只解码一次并由所有遍次共享，各遍次会按可用显存分组，因此较大的标签/构图 VLM 即使在显存有限时也能运行。
 
-加载线程在解码的同时完成所有需要完整画面的 CPU 端工作：EXIF、技术指标、基于规则的构图分析、感知哈希，以及 pyiqa 模型与 Q-ReAlign 共用的 1024 px 图像（每张照片缩小一次，而不是每个模型一次）。之后分块保留解码后的图像，丢弃 BGR 数组和灰度平面；InsightFace 与显著性遍次在运行时再从该图像重建各自所需的数据（每张 20 MP 照片约 0.09 秒，在扫描摘要中合计为 `Plane rebuilds`）。构图出错只会让那一张照片失败，并以 `composition` 阶段记入 `scan_failures`（用 `--retry-failed` 重试），分块继续处理。
+加载线程在解码的同时，还会完成需要完整画面的 CPU 工作：EXIF、技术指标、基于规则的构图分析、感知哈希，以及 pyiqa 模型与 Q-ReAlign 共用的 1024 px 副本（每张照片缩小一次，而不是每个模型一次）。之后分块保留解码后的图像和这份 1024 px 副本。InsightFace 与显著性遍次在运行时再重建各自需要的彩色或灰度副本（每张 20 MP 照片约 0.09 秒；总耗时见扫描摘要中的 `Plane rebuilds` 一行）。构图出错只会让那一张照片失败：它会以 `composition` 阶段记入 `scan_failures`（用 `--retry-failed` 重试），分块继续处理。
 
-在 CUDA GPU 上，当有可隐藏的工作且内存足够时，一个块会在第一组遍次的模型加载期间解码：该组中至少有一个模型既未加载也不在内存缓存中，`keep_in_ram` 不是 `"never"`，并且主机可用内存至少为：该块的解码估算（按上一个块的平均尺寸，每个源像素 4.75 字节；第一个块按每张照片 20 MP 计），加上正在进行的解码缓冲区（按上一个块的平均尺寸，每像素 16 字节，每个加载线程一张照片；尺寸混杂的块可能超出该值，差额由 `ram_cache_reserve_gb` 吸收），再加上 `ram_cache_reserve_gb`。模型本身的大小不计入这一预算：它们的权重进入显存，而先解码的方式在同一个已解码块旁加载它们时也要花费同样的主机内存。该检查在下文所述的内存缓存裁剪之后进行，而裁剪绝不会为了给重叠腾出空间而释放模型。只要有任一条件不满足（在 CPU 和 Apple MPS 上则总是如此），块会像以前一样先解码，扫描日志会提示一次。两种方式的评分完全相同。扫描摘要会报告 `I/O wait (scan thread blocked on decode)`（解码中未被隐藏的部分）和 `Decode wall`（并给出重叠的块数）。在 49 张照片上实测（`16gb` 配置，每块 16 张，16 GB GPU，32 GB 主机，没有其他 Python 进程在运行，三对交替运行的基线版与改动版）：扫描分别从 257.3 秒降到 256.8 秒、从 259.9 秒降到 221.3 秒、从 233.8 秒降到 199.7 秒（节省时间的中位数为 34.1 秒，第一对持平），4 个块中分别有 2、2 和 4 个发生了重叠，扫描线程等待解码的时间分别从 19.8、19.9 和 20.3 秒降到 11.4、10.9 和 0.0 秒。前两对中，内存检查拒绝了第 1 和第 2 个块（可用内存约 5.5-5.7 GB，而所需为 6.8 GB：解码 1.5 + 进行中 1.3 + 预留 4.0 GB），因为扫描本身就使主机的内存占用保持在 91-97 %；这些块像以前一样先解码。因此收益取决于主机的空闲内存。在任何一对之内，两种版本的交换空间用量都没有差别。更早的几对运行是在其他进程占满两到三个 CPU 核心时进行的，此处不引用，其中一对在改动后反而更慢（265 秒对 218 秒）。
+在 CUDA GPU 上，一个块会在第一组遍次的模型加载期间解码。只有以下条件全部满足时才会这样：该组中至少有一个模型既未加载也不在内存缓存中（否则没有可用来掩盖解码的加载过程），`keep_in_ram` 不是 `"never"`，并且主机可用内存至少为：该块的解码估算（按上一个块的平均尺寸，每个源像素 4.75 字节；第一个块按每张照片 20 MP 计），加上正在进行的解码缓冲区（按上一个块的平均尺寸，每像素 16 字节，每个加载线程一张照片；尺寸混杂的块可能需要更多，差额由 `ram_cache_reserve_gb` 吸收），再加上 `ram_cache_reserve_gb`。模型本身的大小不计入这一预算：它们的权重进入显存，而先解码该块时，加载它们要花费同样的主机内存。该检查在下文所述的内存缓存裁剪之后进行，而裁剪绝不会为了给重叠腾出空间而释放模型。否则（在 CPU 和 Apple MPS 上则总是如此），块会像以前一样先解码，扫描日志会提示一次。两种方式存储的结果完全相同。扫描摘要会报告 `I/O wait (scan thread blocked on decode)`（解码中未被隐藏的部分）和 `Decode wall`（并给出重叠的块数）。在 49 张照片上实测（`16gb` 配置，每块 16 张，16 GB GPU，32 GB 主机，没有其他 Python 进程在运行，三对运行，每对交替运行旧版与新版）：扫描分别从 257.3 秒降到 256.8 秒、从 259.9 秒降到 221.3 秒、从 233.8 秒降到 199.7 秒（节省时间的中位数为 34.1 秒，第一对持平），4 个块中分别有 2、2 和 4 个发生了重叠，扫描线程等待解码的时间分别从 19.8、19.9 和 20.3 秒降到 11.4、10.9 和 0.0 秒。前两对中，内存检查拒绝了第 1 和第 2 个块（可用内存约 5.5-5.7 GB，而所需为 6.8 GB：解码 1.5 + 进行中 1.3 + 预留 4.0 GB），因为扫描本身就使主机的内存占用保持在 91-97 %；这些块像以前一样先解码。因此收益取决于主机的空闲内存。在任何一对中，两次运行的交换空间用量都没有差别。更早的几对运行是在其他进程占满两到三个 CPU 核心时进行的，此处不引用，其中一对在改动后反而更慢（265 秒对 218 秒）。
 
-在第一个块之后的每个块开始前，如果可用内存低于该块所需（其解码估算加上 `ram_cache_reserve_gb`），内存缓存会释放模型，先释放最晚才会再用到的模型（从正在运行的组开始计算，其后是下一个块的各组），且只释放到满足需求为止。解码重叠不会增加这一需求：若某个块剩余的内存不足以同时容纳正在进行的解码缓冲区，该块会先解码，而不是淘汰模型。在内存压力下（使用率高于 `memory_limit_percent`），资源监视器仍像以前一样缩小块，但只在可用内存低于 `ram_cache_reserve_gb` 时按同样的顺序淘汰模型，而不是清空整个缓存。若可用内存始终回不到预留量以上，缓存仍会被清空：内存缓存在每次扫描的 40 次模型加载中，改动前命中 5、0 和 6 次，改动后命中 3、10 和 14 次（与上文相同的三对空闲主机运行；第一对即持平的那对，改动版命中更少，其模型加载多花了 13 秒）。
+在第一个块之后的每个块开始前，如果可用内存低于该块所需（其解码估算加上 `ram_cache_reserve_gb`），内存缓存会释放模型。它从最晚才会再用到的模型开始（从正在运行的组开始计算，其后是下一个块的各组），一旦满足需求就停止。解码重叠不会增加这一需求：若剩余的内存不足以同时容纳正在进行的解码缓冲区，该块会先解码，而不是淘汰模型。在内存压力下（使用率高于 `memory_limit_percent`），资源监视器仍像以前一样缩小块，但只在可用内存低于 `ram_cache_reserve_gb` 时按同样的顺序淘汰模型，而不是清空整个缓存。若可用内存始终回不到预留量以上，缓存仍会被清空。内存缓存在每次扫描的 40 次模型加载中，旧版命中 5、0 和 6 次，新版命中 3、10 和 14 次（与上文相同的三对空闲主机运行；第一对即持平的那对，新版命中更少，其模型加载多花了 13 秒）。
 
 ### 自动调优行为
 
@@ -1202,14 +1202,14 @@ IEC 61966-2-1。NCLX 传递特征值 16：ISO/IEC 23001-8 / ITU-T H.273。
 | `step_ortho_abs` | `0.02` | 单步中允许的侧向移动，超过即读作重新构图 |
 | `step_ortho_ratio` | `0.5` | 同一限制，但按该步自身大小的比例计 |
 | `hdr_min_span_stops` | `1.5` | 曝光跨度超过此值的扫拍算作 HDR 全景。已确认的普通扫拍跨度为 0.0-0.7 挡，HDR 的为 2.0-4.4 |
-| `sift_features` | `400` | 每张缩略图的特征数。该语料在 250 时仍能检出；400 留有余量。 匹配开销随该值的平方增长。按每对实测，精确匹配器在默认的 400 个特征下约需 2.3 毫秒（之前的近似匹配器约为 5.2 至 5.5 毫秒），而在 3000 个特征下约需 0.12 秒（之前为 0.047 秒）；因此远高于默认值时，测量遍次会比以前更慢。两者的交叉点未经测量。 |
+| `sift_features` | `400` | 每张缩略图的特征数。该语料在 250 时仍能检出；400 留有余量。匹配会把一帧的每个特征与下一帧的每个特征逐一比较，因此开销随该值的平方增长：默认的 400 个特征下，每对帧约 2.3 毫秒（早期版本的近似匹配器为 5.2 至 5.5 毫秒），而 3000 个特征下约 0.12 秒（早期版本为 0.047 秒）。因此远高于默认值时，检测会比以前更慢；两者的交叉点未经测量。 |
 | `match_ratio` | `0.75` | 特征匹配必须优于的 Lowe 比率才会被保留 |
 | `workers` | `0` | 并行工作进程数；`0` 表示按核心数选取。其扩展性达不到核心数 —— 开销主要来自各工作进程争抢的随机缩略图读取 |
 | `probe_stride` | `8` | 用于跳过普通连拍的低成本静止段探测之间相隔的帧数 |
 | `probe_min_drift` | `0.05` | 探测点处低于该移动量就把这一段判为静止而放弃 |
 | `max_run_frames` | `500` | 参与测量的候选段最长帧数。一次扫拍从不需要这么多帧，这个上限也约束了每段的特征缓存（每个工作进程每帧约 220 KB） |
 
-改动这些设置本身不会带来任何变化 — 检测是一个批处理遍次，因此请重新运行 `--detect-panoramas`（或使用查看器中的重新运行操作），改动才会体现在照片库和选片信息流中。改动其中任何一项都会让按候选段缓存的检测结果失效，这样下一次运行会重新测量整个图库，而不是复用按旧阈值得到的结果。在两次改动之间，扫描只会重新测量帧发生了变化的候选段：当一个候选段的帧列表、这些帧的拍摄与曝光数据以及每张已存缩略图的大小与上一遍次测量时完全一致，就会复用它的测量结果。标注始终由缓存的测量结果和你当前的修正重新推导，因此清除或设置修正会在下一遍次生效，而无需重新测量任何内容。匹配是精确的，所以对同一个图库运行两次，得到的标注和分组编号完全相同。
+改动这些设置本身不会带来任何变化 — 检测是一个批处理遍次，因此请重新运行 `--detect-panoramas`（或使用查看器中的重新运行操作），改动才会体现在照片库和选片信息流中。这种显式的重新运行总会重新测量整个图库。而扫描之后运行的全景步骤（以及 `--recompute-average` 和 `--recompute-burst` 之后的那一步）会改为复用每个未变化候选段已存储的测量结果：帧相同，拍摄与曝光数据、扫描时间、渲染版本和已存缩略图的大小也相同。改动这些设置中除 `enabled` 和 `workers` 之外的任何一项，都会丢弃已存储的测量结果，该步骤随后会重新测量全部内容。标注始终由测量结果和你当前的修正重新生成，因此你设置或清除的修正会在下一遍次生效，复用测量结果时也无需重新测量。匹配是精确的，所以对未变化的图库运行两遍，会找到相同的组，分组编号也相同。
 
 ---
 
@@ -1490,9 +1490,9 @@ InsightFace 人脸检测设置。
 | `enabled` | `true` | 启用打标签 |
 | `max_tags` | `5` | 每张照片最多的标签数 |
 
-**注意：** CLIP/SigLIP 的标签阈值是当前配置档 clip 块中的 `tag_threshold_percent`（`16gb`/`24gb` 用 `models.clip`，`legacy`/`8gb` 用 `models.clip_legacy`；`vram_profile: "auto"` 会先解析为检测到的配置档）。旧键 `similarity_threshold_percent` 已不再读取，也没有别名：如果你的文件里仍有它，请把自定义的值复制到 `tag_threshold_percent`（加载配置时和 `python facet.py --doctor` 都会点名这个旧键）。
+**注意：** CLIP/SigLIP 的标签阈值是当前配置档所在块中的 `tag_threshold_percent`：`16gb`/`24gb` 用 `models.clip`，`legacy`/`8gb` 用 `models.clip_legacy`（`vram_profile: "auto"` 使用检测到的配置档）。那里的旧键 `similarity_threshold_percent` 已不再读取，也没有别名。如果你的文件里仍有它，请把自定义的值复制到 `tag_threshold_percent`；加载配置时和 `python facet.py --doctor` 都会点名这个旧键。
 
-扫描结束时，标注步骤只在确有内容需要标注时才加载该配置档的嵌入模型。当 `enabled` 为 `false`，或没有任何照片同时具有已存储的嵌入向量和空的标签列表时，该步骤会跳过并输出一行日志。若待处理的照片永远无法被标注器标注（所有相似度都低于阈值），扫描每次运行仍会加载该模型。`python tag_existing.py`、`--force` 和 `python facet.py --tag-untagged` 不受影响。
+扫描结束时，标注步骤只在确有内容需要标注时才加载该配置档的嵌入模型。当 `enabled` 为 `false`，或没有任何照片同时具有已存储的嵌入向量和空的标签列表时，该步骤会跳过并输出一行日志。标注器永远无法标注的照片（所有相似度都低于阈值）会一直处于待处理状态，因此每次扫描仍会加载该模型。`python tag_existing.py`（无论是否带 `--force`）和 `python facet.py --tag-untagged` 不使用这种跳过机制。
 
 ### 可用的标签模型
 
@@ -1684,7 +1684,7 @@ python facet.py --recompute-tags-vlm   # 用 VLM 标签模型重新打标签
 | `default_category` | `""` | 默认的类别筛选 |
 | `edition_password` | `""` | 解锁编辑模式的密码（留空 = 所有编辑均被拒绝；安装为只读） |
 | **comparison_mode** | | |
-| `min_comparisons_for_optimization` | `50` | 建议权重之前，该类别所需的最少决定性（A/B，非平局）比较次数 |
+| `min_comparisons_for_optimization` | `50` | 建议权重之前，该类别所需的最少决定性比较次数（一方获胜；平局不计） |
 | `pair_selection_strategy` | `"learning"` | 配对策略：`learning`（冷启动阶段按嵌入多样性，训练完成后按排序分歧）、`uncertainty`、`boundary`、`active`、`random` |
 | `candidate_pool_size` | `200` | `learning` 策略从中抽取配对的随机候选池大小 |
 | `show_current_scores` | `true` | 比较时显示评分 |
@@ -1989,7 +1989,7 @@ python facet.py --recompute-tags-vlm   # 用 VLM 标签模型重新打标签
 |---------|---------|-------------|
 | `mmap_size_mb` | `2048` | SQLite 内存映射 I/O 的大小 |
 | `cache_size_mb` | `128` | SQLite 缓存大小 |
-| `wal_checkpoint_minutes` | `30` | 可选覆盖项（随附文件中没有）。查看器后台执行 `PRAGMA wal_checkpoint(TRUNCATE)` 的间隔（分钟）。可防止长期运行的部署出现 WAL 膨胀。设为 `0` 可禁用周期性线程；正常关闭时的检查点始终会执行。 |
+| `wal_checkpoint_minutes` | `30` | 可选覆盖项（随附文件中没有）。查看器后台执行 `PRAGMA wal_checkpoint(TRUNCATE)` 的间隔（分钟）。可防止长期运行的部署出现 WAL 膨胀。设为 `0` 可禁用周期性检查点；正常关闭时的检查点无论如何都会执行。 |
 | `slow_request_ms` | `1000` | 查看器 API 请求耗时超过这么多毫秒时，会以 WARNING 级别并带 `SLOW` 标记记入日志。设为 `0` 可禁用。 |
 
 ---

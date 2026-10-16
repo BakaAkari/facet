@@ -469,7 +469,7 @@ FACET_DEVICE=mps python facet.py /path/to/photos --pass embeddings --force
 （不可用时明确报错）。InsightFace 仍留在处理器上，因为它是 ONNX Runtime 模型，
 不是 PyTorch 模型。
 
-只有当 PyTorch 报告至少一个 CUDA 设备（`device_count() > 0`）时才算数：设置 `CUDA_VISIBLE_DEVICES=''` 时，自动选择是 CPU，而 `FACET_DEVICE=cuda` 会以与不可用的 `mps` 相同的 “requested, but that device is not available” 错误中止。
+只有当 PyTorch 能看到至少一个设备时，CUDA GPU 才算数。设置 `CUDA_VISIBLE_DEVICES=''` 时，自动选择是 CPU，而 `FACET_DEVICE=cuda` 会以与不可用的 `mps` 相同的 “requested, but that device is not available” 错误中止。
 
 Metal 没有专用显存，所以 `vram_profile: "auto"` 是按统一内存总量来选定的：
 
@@ -550,7 +550,7 @@ Hugging Face API。
 | SigLIP 2 NaFlex SO400M（嵌入向量） | 4.581 GB | `16gb`/`24gb` |
 | Qwen3.5-2B（VLM 标签） | 4.571 GB | `16gb` |
 | Qwen3.5-4B（VLM 标签） | 9.343 GB | `24gb` |
-| Qwen2-VL-2B（构图） | 4.430 GB | 默认不使用 —— 只有当你手动设置 `composition_model: "qwen2-vl-2b"` **并且** `processing.mode: "single-pass"` 时才会用到（非商业模式下该组合只在 `legacy`/`8gb` 上可用：在 `16gb`/`24gb` 上单阶段会回退到多阶段，而多阶段没有 Qwen2-VL 阶段） |
+| Qwen2-VL-2B（构图） | 4.430 GB | 默认不使用 —— 只有当你手动设置 `composition_model: "qwen2-vl-2b"` **并且** `processing.mode: "single-pass"` 时才会用到。非商业模式下，这只在 `legacy`/`8gb` 上可行：在 `16gb`/`24gb` 上单阶段会回退到多阶段，而多阶段没有 Qwen2-VL 阶段 |
 | InsightFace buffalo_l（人脸） | 下载 289 MB / 磁盘 630 MB（zip 包会与解压出的 `.onnx` 文件一同保留） | 全部 |
 | SAMP-Net 权重（构图） | 183 MB | 全部 |
 | U2-Net-P（SAMP-Net 的显著性子模型） | 4.7 MB | 与 SAMP-Net 相同 |
@@ -565,7 +565,7 @@ Hugging Face API。
 各配置档的下载总量：`legacy` 4.69 GB · `8gb` 6.93 GB · `16gb` 14.55 GB ·
 `24gb` 19.32 GB · `24gb` 搭配 `composition_model: "qwen2-vl-2b"` 与
 `processing.mode: "single-pass"` 为 23.56 GB（这项手动覆盖是替换掉
-SAMP-Net/U2-Net-P，而不是在它们之外追加；非商业模式下，单阶段在 `24gb` 上会回退到多阶段，而多阶段中 Qwen2-VL 没有对应阶段，因此该总量在那里已无法达到）。
+SAMP-Net/U2-Net-P，而不是在它们之外追加）。非商业模式下，最后这个总量不再适用：在 `24gb` 上，单阶段会回退到多阶段，而多阶段不使用 Qwen2-VL。
 
 作为参考，Docker 镜像本身（尚未下载任何模型时）解包后：`latest` 为 3.34 GB、
 `latest-cuda` 为 13.1 GB、`latest-cuda-legacy` 为 13.8 GB —— 这些数字的测量方式见

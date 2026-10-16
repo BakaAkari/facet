@@ -786,7 +786,7 @@ API：参见下文的 [API 端点](#api-端点)一节。
 
 ### 权重建议标签页
 
-把从比较中学到的权重与当前权重并排展示，并给出前后的模型准确率。当前的前 10 张照片和重新计算后预测的前 10 张照片会在相邻两列中预览。**应用**会写入建议的权重；**重新计算**会为该类别重新评分以使其生效（两者都需要编辑模式）。 只有当服务器报告 `suggest_changes`，即通过了按照片分组的留出 McNemar 检验（与 `--optimize-weights` 相同）时，才会提供**应用**；否则建议的权重只作参考显示。与 `--optimize-weights` 不同，**应用**走的是与“权重”标签页手动编辑相同的路径（`POST /api/config/update_weights`），不会重新居中该类别的 bonus，因此该类别的平均得分可能发生偏移。
+把从比较中学到的权重与当前权重并排展示，并给出前后的模型准确率。当前的前 10 张照片和重新计算后预测的前 10 张照片会在相邻两列中预览。**应用**会写入建议的权重；**重新计算**会为该类别重新评分以使其生效（两者都需要编辑模式）。只有当服务器报告 `suggest_changes`，即建议的权重在留出比较上优于当前权重时（与 `--optimize-weights` 的检验相同，参见 [COMMANDS.md](COMMANDS.md)），才会提供**应用**；否则建议的权重只作参考显示。与 `--optimize-weights` 不同，**应用**走的是与“权重”标签页手动编辑相同的路径（`POST /api/config/update_weights`），不会重新居中该类别的 bonus，因此该类别的平均得分可能发生偏移。
 
 ### 权重标签页
 
@@ -794,7 +794,7 @@ API：参见下文的 [API 端点](#api-端点)一节。
 
 ### 快照标签页
 
-把当前权重保存为具名快照，并可恢复任意较早的快照。 快照还会记录该类别的 bonus（`modifiers.bonus`），恢复时 bonus 会随权重一起恢复；本次变更之前记录的、由 `calibrate.py` 记录的或属于 `others` 的快照没有 bonus，恢复时保持 bonus 不变。
+把当前权重保存为具名快照，并可恢复任意较早的快照。快照还会记录该类别的 bonus（`modifiers.bonus`），恢复时 bonus 会随权重一起恢复；1.21 之前记录的、由 `calibrate.py` 记录的或属于 `others` 的快照没有 bonus，恢复时保持 bonus 不变。
 
 ### 类别优先级与拍摄场景评分方案
 
@@ -1109,11 +1109,11 @@ python database.py --optimize        # 整理数据库碎片
 
 ### 图库索引与计数缓存
 
-图库的计数、被隐藏照片的汇总以及每一页，都会在各自的隐藏子句中读取同一组可见性列（眨眼、连拍、重复、包围曝光、全景、被拒绝、垃圾）。八个覆盖索引（`idx_gallery_aggregate`、`idx_gallery_date_desc`、`idx_date_asc_cover`、`idx_gallery_category`、`idx_gallery_camera`、`idx_star_rating_path`、`idx_gallery_iaa_asc` 和 `idx_stats_categories`，定义在 `db/schema.py` 中）把这些列与排序列放在一起，因此这些查询直接由索引回答，而不必遍历整张 `photos` 表。在一个 13 万张照片的图库上，默认图库页面因此从约 1.2 秒降到约 30 毫秒。
+图库的计数、被隐藏照片的汇总以及每一页，都会在各自的隐藏子句中读取同一组可见性列（眨眼、连拍、重复、包围曝光、全景、被拒绝、垃圾）。Facet 为图库及其统计添加了八个索引：`idx_gallery_aggregate`、`idx_gallery_date_desc`、`idx_date_asc_cover`、`idx_gallery_category`、`idx_gallery_camera`、`idx_star_rating_path`、`idx_gallery_iaa_asc` 和 `idx_stats_categories`（定义在 `db/schema.py` 中）。除 `idx_star_rating_path` 和 `idx_stats_categories` 外，其余都把这些可见性列与排序列放在一起（覆盖索引：查询只靠索引就能回答），因此这些查询不再遍历整张 `photos` 表。在一个 13 万张照片的图库上，默认图库页面因此从约 1.2 秒降到：计数已缓存时 26 至 38 毫秒，数据库发生更改之后约 104 毫秒（在其他进程使机器保持繁忙的情况下，6 次热运行的中位数）。
 
 - **在查看器启动时于后台构建一次。** 升级后的第一次启动会在后台线程中构建所有缺失的索引，同时查看器已经在提供服务：在一个 13 万张照片的图库上，仅 `idx_gallery_aggregate` 一个索引在两次实测中分别耗时 45.6 秒和 54.1 秒，这些索引使数据库增大约 106 至 111 MB（实测）。某个索引正在写入时，保存会以 503 `library_busy` 被拒绝，并提示稍后重试。如果先运行的是扫描（`python facet.py`）或 `python database.py`，则由它构建这些索引。关于构建期间的写入、关闭、图库锁、`--workers N` 和 Docker，参见 [DEPLOYMENT.md](DEPLOYMENT.md#查看器启动与图库索引)。
-- **其中两个服务于扫描之后的各遍次。** `idx_date_asc_cover` 比其他图库索引更宽：它额外包含包围曝光与全景检测所读取的列（`camera_model`, `focal_length`, `f_stop`, `shutter_speed`, `iso`, `phash`, `shadow_clipped`, `highlight_clipped`, `scanned_at`, `render_version`, `length(thumbnail)`），并取代首个版本中较窄的 `idx_gallery_date_asc`，后者在升级时被删除。`idx_post_scan` 是同一次后台构建中的第九个索引；它不是图库索引，包含连拍与重复检测所读取的列。上文的 106 至 111 MB 是在日期索引加宽之前测得的。在一份含 129,737 张照片的图库副本上分别测量，`idx_date_asc_cover` 占 21.0 MB，`idx_post_scan` 占 15.8 MB；整个升级过程（同时删除较窄的 `idx_gallery_date_asc`）使数据库增大了 24.0 MB。
-- **写入略慢。** 更新这些索引包含的某一列（例如 `is_burst_lead` 或 `aggregate`）时，每行约多花 0.5 至 0.7 毫秒；扫描保存整行时，未观察到超出多次运行间波动（每张照片最多约 1 毫秒）的差异（在同一图库的 5 万行副本上实测）。
+- **两个索引服务于扫描之后的各遍次。** `idx_date_asc_cover` 比其他图库索引更宽：它额外包含包围曝光与全景检测所读取的列（`camera_model`, `focal_length`, `f_stop`, `shutter_speed`, `iso`, `phash`, `shadow_clipped`, `highlight_clipped`, `scanned_at`, `render_version`, `length(thumbnail)`），并取代只有 1.20.0 之后的开发版本才创建的较窄的 `idx_gallery_date_asc`（升级时将其删除）。`idx_post_scan` 是同一次后台构建中的第九个索引；它不是图库索引，包含连拍与重复检测所读取的列。上文的 106 至 111 MB 是在日期索引仍较窄时测得的。在一份含 129,737 张照片的图库副本上分别测量，`idx_date_asc_cover` 占 21.0 MB，`idx_post_scan` 占 15.8 MB；用这两个索引取代较窄的索引，使数据库又增大了 24.0 MB。
+- **写入略慢。** 更新这八个图库索引包含的某一列（例如 `is_burst_lead` 或 `aggregate`）时，每行约多花 0.5 至 0.7 毫秒；扫描保存整行时，未观察到超出多次运行间波动（每张照片最多约 1 毫秒）的差异（在同一图库的 5 万行副本上实测）。两个扫描后索引在安静的主机上每写入一行最多增加 0.31 毫秒（负载下为 0.45 毫秒），在 129,737 张照片的图库副本上实测。
 - **计数缓存。** 计数和被隐藏照片的汇总会缓存 5 分钟。缓存键包含数据库的变更令牌，因此同一主机上任何进程的任何连接提交（包括 `--detect-junk` 和 `--recompute-*` 命令）都会使其失效。通过网络共享从另一台机器提交的更改，要等该缓存项过期后才会被发现。
 
 ### 异步 SQLite（可选，用于高并发读取路径）
@@ -1326,7 +1326,7 @@ python database.py --stats-info
 | `GET /api/comparison/confidence` | `[Edition]` 学习评分的置信度指标 |
 | `GET /api/comparison/photo_metrics` | 照片的原始指标 |
 | `GET /api/comparison/category_weights` | `[Edition]` 类别权重／筛选条件 |
-| `GET /api/comparison/learned_weights` | `[Edition]` 从比较中得出的建议权重（`suggest_changes` 是留出 McNemar 检验的结论） |
+| `GET /api/comparison/learned_weights` | `[Edition]` 从比较中得出的建议权重（`suggest_changes` 为真，表示它们通过了 `--optimize-weights` 的留出检验） |
 | `POST /api/comparison/preview_score` | 用自定义权重预览 |
 | `POST /api/comparison/suggest_filters` | 分析筛选条件冲突 |
 | `POST /api/comparison/override_category` | `[Edition]` 为单张照片设置持久的类别覆盖（会针对已配置的类别名称校验；能挺过下一次重新计算） |

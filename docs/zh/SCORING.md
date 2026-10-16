@@ -37,11 +37,11 @@
 
 其他基于标签的类别还包括 `aerial`、`food`、`sports`、`vehicle`、`travel`、`fashion`、`candid`、`product`、`architecture`、`urban`、`golden_hour`、`blue_hour`、`cinematic`、`vintage`、`abstract`、`minimalist`、`dramatic` 和 `weather`。
 
-在使用 CLIP 打标签的配置档上（`legacy`/`8gb`，以及未安排 VLM 标签器的 `16gb`/`24gb`），多遍扫描在嵌入向量遍中为照片打标签，然后才计算其类别和综合评分，所以扫描时的类别与 `--recompute-average` 一样能看到标签；扫描后的打标签步骤只是给仍无标签的照片准备的回退。只带单个 `--pass NAME` 的运行不打标签。
+在使用 CLIP 打标签的配置档上（`legacy`/`8gb`，以及其 VLM 标签器不运行时的 `16gb`/`24gb`），多遍扫描会在嵌入向量遍中为每张照片打标签，然后才计算其类别和综合评分。因此扫描存储的类别会用到这些标签，与 `--recompute-average` 一样。扫描结束时的打标签步骤只处理仍无标签的照片。只带单个 `--pass NAME` 的运行不打标签。
 
-**剪影。** `is_silhouette` 是一条基于人脸的像素规则（参见下方的过滤条件表），不是标签，也不是直方图检验。已存储的标志同时驱动综合评分和类别：剪影在 `aggregate` 中跳过溢出裁切扣分（`exposure.silhouette_detection`），而扫描会将 `exposure_score` 连同溢出裁切扣分一并存储，但 `--recompute-average` 会对已存储 `is_silhouette` 为真的照片去掉该扣分重新推导，无论 `exposure.silhouette_detection` 取何值。用 `python facet.py --recompute-silhouette` 重新推导已存储的标志，然后运行 `--recompute-average`。
+**剪影。** `is_silhouette` 来自一条基于人脸的像素规则（参见[布尔筛选条件](#布尔筛选条件)），不是来自标签，也不是来自直方图检验。已存储的标志既影响评分，也影响类别。当 `exposure.silhouette_detection` 为 `true`（默认）时，剪影的综合评分会跳过溢出裁切扣分。存储的 `exposure_score` 取决于命令：扫描存储的 `exposure_score` 带有溢出裁切扣分，而 `--recompute-average` 会对每张标记为 `is_silhouette` 的照片去掉该扣分重新计算，无论 `exposure.silhouette_detection` 取何值。要重新推导已有照片库的标志，请运行 `python facet.py --recompute-silhouette`，然后运行两次 `--recompute-average`（参见 [COMMANDS.md](COMMANDS.md)）。
 
-**星空。** 照片需要有星空标签，*并且*平均亮度不超过 0.30（`luminance_max`）：被 CLIP 标为 `aurora` 或 `stars` 的明亮场景不属于星空，而没有存储亮度的照片永远不匹配。带有自己 `categories` 数组的 `scoring_config.json` 保留它自己的 `astro` 条目，在你把 `"luminance_max": 0.30` 加入 `astro.filters` 之前不会获得这道防护；`python facet.py --doctor` 会指出你的条目是否缺少它。
+**星空。** 照片需要有星空标签，*并且*平均亮度不超过 0.30（`luminance_max`）：被标为 `aurora` 或 `stars` 的明亮场景不属于星空，而没有存储亮度的照片永远不匹配。带有自己 `categories` 数组的 `scoring_config.json` 保留它自己的 `astro` 条目，在你把 `"luminance_max": 0.30` 加入 `astro.filters` 之前不会获得这个过滤条件；当你的条目缺少它时，`python facet.py --doctor` 会告诉你。
 
 ## 拍摄场景评分方案
 
@@ -144,7 +144,7 @@
 |--------|-------------|
 | `has_face` | 至少检测到一张人脸 |
 | `is_monochrome` | 饱和度 < 5% |
-| `is_silhouette` | 最大的人脸偏暗而其周围环境明亮：人脸框中央 60 % 的平均亮度低于 0.12，且框外围的环带（向外 0.2 至 0.75 个框宽，裁到画面范围内）亮出 0.20 以上。这是一种基于人脸的像素测量；CLIP 的 `silhouette` 标签和整幅画面的直方图都不再决定它。没有人脸的照片永远不是剪影 |
+| `is_silhouette` | 最大的人脸偏暗而其周围环境明亮：人脸框中央 60 % 的平均亮度（luma，0-1）低于 0.12，且框外围的环带（在每一侧向外延伸框尺寸的 0.2 至 0.75 倍，裁到画面范围内）亮出 0.20 以上。CLIP 的 `silhouette` 标签和整幅画面的直方图都不再决定它。没有人脸的照片永远不是剪影 |
 | `is_group_portrait` | face_count >= `min_faces_for_group`（可配置，默认为 4） |
 
 ### 标签筛选条件
@@ -185,7 +185,7 @@
 | `subject_placement_percent` | 主体三分法 | BiRefNet | 全部 |
 | `bg_separation_percent` | 背景分离度 | BiRefNet | 人像、微距 |
 
-**`quality_percent` 按 `aesthetic` 计算。** 画质指标没有独立评分，因此类别的 `quality_percent` 会在计算前并入其 `aesthetic_percent`：实际美观度权重为 `aesthetic_percent + quality_percent`，权重总和仍为 100。修复之前，`quality` 这一份对一个恒为 0 的指标打分，并从综合评分中消失；用旧代码汇总过的库，在下一次 `--recompute-average` 时会小幅上升（不会改变任何类别）。
+**`quality_percent` 按 `aesthetic` 计算。** 画质指标没有独立评分，因此类别的 `quality_percent` 会在计算前并入其 `aesthetic_percent`。权重总和仍为 100。早期版本把 `quality` 这一份按一个恒为 0 的指标计分，因此这一份从综合评分中丢失。在下一次 `--recompute-average` 时，由早期版本汇总过的照片库会把这一份补回来。在一个 129,737 张照片的图库副本上，35,139 个综合评分上升，544 个下降（平均 +0.087），没有任何类别发生变化。
 
 ## 修正项
 
@@ -213,7 +213,7 @@
 
 人像／野生动物题材可使用 `subject_sharpness_percent` 和 `bg_separation_percent`；微距题材可使用 `subject_prominence_percent`。
 
-**没有主体就没有数值。** 找不到主体时，`subject_sharpness`、`subject_placement` 和 `bg_separation` 存为 NULL（没有主体框时 `power_point_score` 也一样），`subject_prominence` 为 0.0，`subject_bbox` 为 NULL；旧版本存的是中性的 5.0。图库的最小/最大范围筛选会跳过这些指标上的 NULL（`min_subject_sharpness=0` 不再返回没有主体的照片），SQL 平均值忽略它，界面显示为缺失。综合评分仍把 NULL 按中性的 5.0 计分，所以没有任何综合评分改变。已有的行保留其 5.0，直到 `--recompute-saliency` 和 `--recompute-composition-cpu` 将其重写。
+**没有主体就没有数值。** 找不到主体时，`subject_sharpness`、`subject_placement` 和 `bg_separation` 存为 NULL（没有主体框时 `power_point_score` 也一样），`subject_prominence` 为 0.0，`subject_bbox` 为 NULL；旧版本存的是中性的 5.0。图库的最小/最大范围筛选会跳过这些指标上的 NULL（`min_subject_sharpness=0` 不再返回没有主体的照片），统计数据在计算平均值时不计入它，界面显示为缺失。综合评分仍把 NULL 按中性的 5.0 计分，所以没有任何综合评分改变。已有的行保留其 5.0，直到 `--recompute-saliency` 和 `--recompute-composition-cpu` 将其重写。
 
 **显著性失败时。** 在 CUDA 上，显著性批大小由空闲显存推算（1024 px 下每张图片约 2.4 GiB，范围 1 至 8 张），遇到显存不足错误时减半，直至一张图片。如果某张照片的显著性仍然失败，则记录一条 ERROR 且不存入任何值：从未评分的照片，其五个显著性列（`subject_sharpness`、`subject_prominence`、`subject_placement`、`bg_separation`、`subject_bbox`）保持 NULL；`--recompute-saliency` 与 `--pass saliency` 在显著性失败时会保留照片已存储的值；对该照片进行完整重新扫描（例如 `--force`）则会为其存入 NULL，与从未评分的照片相同。Facet 绝不会用中性数值顶替失败的结果。在综合评分中，NULL 按中性（5.0）计算，与显著性功能出现之前扫描的照片完全一样，因此既不加分也不扣分。`--recompute-saliency` 会再次选中这类照片（见[主体显著性](COMMANDS.md#主体显著性)）。
 
@@ -229,7 +229,7 @@
 
 在所有 GPU 配置档（8gb/16gb/24gb）上，这些模型都作为默认评分流程的一部分运行，并与 TOPIQ 共享显存；CPU 的 legacy 配置档会跳过它们。凡是这类评估有用的类别，都可以把它们的权重键加进去。
 
-**补充模型无法为照片评分时。** TOPIQ NR-Face 需要其自带检测器能找到的人脸，LIQE 需要短边至少 224 px 的照片；Aesthetic V2.5（启用时）可能对任何图片失败。模型无法评分的照片会在该模型对应的列（`face_quality_iqa`、`liqe_score`、`aesthetic_iaa`、`aesthetic_v25`）中存入 NULL，而不是中性的 5.0。GPU 显存不足错误会以一半的批大小重试，直至一张图片，之后才放弃该照片；CPU 内存错误不按此方式重试，而是走普通的逐张图片流程，仍然失败的照片存入 NULL。意外失败会连同受影响的照片数一起记录为 ERROR，而两种预期情形（未找到人脸、短边小于 224 px）只在模型释放时于日志中汇总一次。`--recompute-iqa` 不会在每次运行时重试这两种预期情形中的任何一种：短边情形根据已存储缩略图的尺寸判定，NR-Face 的拒绝会被记住（记在 `iqa_declined` 表中），直到该照片被重新扫描；而显存不足或意外失败则会在下次运行时重试。在综合评分中，NULL 按中性（5.0）计算，因此综合评分、类别和排名都不会变化。**图库中对美学（IAA）、人脸画质（IQA）、LIQE 或 Aesthetic V2.5 的范围筛选不再匹配没有评分的照片**：没有人脸的照片以前保存着 5.0，会被 `min_face_quality_iqa=0` 匹配，现在不会了；按美学（IAA）、人脸画质（IQA）或 LIQE 升序排序时，无论在图库还是相册（包括智能相册和共享相册）中，这类照片都排在最后。旧版本已存储的值保持不变，直到 `--repair-neutral-iqa` 清除 `aesthetic_iaa`、`face_quality_iqa` 和 `liqe_score` 中的中性 5.0（之后运行 `--recompute-iqa` 和 `--recompute-average`）。重写照片的重新扫描（例如 `--force`）会为模型未能给出的评分存入 NULL；`--recompute-iqa` 只填充为 NULL 的列，而 `--pass quality-iaa`、`--pass quality-face` 和 `--pass quality-liqe` 在模型失败时保留已存储的值，因此它们都不会替换旧的 5.0。如果主画质模型（`16gb` 与 `24gb` 配置档上的 TOPIQ）对某张照片失败，该照片会在 `scan_failures` 中记为失败，而不是以中性的 5.0 美学评分保存。尚未入库的照片会在下次扫描时重新处理；已存储的照片（例如 `--force` 重新扫描之后）保留其原有记录，可由 `--retry-failed all`（不带参数的 `--retry-failed` 只覆盖最近一次记录了失败的运行）或再次 `--force` 重新扫描来重试。使用 `--pass quality` 时保留已存储的值，也不会记录失败行。见[补充画质模型](COMMANDS.md#补充画质模型)。
+**补充模型无法为照片评分时。** TOPIQ NR-Face 需要其自带检测器能找到的人脸，LIQE 需要短边至少 224 px 的照片；Aesthetic V2.5（启用时）可能对任何图片失败。模型无法评分的照片会在该模型对应的列（`face_quality_iqa`、`liqe_score`、`aesthetic_iaa`、`aesthetic_v25`）中存入 NULL，而不是中性的 5.0。GPU 显存不足错误会以一半的批大小重试，直至一张图片，之后才放弃该照片；CPU 内存错误不按此方式重试，而是走普通的逐张图片流程，仍然失败的照片存入 NULL。意外失败会连同受影响的照片数一起记录为 ERROR，而两种预期情形（未找到人脸、短边小于 224 px）只在模型释放时于日志中汇总一次。`--recompute-iqa` 不会在每次运行时重试这两种预期情形中的任何一种：短边情形根据已存储缩略图的尺寸判定，NR-Face 的拒绝会被记住，直到该照片被重新扫描。显存不足或意外失败则会在下次运行时重试。在综合评分中，NULL 按中性（5.0）计算，因此综合评分、类别和排名都不会变化。**图库中对美学（IAA）、人脸画质（IQA）、LIQE 或 Aesthetic V2.5 的范围筛选不再匹配没有评分的照片**：没有人脸的照片以前保存着 5.0，会被 `min_face_quality_iqa=0` 匹配，现在不会了；按美学（IAA）、人脸画质（IQA）或 LIQE 升序排序时，无论在图库还是相册（包括智能相册和共享相册）中，这类照片都排在最后。旧版本已存储的值保持不变，直到 `--repair-neutral-iqa` 清除 `aesthetic_iaa`、`face_quality_iqa` 和 `liqe_score` 中的中性 5.0（之后运行 `--recompute-iqa` 和 `--recompute-average`）。重写照片的重新扫描（例如 `--force`）会为模型未能给出的评分存入 NULL；`--recompute-iqa` 只填充为 NULL 的列，而 `--pass quality-iaa`、`--pass quality-face` 和 `--pass quality-liqe` 在模型失败时保留已存储的值，因此它们都不会替换旧的 5.0。如果主画质模型（`16gb` 与 `24gb` 配置档上的 TOPIQ）对某张照片失败，该照片会在 `scan_failures` 中记为失败，而不是以中性的 5.0 美学评分保存。尚未入库的照片会在下次扫描时重新处理；已存储的照片（例如 `--force` 重新扫描之后）保留其原有记录，可由 `--retry-failed all`（不带参数的 `--retry-failed` 只覆盖最近一次记录了失败的运行）或再次 `--force` 重新扫描来重试。使用 `--pass quality` 时保留已存储的值，也不会记录失败行。见[补充画质模型](COMMANDS.md#补充画质模型)。
 
 ### 补充信号（不计入默认综合评分）
 
@@ -390,9 +390,9 @@ python facet.py --recompute-average
    物化为合成照片对（`source='rating'`）。
    重新运行会按当前标注重新同步，因此撤销掉的星级也会随之消失。
 
-优化器在最大化 Bradley-Terry 似然时，会按可靠性为每个来源加权（vote 1.0、rating 0.7、culling 0.5）。**平局**算作半胜加半负：它证明两张照片得分相近，其分量与一次决定性投票相同（`include_ties` 仍会丢弃平局）。拟合通过 L2 先验（`l2_regularization`，强度 100）**锚定在当前权重上**：比较很少时，建议会贴近你的权重，随着投票累积才逐渐偏离。它在每张照片上训练时采用评分器实际提供的形式：与综合评分所读取的相同的 0-10 指标向量（包括 `liqe`、`aesthetic_iaa`、`face_quality_iqa` 和主体显著性指标），其中眼部清晰度、技术清晰度和色彩按百分位归一化，并带有重建的曝光评分和合影人像标志。百分位来自 `--recompute-average` 持久化的快照；在第一次 `--recompute-average` 之前，改为读取已存储的列。它从**实际提供的**权重出发，并写回这些同样的权重：`quality_percent` 像评分器那样折入 `aesthetic`，应用时在带有它的类别中写入 `quality_percent: 0`。
+优化器拟合的是最能预测每次比较中哪张照片获胜的权重（Bradley-Terry 模型），并按可靠性为每个来源计数：vote 1.0、rating 0.7、culling 0.5。**平局**算作半胜加半负：它表明两张照片应该得分相近。拟合**锚定在你当前的权重上**：比较很少时，建议会贴近这些权重，随着投票累积才逐渐偏离。它在每张照片上训练时采用评分器看到的形式：与综合评分所读取的相同的 0-10 指标（包括 `liqe`、`aesthetic_iaa`、`face_quality_iqa` 和主体显著性指标），其中眼部清晰度、技术清晰度和色彩按百分位归一化，曝光评分由已存储的直方图重建，并带有合影人像标志。百分位是上一次 `--recompute-average` 保存的那一份；在第一次 `--recompute-average` 之前，直接使用已存储的列。它从评分器实际使用的权重出发，并写回这些权重：`quality_percent` 像评分器那样折入 `aesthetic`，应用时在带有它的类别中写入 `quality_percent: 0`。
 
-权重**只有在能够泛化时才会应用**。最终权重用全部比较拟合，但是否写入的决定取决于留出检验：5 折交叉验证，且**折按照片分组**（任何一张照片都不会同时出现在同一折的训练对和留出对中），跨折汇总后，在相同的留出对上与当前权重做**单侧精确 McNemar 检验**。只有当 `p < 0.05` **并且**留出增益至少为 2 个百分点（`min_improvement`）时才会应用；否则本次运行记录这些数字而不写入任何内容——传入 `--optimize-force` 可覆盖。如果检验无法运行（相互独立的照片组太少），CLI 不会退回到训练准确率：除非强制，否则什么也不应用。优化按类别进行，需要**该类别**的**决定性**（A 或 B 获胜）带标签比较：`min_comparisons` 统计的是这类比较；平局和其他类别都不能满足它；没有投票的类别无法根据数据拟合。日志示例如下：
+权重**只有在能够泛化时才会应用**。最终权重用全部比较拟合，但是否写入，取决于拟合时没有见过的比较：5 折交叉验证，且**折按照片分组**（任何一张照片都不会同时出现在同一折的训练对和留出对中）。跨折汇总的留出预测，在相同的配对上与当前权重做**单侧精确 McNemar 检验**，它考察的是：在两组权重意见不一致的配对中，新权重是否显著赢得更多。只有当 `p < 0.05` **并且**留出增益至少为 2 个百分点时才会应用权重；否则本次运行记录这些数字而不写入任何内容。传入 `--optimize-force` 可强制应用。如果检验无法运行（相互独立的照片组太少），除非强制，否则什么也不应用。优化按类别进行，需要该类别中至少 30 次**决定性**比较（一方获胜）；平局和其他类别的比较不计入。没有投票的类别无法根据数据拟合。日志示例如下：
 
 ```
 Held-out accuracy:      69.2% +/- 4.0 (5-fold, photo-grouped) - the honest estimate
@@ -401,9 +401,9 @@ McNemar (one-sided):    p = 0.0006 (only the fit right: 66, only the current wei
 NOT applying: the held-out gate needs p < 0.05 and a gain of at least 2.0 pp. ...   (logged when the gate fails)
 ```
 
-用 `--optimize-weights` 应用结果，改变的是类别内部各照片之间的排序，而不是该类别相对其他类别的位置：在写入权重的同一次配置写入中，`modifiers.bonus` 会平移该类别照片预测平均得分偏移量的相反数（限制在 [-5, 5]；触及上下限会作为残差记录），于是该类别的平均综合评分保持不变。在 `categories[]` 中没有条目的类别（`others`）没有 bonus，也不会重新居中。写入前记录的权重快照带有 bonus，恢复快照会同时恢复权重**和** bonus（本次变更之前记录的、由 `calibrate.py` 记录的或属于 `others` 的快照没有 bonus，恢复时保持 bonus 不变）。已记录的残差：查看器通过 `POST /api/config/update_weights` 写入权重——其**应用**按钮和“权重”选项卡中的手动编辑都是如此——而该路径不会重新居中 bonus（只有 `--optimize-weights` 会）。
+用 `--optimize-weights` 应用结果，改变的是类别内部各照片之间的排序，而不是该类别相对其他类别的位置。在写入权重的同一次配置写入中，`modifiers.bonus` 会平移该类别照片预测平均得分偏移量的相反数，于是该类别的平均综合评分保持原样。bonus 被限制在 [-5, 5]，达到该限制而无法完全修正时，日志会说明。在 `categories` 中没有条目的类别（`others`）没有 bonus，也不会重新居中。写入前记录的权重快照包含 bonus，恢复快照会同时恢复权重**和** bonus（本次变更之前记录的、由 `calibrate.py` 记录的或属于 `others` 的快照没有 bonus，恢复时保持 bonus 不变）。已知限制：查看器的**应用**按钮和“权重”选项卡中的手动编辑，都通过 `POST /api/config/update_weights` 写入权重，而该路径不会重新居中 bonus；只有 `--optimize-weights` 会。
 
-**升级之后，请重新训练个人排序器和 keeper 头，然后运行 `--recompute-average`。** 优化器、排序器和 keeper 头共用一个特征向量，现在它就是实际提供的那个（经过归一化的眼部、技术和色彩指标）；已保存的模型无法察觉这一变化。
+**升级之后，请重新训练个人排序器和 keeper 头（`--train-ranker`、`--train-keeper`），然后运行 `--recompute-average`。** 优化器、排序器和 keeper 头读取相同的逐照片指标，这些指标现在包括按百分位归一化的眼部清晰度、技术清晰度和色彩；早期版本保存的模型无法察觉这一变化。
 
 建议的执行节奏：
 
@@ -421,7 +421,7 @@ python facet.py --recompute-average      # 应用并持久化百分位快照
 这与上文[方案 A：通过查看器](#方案-a通过查看器推荐)中描述的
 界面内滑块流程完全相同 — 完整的保存／重新计算步骤请参见该节。
 
-**建议权重**还回答了一个比旧留出检验更精确的问题：该类别*当前正在使用*的权重，与你自己的比较已经吻合到什么程度？它返回 `accuracy_before`——该类别带标签的配对（A/B 投票、淘汰和由评分推导的配对）中，在用权重正确预测出胜者的百分比——以及 `accuracy_after`，即建议权重的同一数字；两者都是训练样本上的数字。每次运行时，它们都会并排显示在“权重建议”选项卡和 A/B 比较选项卡的侧边栏中（`GET /api/comparison/learned_weights`、`optimization/weight_optimizer.py:optimize_weights_direct`）。是否提供**应用**遵循与 CLI 相同的留出 McNemar 检验，而不是样本内增益：只有通过检验时 `suggest_changes` 才为真（仅当样本内增益已达到 2 个百分点时，请求才会运行交叉验证；`?use_cv=true` 则总是运行）。与 CLI 一样，它需要该类别的 `min_comparisons_for_optimization`（内置默认 50）次决定性 A/B 比较——不足时按钮会报告缺口（“Need at least N decisive comparisons (have K)”），而不是给出一个数字。
+**建议权重**还回答了一个比上面的留出检验更窄的问题：该类别*当前正在使用*的权重，与你自己的比较已经吻合到什么程度？它返回 `accuracy_before`——该类别带标签的配对（A/B 投票、淘汰和由评分推导的配对）中，当前权重正确预测出胜者的百分比——以及 `accuracy_after`，即建议权重的同一数字。两者都是在拟合权重所用的同一批比较上测得的，所以 `accuracy_after` 偏乐观。每次运行时，它们都会并排显示在“权重建议”选项卡和 A/B 比较选项卡的侧边栏中（`GET /api/comparison/learned_weights`）。是否提供**应用**遵循与 CLI 相同的留出 McNemar 检验，而不是这个偏乐观的增益：只有通过检验时 `suggest_changes` 才为真。仅当偏乐观的增益已达到 2 个百分点时，请求才会运行交叉验证（`?use_cv=true` 在任何情况下都会运行）。查看器需要该类别有 `min_comparisons_for_optimization`（内置默认 50）次决定性比较，而 CLI 只需要 30 次；不足时按钮会报告缺口（“Need at least N decisive comparisons (have K)”），而不是给出一个数字。
 
 ## 添加自定义类别
 
