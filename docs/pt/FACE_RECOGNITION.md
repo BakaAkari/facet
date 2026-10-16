@@ -192,7 +192,7 @@ O agrupamento em CPU com um `algorithm` fixo é determinístico para a mesma ent
 
 ### Reagrupamento e pessoas já nomeadas
 
-Todos os modos exceto `--cluster-faces-force` preservam os registos de pessoas, mas todos voltam a derivar do zero cada atribuição rosto→pessoa. Só são escritos os rostos cuja pessoa realmente muda, e toda a atualização é uma única transação, pelo que uma execução interrompida deixa o banco de dados como estava. Um rosto que reatribua no visualizador enquanto uma execução decorre mantém a sua atribuição; a execução regista quantos desses rostos deixou intactos. Um grupo reconstruído é devolvido a uma pessoa quando:
+Todos os modos exceto `--cluster-faces-force` preservam os registos de pessoas, mas todos voltam a derivar do zero cada atribuição rosto→pessoa. Só são escritos os rostos cuja pessoa realmente muda, e toda a atualização é uma única transação, pelo que uma execução interrompida deixa o banco de dados como estava. Um rosto que reatribua no visualizador enquanto a fase de banco de dados da execução está a escrever mantém a sua atribuição (a escrita é compare-and-set); a execução regista quantos desses rostos deixou intactos. Uma alteração feita antes na execução, enquanto o clustering ainda calcula, é sobrescrita, como antes. Um grupo reconstruído é devolvido a uma pessoa quando:
 
 1. o seu embedding médio está dentro de `merge_threshold` (0,6 de cosseno por omissão para ArcFace, 0,65 para SFace) do centroide armazenado dessa pessoa, **ou**
 2. pelo menos metade dos seus rostos pertencia a essa pessoa antes da execução.

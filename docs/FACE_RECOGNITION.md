@@ -192,7 +192,7 @@ CPU clustering with a fixed `algorithm` is deterministic for the same input.
 
 ### Re-clustering and curated people
 
-Every mode except `--cluster-faces-force` preserves existing person records, but all of them re-derive every face→person assignment from scratch. Only the faces whose person actually changes are written, and the whole update is a single transaction, so a run that is interrupted leaves the database as it was. A face you reassign in the viewer while a run is in progress keeps your assignment; the run logs how many such faces it left alone. A rebuilt cluster is returned to a person when either:
+Every mode except `--cluster-faces-force` preserves existing person records, but all of them re-derive every face→person assignment from scratch. Only the faces whose person actually changes are written, and the whole update is a single transaction, so a run that is interrupted leaves the database as it was. A face you reassign in the viewer while the run's database phase is writing keeps your assignment (the write is compare-and-set); the run logs how many such faces it left alone. An edit made earlier in the run, while clustering is still computing, is overwritten, as it was before. A rebuilt cluster is returned to a person when either:
 
 1. its mean embedding is within `merge_threshold` (default 0.6 cosine for ArcFace, 0.65 for SFace) of that person's stored centroid, **or**
 2. at least half of its faces belonged to that person before the run.

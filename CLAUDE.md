@@ -376,7 +376,8 @@ only what reading those two will NOT tell you.
 - **Panorama group ids are canonical** (numbered by each set's smallest member path, one
   counter across kinds), so two passes over the same library number it identically; ids are
   still renumbered on every run, and the cluster owner write is compare-and-set: a face
-  changed in the viewer mid-run keeps the viewer's value.
+  changed in the viewer while the database phase is writing keeps the viewer's value, but an
+  edit made earlier in the run, while clustering computes, is still overwritten.
 - **`sequence_override` means a correction exists; `sequence_override_pending` means it has not
   been applied.** Never drive a "pending" badge off the first — an override row persists for as
   long as the correction applies.

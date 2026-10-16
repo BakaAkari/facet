@@ -192,7 +192,7 @@ Le regroupement CPU avec un `algorithm` fixe est déterministe pour une même en
 
 ### Regroupement et personnes déjà nommées
 
-Tous les modes sauf `--cluster-faces-force` conservent les enregistrements de personnes, mais tous redérivent de zéro chaque affectation visage→personne. Seuls les visages dont la personne change réellement sont écrits, et toute la mise à jour tient dans une seule transaction : une exécution interrompue laisse donc la base de données telle qu'elle était. Un visage que vous réaffectez dans la visionneuse pendant qu'une exécution est en cours conserve votre affectation ; l'exécution journalise combien de tels visages elle a laissés intacts. Un groupe reconstruit est rendu à une personne lorsque :
+Tous les modes sauf `--cluster-faces-force` conservent les enregistrements de personnes, mais tous redérivent de zéro chaque affectation visage→personne. Seuls les visages dont la personne change réellement sont écrits, et toute la mise à jour tient dans une seule transaction : une exécution interrompue laisse donc la base de données telle qu'elle était. Un visage que vous réaffectez dans la visionneuse pendant que la phase base de données de l'exécution écrit conserve votre affectation (l'écriture est en compare-and-set) ; l'exécution journalise combien de tels visages elle a laissés intacts. Une modification faite plus tôt dans l'exécution, pendant que le clustering calcule encore, est écrasée, comme avant. Un groupe reconstruit est rendu à une personne lorsque :
 
 1. son embedding moyen se situe à moins de `merge_threshold` (0,6 cosinus par défaut pour ArcFace, 0,65 pour SFace) du centroïde stocké de cette personne, **ou**
 2. au moins la moitié de ses visages appartenaient à cette personne avant l'exécution.

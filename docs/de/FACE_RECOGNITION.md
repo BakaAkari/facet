@@ -192,7 +192,7 @@ CPU-Clustering mit festem `algorithm` ist für dieselbe Eingabe deterministisch.
 
 ### Erneutes Clustern und bereits benannte Personen
 
-Alle Modi außer `--cluster-faces-force` behalten die Personendatensätze, leiten aber sämtliche Gesicht→Person-Zuordnungen von Grund auf neu ab. Geschrieben werden nur die Gesichter, deren Person sich tatsächlich ändert, und die gesamte Aktualisierung ist eine einzige Transaktion; ein unterbrochener Lauf lässt die Datenbank daher unverändert. Ein Gesicht, das Sie im Viewer während eines laufenden Laufs neu zuordnen, behält Ihre Zuordnung; der Lauf protokolliert, wie viele solcher Gesichter er unangetastet gelassen hat. Ein neu gebildeter Cluster wird einer Person zurückgegeben, wenn entweder:
+Alle Modi außer `--cluster-faces-force` behalten die Personendatensätze, leiten aber sämtliche Gesicht→Person-Zuordnungen von Grund auf neu ab. Geschrieben werden nur die Gesichter, deren Person sich tatsächlich ändert, und die gesamte Aktualisierung ist eine einzige Transaktion; ein unterbrochener Lauf lässt die Datenbank daher unverändert. Ein Gesicht, das Sie im Viewer neu zuordnen, während die Datenbankphase des Laufs schreibt, behält Ihre Zuordnung (der Schreibvorgang ist ein Compare-and-Set); der Lauf protokolliert, wie viele solcher Gesichter er unangetastet gelassen hat. Eine frühere Änderung im selben Lauf, während das Clustering noch rechnet, wird wie bisher überschrieben. Ein neu gebildeter Cluster wird einer Person zurückgegeben, wenn entweder:
 
 1. sein mittleres Embedding innerhalb von `merge_threshold` (Standard 0,6 Kosinus für ArcFace, 0,65 für SFace) zum gespeicherten Zentroid dieser Person liegt, **oder**
 2. mindestens die Hälfte seiner Gesichter vor dem Lauf zu dieser Person gehörte.

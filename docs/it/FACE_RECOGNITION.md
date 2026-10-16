@@ -192,7 +192,7 @@ Il raggruppamento su CPU con un `algorithm` fisso è deterministico a parità di
 
 ### Riraggruppamento e persone già nominate
 
-Tutte le modalità tranne `--cluster-faces-force` conservano i record delle persone, ma tutte ricavano da zero ogni assegnazione volto→persona. Vengono scritti solo i volti la cui persona cambia davvero, e l'intero aggiornamento è un'unica transazione, quindi un'esecuzione interrotta lascia il database com'era. Un volto che riassegni nel viewer mentre un'esecuzione è in corso mantiene la tua assegnazione; l'esecuzione registra quanti di questi volti ha lasciato intatti. Un gruppo ricostruito viene restituito a una persona quando:
+Tutte le modalità tranne `--cluster-faces-force` conservano i record delle persone, ma tutte ricavano da zero ogni assegnazione volto→persona. Vengono scritti solo i volti la cui persona cambia davvero, e l'intero aggiornamento è un'unica transazione, quindi un'esecuzione interrotta lascia il database com'era. Un volto che riassegni nel viewer mentre la fase di database dell'esecuzione sta scrivendo mantiene la tua assegnazione (la scrittura è compare-and-set); l'esecuzione registra quanti di questi volti ha lasciato intatti. Una modifica fatta prima nell'esecuzione, mentre il clustering sta ancora calcolando, viene sovrascritta, come prima. Un gruppo ricostruito viene restituito a una persona quando:
 
 1. il suo embedding medio rientra in `merge_threshold` (0,6 coseno per impostazione predefinita per ArcFace, 0,65 per SFace) rispetto al centroide memorizzato di quella persona, **oppure**
 2. almeno metà dei suoi volti apparteneva a quella persona prima dell'esecuzione.

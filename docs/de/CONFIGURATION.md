@@ -1250,7 +1250,7 @@ Die Schwellenwerte wurden an 26 Panoramen und 8 Nicht-Panoramen kalibriert, die 
 | `step_ortho_abs` | `0.02` | Seitliche Bewegung in einem Schritt, bevor er als Neuausrichtung gilt |
 | `step_ortho_ratio` | `0.5` | Dieselbe Grenze als Anteil der Schrittgröße |
 | `hdr_min_span_stops` | `1.5` | Belichtungsspanne, ab der ein Schwenk ein HDR-Panorama ist. Einfache Schwenks umfassen 0,0-0,7 Blenden, HDR 2,0-4,4 |
-| `sift_features` | `400` | Merkmale je Vorschaubild. Das Korpus wird auch mit 250 erkannt; 400 lässt Spielraum Der Abgleichsaufwand wächst mit dem Quadrat dieses Werts. Pro Paar gemessen braucht der exakte Abgleich bei den standardmäßigen 400 Merkmalen etwa 2,3 ms (der frühere Näherungs-Abgleich: etwa 5,2 bis 5,5 ms), bei 3000 aber etwa 0,12 s (früher: 0,047 s); ein Wert weit über dem Standard macht den Messlauf daher langsamer als zuvor. Ein Kreuzungspunkt wurde nicht gemessen. |
+| `sift_features` | `400` | Merkmale je Vorschaubild. Das Korpus wird auch mit 250 erkannt; 400 lässt Spielraum. Der Abgleichsaufwand wächst mit dem Quadrat dieses Werts. Pro Paar gemessen braucht der exakte Abgleich bei den standardmäßigen 400 Merkmalen etwa 2,3 ms (der frühere Näherungs-Abgleich: etwa 5,2 bis 5,5 ms), bei 3000 aber etwa 0,12 s (früher: 0,047 s); ein Wert weit über dem Standard macht den Messlauf daher langsamer als zuvor. Ein Kreuzungspunkt wurde nicht gemessen. |
 | `match_ratio` | `0.75` | Lowe-Verhältnis, das eine Übereinstimmung unterschreiten muss |
 | `workers` | `0` | Parallele Prozesse; `0` wählt nach Kernanzahl. Skaliert unterhalb der Kernanzahl — die Kosten dominieren zufällige Vorschaubild-Lesezugriffe |
 | `probe_stride` | `8` | Bilder zwischen den günstigen Stichproben, die gewöhnliche Serien aussortieren |
