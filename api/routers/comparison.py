@@ -1535,9 +1535,16 @@ def api_save_weight_snapshot(
         config = server_scoring_config()
         weights = config.get_weights(body.category)
         # get_weights merges the category's modifiers in, so the bonus is the
-        # category's current one; a category that is not in categories[] has none
+        # category's current one. A categories[] entry with no modifiers.bonus
+        # stores 0 (the scorer reads it as 0, as the optimizer and viewer-edit
+        # snapshots do); a category that is not in categories[] has none (NULL)
         bonus = weights.get('bonus')
-        category_bonus = float(bonus) if isinstance(bonus, (int, float)) else None
+        if isinstance(bonus, (int, float)):
+            category_bonus = float(bonus)
+        elif any(c.get('name') == body.category for c in config.config.get('categories', [])):
+            category_bonus = 0.0
+        else:
+            category_bonus = None
 
         with get_db() as conn:
             snapshot_id = record_weight_snapshot(

@@ -155,6 +155,32 @@ def test_save_snapshot_stores_the_current_bonus(env, edition_client):
     assert [r['category_bonus'] for r in rows] == [pytest.approx(0.5)]
 
 
+def test_a_category_without_a_bonus_key_snapshots_and_restores_a_zero_bonus(env, edition_client):
+    """street carries no ``modifiers.bonus`` (the scorer reads that as 0), so the
+    manual snapshot stores 0 like the optimizer and viewer-edit writers do, and a
+    restore after a bonus was re-centred puts it back to 0 rather than leaving it."""
+    cfg = json.loads(open(env['cfg']).read())
+    cfg['categories'].append({'name': 'street', 'weights': {'aesthetic_percent': 50, 'liqe_percent': 50}})
+    open(env['cfg'], 'w').write(json.dumps(cfg))
+
+    with _routes(env):
+        resp = edition_client.post('/api/config/save_snapshot', json={'category': 'street'})
+    assert resp.status_code == 200, resp.text
+    snapshot_id = resp.json()['snapshot_id']
+    assert _snapshot_rows(env)[0]['category_bonus'] == pytest.approx(0.0)
+
+    cfg = json.loads(open(env['cfg']).read())
+    street = next(c for c in cfg['categories'] if c['name'] == 'street')
+    street['modifiers'] = {'bonus': -0.4}
+    open(env['cfg'], 'w').write(json.dumps(cfg))
+
+    resp = _restore(edition_client, env, snapshot_id)
+
+    assert resp.status_code == 200, resp.text
+    entry = next(c for c in load_resolved(env['cfg'])['categories'] if c['name'] == 'street')
+    assert entry['modifiers']['bonus'] == pytest.approx(0.0)
+
+
 def test_the_viewers_own_weight_edit_records_the_bonus(env, edition_client):
     with _routes(env):
         resp = edition_client.post('/api/config/update_weights', json={

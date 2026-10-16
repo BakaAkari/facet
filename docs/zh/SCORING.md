@@ -39,7 +39,7 @@
 
 在使用 CLIP 打标签的配置档上（`legacy`/`8gb`，以及未安排 VLM 标签器的 `16gb`/`24gb`），多遍扫描在嵌入向量遍中为照片打标签，然后才计算其类别和综合评分，所以扫描时的类别与 `--recompute-average` 一样能看到标签；扫描后的打标签步骤只是给仍无标签的照片准备的回退。只带单个 `--pass NAME` 的运行不打标签。
 
-**剪影。** `is_silhouette` 是一条基于人脸的像素规则（参见下方的过滤条件表），不是标签，也不是直方图检验。已存储的标志同时驱动综合评分和类别：剪影在 `aggregate` 中跳过溢出裁切扣分（`exposure.silhouette_detection`），而 `exposure_score` 始终带有溢出裁切扣分。用 `python facet.py --recompute-silhouette` 重新推导已存储的标志，然后运行 `--recompute-average`。
+**剪影。** `is_silhouette` 是一条基于人脸的像素规则（参见下方的过滤条件表），不是标签，也不是直方图检验。已存储的标志同时驱动综合评分和类别：剪影在 `aggregate` 中跳过溢出裁切扣分（`exposure.silhouette_detection`），而扫描会将 `exposure_score` 连同溢出裁切扣分一并存储，但 `--recompute-average` 会对已存储 `is_silhouette` 为真的照片去掉该扣分重新推导，无论 `exposure.silhouette_detection` 取何值。用 `python facet.py --recompute-silhouette` 重新推导已存储的标志，然后运行 `--recompute-average`。
 
 **星空。** 照片需要有星空标签，*并且*平均亮度不超过 0.30（`luminance_max`）：被 CLIP 标为 `aurora` 或 `stars` 的明亮场景不属于星空，而没有存储亮度的照片永远不匹配。带有自己 `categories` 数组的 `scoring_config.json` 保留它自己的 `astro` 条目，在你把 `"luminance_max": 0.30` 加入 `astro.filters` 之前不会获得这道防护；`python facet.py --doctor` 会指出你的条目是否缺少它。
 
