@@ -1241,14 +1241,14 @@ Os limiares foram calibrados com 26 panorâmicas e 8 não-panorâmicas confirmad
 | `step_ortho_abs` | `0.02` | Movimento lateral tolerado num único passo antes de ser lido como reenquadramento |
 | `step_ortho_ratio` | `0.5` | O mesmo limite como fração do próprio passo |
 | `hdr_min_span_stops` | `1.5` | Amplitude de exposição acima da qual uma varredura é uma panorâmica HDR. As simples abrangem 0,0-0,7 pontos, as HDR 2,0-4,4 |
-| `sift_features` | `400` | Características por miniatura. O corpus continua a ser detetado a 250; 400 deixa margem |
+| `sift_features` | `400` | Características por miniatura. O corpus continua a ser detetado a 250; 400 deixa margem O custo do emparelhamento cresce com o quadrado deste valor. Medido por par, o emparelhamento exato demora cerca de 2,3 ms com as 400 características predefinidas (o emparelhador aproximado anterior: cerca de 5,2 a 5,5 ms), mas cerca de 0,12 s com 3000 (antes: 0,047 s); um valor muito acima do predefinido torna, por isso, a passagem de medição mais lenta do que antes. Não se mediu nenhum ponto de cruzamento. |
 | `match_ratio` | `0.75` | Razão de Lowe que uma correspondência tem de superar para ser mantida |
 | `workers` | `0` | Processos paralelos; `0` escolhe pelo número de núcleos. Escala abaixo do número de núcleos: domina a leitura aleatória de miniaturas |
 | `probe_stride` | `8` | Fotogramas entre as sondagens baratas que descartam rajadas comuns |
 | `probe_min_drift` | `0.05` | Movimento abaixo do qual uma sondagem declara a série imóvel |
 | `max_run_frames` | `500` | Série mais longa medida. Uma panorâmica nunca precisa de tantas imagens, e o limite delimita a cache de descritores por série (~220 KB por imagem e por processo) |
 
-Alterar estes valores não faz nada por si só — a deteção é uma passagem em lote: volte a executar `--detect-panoramas` (ou a ação no visualizador) para que a alteração chegue à galeria e à seleção. Alterá-los invalida também a marca incremental: a passagem seguinte volta a medir toda a biblioteca em vez de reutilizar etiquetas calculadas com os limiares anteriores.
+Alterar estes valores não faz nada por si só — a deteção é uma passagem em lote: volte a executar `--detect-panoramas` (ou a ação no visualizador) para que a alteração chegue à galeria e à seleção. Alterá-los invalida também os resultados do detetor guardados em cache por série: a passagem seguinte volta a medir toda a biblioteca em vez de reutilizar resultados calculados com os limiares anteriores. Entre alterações, uma varredura só volta a medir as séries cujos fotogramas mudaram: a medição de uma série é reutilizada quando a lista exata dos seus fotogramas, os dados de captura e exposição e o tamanho de cada miniatura armazenada coincidem com o que a última passagem mediu. As etiquetas são sempre derivadas de novo a partir da medição em cache e das suas correções atuais, pelo que apagar ou definir uma correção tem efeito na passagem seguinte sem voltar a medir nada. O emparelhamento é exato, por isso duas execuções sobre a mesma biblioteca etiquetam-na de forma idêntica, com os mesmos números de grupo.
 
 ---
 

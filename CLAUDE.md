@@ -258,6 +258,16 @@ than a copy. The semantics you cannot read off a column name:
   export both do this deliberately. `histogram_data` is the one exception: the viewer DB
   export keeps it (unlike the ranker's inference scan, which still excludes it) because
   `/api/photo/histogram` serves it to the viewer's RGB histogram widget.
+- **Library-wide passes read through covering indexes.** `photos` stores the ~46 KB
+  `thumbnail` BLOB inline, so any full-table read of a column stored after it walks ~13
+  overflow pages per row (the burst pass took 483.0 s cold on a 129,737-photo copy
+  at the previous release). `idx_post_scan` (bursts, duplicates) and `idx_date_asc_cover`
+  (the gallery's date-ascending page, bracket and panorama candidate reads, panorama
+  signatures) exist for that; their column lists in `db/schema.py` are the contract, and a
+  test plans each production SELECT (skipped below the SQLite floor: 3.31.1, or 3.48.0 for
+  the panorama read that names `length(thumbnail)`). A new library-wide read must be covered
+  by one of them or justify itself. Face clustering deliberately has no covering index (a
+  671 MB index made every person assignment costlier).
 - **`user_preferences` holds per-user ratings** in multi-user mode; the `photos` rating
   columns are the single-user/global fallback. A feature that reads one must know which.
 
@@ -296,7 +306,8 @@ as what it means rather than what it is silently rewrites the wire.
 
 Lookup and side tables: `photo_tags`, `faces`, `persons`, `albums`, `album_photos`,
 `album_client_picks`, `photo_scoring_overrides`, `photo_sequence_overrides`,
-`photo_manual_tags`, `location_names`, `comparisons`, `learned_scores`, `weight_optimization_runs`,
+`photo_manual_tags`, `panorama_run_cache` (derived data, rebuilt by one panorama pass, not
+merged or exported), `location_names`, `comparisons`, `learned_scores`, `weight_optimization_runs`,
 `weight_config_snapshots`, `recommendation_history`, `user_preferences`, `scan_runs`,
 `scan_failures`, `iqa_declined`, `stats_cache`, plus the virtual tables `photos_fts` (FTS5) and
 `photos_vec` (sqlite-vec).
@@ -362,6 +373,10 @@ only what reading those two will NOT tell you.
   and panorama passes share those columns, own disjoint rows, and each renumbers its sets from
   1 every run — so **every reader must filter by kind before grouping by id**. See
   [.claude/patterns/panorama-detection.md](.claude/patterns/panorama-detection.md).
+- **Panorama group ids are canonical** (numbered by each set's smallest member path, one
+  counter across kinds), so two passes over the same library number it identically; ids are
+  still renumbered on every run, and the cluster owner write is compare-and-set: a face
+  changed in the viewer mid-run keeps the viewer's value.
 - **`sequence_override` means a correction exists; `sequence_override_pending` means it has not
   been applied.** Never drive a "pending" badge off the first — an override row persists for as
   long as the correction applies.

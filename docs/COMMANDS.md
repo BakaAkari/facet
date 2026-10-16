@@ -137,10 +137,10 @@ These commands update specific metrics, derive new data (AI captions, GPS, embed
 | `python facet.py --recompute-blinks` | Recompute blink detection from stored landmarks (CPU, fast) |
 | `python facet.py --recompute-eyes-expression` | Recompute eyes-open + expression scores from stored landmarks (CPU, fast) |
 | `python facet.py --recompute-face-signals` | Backfill per-face eyes-open + smile scores from the stored 106-point landmarks (CPU, fast; no model). Also runs as a step of `--upgrade-db` |
-| `python facet.py --recompute-burst` | Recompute burst detection groups |
+| `python facet.py --recompute-burst` | Recompute burst detection groups (writes only the rows whose burst state changed and logs `Burst state: N rows changed`) |
 | `python facet.py --detect-sequences` | Detect deliberate multi-frame sets: exposure brackets from stored EXIF, then panoramas from thumbnail geometry, and move each burst group's lead onto its base exposure. Runs at the end of every scan and as a step of `--upgrade-db`. Prerequisite for the viewer's **Exposure brackets** / **Panoramas** / **HDR panoramas** culling granularities and for `hide_brackets` / `hide_panoramas` to have anything to filter on — neither does anything until a set is labelled. Because each run relabels the whole library from scratch, re-running it (or `--detect-panoramas`) is also what re-derives a set's representative frame after the previous one is culled away |
 | `python facet.py --detect-panoramas` | Detect panorama sets by matching stored thumbnails geometrically (whole library, CPU, no image decode). Runs the bracket pass first, as `--detect-sequences` does: an HDR panorama is bracketed at every position, so the two must stay in step. Same prerequisite as `--detect-sequences` for the panorama/HDR-panorama culling granularities and the `hide_panoramas` toggle |
-| `python facet.py --detect-duplicates` | Detect duplicate photos via pHash |
+| `python facet.py --detect-duplicates` | Detect duplicate photos via pHash (writes only the rows whose duplicate state changed and logs `Duplicate state: N rows changed`; a second run reports 0) |
 | `python facet.py --sweep-dedup-thresholds [labels.json]` | Evaluate near-dup cosine thresholds (precision/recall table with labels, else candidate-cosine distribution) |
 | `python facet.py --generate-captions` | `[GPU]` `[16gb/24gb]` Generate AI captions for photos using VLM. When `narrative_moments.caption_min_confidence > 0`, skips unlabelled / `other` / below-threshold photos (the same gate applies to the on-demand caption endpoint) |
 | `python facet.py --translate-captions` | Translate English captions to configured target language (CPU, MarianMT) |
@@ -383,7 +383,7 @@ Checks: Score ranges, face metrics, BLOB corruption, embedding sizes, orphaned f
 
 | Command | Description |
 |---------|-------------|
-| `python database.py` | Initialize/upgrade schema (also builds the gallery covering indexes, as a scan does at its start; the viewer builds missing ones in the background at start, see [VIEWER.md](VIEWER.md#gallery-indexes-and-the-count-cache)) |
+| `python database.py` | Initialize/upgrade schema (also builds the gallery covering indexes, as a scan does at its start; the viewer builds missing ones in the background at start, see [VIEWER.md](VIEWER.md#gallery-indexes-and-the-count-cache)) The first run after the post-scan indexes (`idx_post_scan`, `idx_date_asc_cover`) arrive builds them — about 55 s on a 130,000-photo library — and logs a line before each; on a large library run it once before starting the viewer, which would otherwise build them while refusing saves. |
 | `python database.py --info` | Show schema information |
 | `python database.py --migrate-tags` | One-time bootstrap of the photo_tags lookup (10-50x faster queries). Once it is populated, scans, `--recompute-tags`, `--recompute-tags-vlm` and `tag_existing.py` keep it in step per photo; a table that was never populated is never filled implicitly, and readers use the `LIKE` fallback until it is |
 | `python database.py --rebuild-fts` | Rebuild FTS5 full-text search index from captions/tags |

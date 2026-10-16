@@ -1246,14 +1246,14 @@ Los umbrales se calibraron con 26 panorámicas y 8 no panorámicas confirmadas a
 | `step_ortho_abs` | `0.02` | Movimiento lateral tolerado en un solo paso antes de leerse como reencuadre |
 | `step_ortho_ratio` | `0.5` | El mismo límite como fracción del propio paso |
 | `hdr_min_span_stops` | `1.5` | Amplitud de exposición por encima de la cual un barrido es una panorámica HDR. Los simples abarcan 0,0-0,7 pasos, los HDR 2,0-4,4 |
-| `sift_features` | `400` | Rasgos por miniatura. El corpus se sigue detectando con 250; 400 deja margen |
+| `sift_features` | `400` | Rasgos por miniatura. El corpus se sigue detectando con 250; 400 deja margen El coste del emparejamiento crece con el cuadrado de este valor. Medido por pareja, el emparejador exacto tarda unos 2,3 ms con las 400 características predeterminadas (el emparejador aproximado anterior: unos 5,2 a 5,5 ms), pero unos 0,12 s con 3000 (antes: 0,047 s), así que un valor muy superior al predeterminado hace la pasada de medición más lenta que antes; no se midió el punto de cruce. |
 | `match_ratio` | `0.75` | Razón de Lowe que una coincidencia debe superar para conservarse |
 | `workers` | `0` | Procesos paralelos; `0` elige según los núcleos. Escala por debajo del número de núcleos: domina la lectura aleatoria de miniaturas |
 | `probe_stride` | `8` | Fotogramas entre los sondeos baratos que descartan ráfagas corrientes |
 | `probe_min_drift` | `0.05` | Movimiento por debajo del cual un sondeo declara inmóvil la serie |
 | `max_run_frames` | `500` | Serie más larga que se mide. Una panorámica nunca necesita tantas imágenes, y el tope acota la caché de descriptores por serie (~220 KB por imagen y proceso) |
 
-Cambiar estos valores no hace nada por sí solo — la detección es una pasada por lotes: vuelve a ejecutar `--detect-panoramas` (o la acción de la visor) para que el cambio llegue a la galería y al descarte. Cambiarlos también invalida la marca incremental: la siguiente pasada vuelve a medir toda la biblioteca en lugar de reutilizar etiquetas calculadas con los umbrales anteriores.
+Cambiar estos valores no hace nada por sí solo — la detección es una pasada por lotes: vuelve a ejecutar `--detect-panoramas` (o la acción de la visor) para que el cambio llegue a la galería y al descarte. Cambiarlos también invalida los resultados del detector guardados en caché por serie: la siguiente pasada vuelve a medir toda la biblioteca en lugar de reutilizar resultados calculados con los umbrales anteriores. Entre cambios, un escaneo solo vuelve a medir las series cuyos fotogramas cambiaron: la medición de una serie se reutiliza cuando la lista exacta de sus fotogramas, sus datos de captura y exposición y el tamaño de cada miniatura almacenada coinciden con lo que midió la última pasada. Las etiquetas se vuelven a derivar siempre de la medición en caché y de tus correcciones actuales, así que borrar o fijar una corrección surte efecto en la siguiente pasada sin volver a medir nada. La coincidencia es exacta, de modo que dos ejecuciones sobre la misma biblioteca la etiquetan igual, con los mismos números de grupo.
 
 ---
 

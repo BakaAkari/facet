@@ -192,14 +192,14 @@ El agrupamiento por CPU con un `algorithm` fijo es determinista para la misma en
 
 ### Reagrupar y las personas ya nombradas
 
-Todos los modos salvo `--cluster-faces-force` conservan los registros de personas, pero todos borran las asignaciones rostro→persona y las reconstruyen. Un grupo reconstruido se devuelve a una persona cuando:
+Todos los modos salvo `--cluster-faces-force` conservan los registros de personas, pero todos vuelven a derivar desde cero cada asignación rostro→persona. Solo se escriben los rostros cuya persona cambia realmente, y toda la actualización es una única transacción, de modo que una ejecución interrumpida deja la base de datos como estaba. Un rostro que reasignes en el visor mientras una ejecución está en curso conserva tu asignación; la ejecución registra cuántos de esos rostros dejó sin tocar. Un grupo reconstruido se devuelve a una persona cuando:
 
 1. su embedding medio está dentro de `merge_threshold` (0,6 de coseno por defecto para ArcFace, 0,65 para SFace) respecto al centroide almacenado de esa persona, **o**
 2. al menos la mitad de sus rostros pertenecían a esa persona antes de la ejecución.
 
 La segunda regla pesa más de lo que parece. El centroide de una persona es un único vector promedio: alguien fotografiado durante años abarca una región amplia, y HDBSCAN lo divide correctamente en subgrupos compactos que quedan lejos de ese promedio y fallan la regla 1. En la biblioteca anterior, la regla 1 por sí sola devolvía el 38 % de los rostros asociados a personas nombradas; con la regla 2 se alcanza el 96 %.
 
-Como la regla 2 se apoya en la asignación previa, un error antiguo se arrastra en lugar de corregirse. Ese es el contrato de un modo cuyo propósito es preservar las personas existentes: usa `--cluster-faces-force` para recalcularlo todo desde cero.
+Como la regla 2 se apoya en la asignación previa, un error antiguo se arrastra en lugar de corregirse. Ese es el contrato de un modo cuyo propósito es preservar las personas existentes: usa `--cluster-faces-force` para recalcularlo todo desde cero. Cuando los rostros de un grupo se reparten exactamente por igual entre dos personas, el empate se resuelve por el orden de id de rostro: se conserva la persona que posee el rostro de menor número ya asignado del grupo. Los embeddings se cargan con `ORDER BY id`; las versiones anteriores dejaban ese orden sin especificar, así que en un empate así el id de persona conservado puede diferir del de una ejecución antigua.
 
 ## Detección de parpadeos
 

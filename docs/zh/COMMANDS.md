@@ -134,10 +134,10 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --recompute-blinks` | 从已存储的关键点重新计算闭眼检测（CPU，快速） |
 | `python facet.py --recompute-eyes-expression` | 从已存储的关键点重新计算睁眼与表情评分（CPU，快速） |
 | `python facet.py --recompute-face-signals` | 从已存储的 106 点关键点回填每张人脸的睁眼与微笑评分（CPU，快速；无需模型）。也是 `--upgrade-db` 的一个步骤 |
-| `python facet.py --recompute-burst` | 重新计算连拍分组 |
+| `python facet.py --recompute-burst` | 重新计算连拍分组（仅写入连拍状态发生变化的行，并记录 `Burst state: N rows changed`） |
 | `python facet.py --detect-sequences` | 检测有意拍摄的多帧照片组：先根据已存储的 EXIF 识别包围曝光，再根据缩略图几何关系识别全景照片组，并把每个连拍分组的代表帧移到其基准曝光帧上。每次扫描结束时以及作为 `--upgrade-db` 的一个步骤运行。它是网页图库中**包围曝光**／**全景照片组**／**HDR 全景照片组**选片粒度的前提，也是 `hide_brackets` ／ `hide_panoramas` 有内容可筛选的前提——在照片组被标注之前，两者都不起作用。由于每次运行都会从零开始重新标注整个照片库，重新运行它（或 `--detect-panoramas`）也正是在上一个代表帧被选片剔除后，重新推导照片组代表帧的方式 |
 | `python facet.py --detect-panoramas` | 通过在几何上匹配已存储的缩略图来检测全景照片组（整个照片库，CPU，不解码图像）。与 `--detect-sequences` 一样会先运行包围曝光识别：HDR 全景在每个位置都做了包围曝光，因此两者必须保持同步。对全景／HDR 全景选片粒度和 `hide_panoramas` 开关而言，前提条件与 `--detect-sequences` 相同 |
-| `python facet.py --detect-duplicates` | 通过 pHash 检测重复照片 |
+| `python facet.py --detect-duplicates` | 通过 pHash 检测重复照片（仅写入重复状态发生变化的行，并记录 `Duplicate state: N rows changed`；第二次运行报告 0） |
 | `python facet.py --sweep-dedup-thresholds [labels.json]` | 评估近似重复的余弦阈值（有标注时给出精确率／召回率表格，否则给出候选余弦分布） |
 | `python facet.py --generate-captions` | `[GPU]` `[16gb/24gb]` 使用 VLM 为照片生成 AI 照片描述。当 `narrative_moments.caption_min_confidence > 0` 时，会跳过未标注／标为 `other` ／低于阈值的照片（按需生成描述的接口同样适用该门槛） |
 | `python facet.py --translate-captions` | 把英文照片描述翻译成所配置的目标语言（CPU，MarianMT） |
@@ -380,7 +380,7 @@ python /opt/facet/viewer.py      # 仍然读取 /opt/facet/scoring_config.json�
 
 | 命令 | 说明 |
 |---------|-------------|
-| `python database.py` | 初始化／升级表结构（同时构建图库覆盖索引，扫描在启动时也会这样做；查看器启动时会在后台构建缺失的索引，参见 [VIEWER.md](VIEWER.md#图库索引与计数缓存)） |
+| `python database.py` | 初始化／升级表结构（同时构建图库覆盖索引，扫描在启动时也会这样做；查看器启动时会在后台构建缺失的索引，参见 [VIEWER.md](VIEWER.md#图库索引与计数缓存)） 在扫描后索引（`idx_post_scan`、`idx_date_asc_cover`）出现后的首次运行会构建它们——在 13 万张照片的图库上约需 55 秒——并在每个索引前记录一行日志；图库很大时，请在启动查看器之前先运行一次，否则查看器会在构建期间拒绝保存操作。 |
 | `python database.py --info` | 显示表结构信息 |
 | `python database.py --migrate-tags` | 一次性引导 photo_tags 查找表（查询快 10-50 倍）。填充之后，扫描、`--recompute-tags`、`--recompute-tags-vlm` 和 `tag_existing.py` 会逐张照片保持其同步；从未填充过的表不会被隐式填充，在此之前读取方使用 `LIKE` 回退 |
 | `python database.py --rebuild-fts` | 从照片描述／标签重建 FTS5 全文检索索引 |

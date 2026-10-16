@@ -1215,14 +1215,14 @@ Thresholds were calibrated against 26 panoramas and 8 non-panoramas confirmed by
 | `step_ortho_abs` | `0.02` | Sideways movement allowed in a single step before it reads as a recomposition |
 | `step_ortho_ratio` | `0.5` | The same limit as a fraction of the step's own size |
 | `hdr_min_span_stops` | `1.5` | Exposure spread above which a sweep is an HDR panorama. Confirmed plain sweeps span 0.0-0.7 stops, HDR ones 2.0-4.4 |
-| `sift_features` | `400` | Features per thumbnail. The corpus still detects at 250; 400 keeps margin |
+| `sift_features` | `400` | Features per thumbnail. The corpus still detects at 250; 400 keeps margin Matching cost grows with the square of this value. Measured per pair, the exact matcher takes about 2.3 ms at the default 400 features (the previous approximate matcher: about 5.2 to 5.5 ms) but about 0.12 s at 3000 (previous: 0.047 s), so a value well above the default makes the measuring pass slower than before; no crossover between the two was measured. |
 | `match_ratio` | `0.75` | Lowe ratio a feature match must beat to be kept |
 | `workers` | `0` | Parallel worker processes; `0` picks from the core count. Scales short of the core count -- the cost is dominated by random thumbnail reads the workers contend on |
 | `probe_stride` | `8` | Frames between the cheap static-run probes that skip ordinary bursts |
 | `probe_min_drift` | `0.05` | Movement at a probe below which the run is abandoned as static |
 | `max_run_frames` | `500` | Longest candidate run measured. A sweep never needs this many frames, and the cap bounds the per-run feature cache (~220 KB per frame per worker) |
 
-Editing these changes nothing on its own — detection is a batch pass, so re-run `--detect-panoramas` (or use the viewer's re-run action) for the change to reach the gallery and the culling feed. Editing any of them also invalidates the incremental watermark, so that next run re-measures the whole library rather than reusing labels calibrated under the old thresholds.
+Editing these changes nothing on its own — detection is a batch pass, so re-run `--detect-panoramas` (or use the viewer's re-run action) for the change to reach the gallery and the culling feed. Editing any of them also invalidates the cached per-run detector results, so the next run re-measures the whole library rather than reusing results calibrated under the old thresholds. Between edits, a scan re-measures only the runs whose frames changed: a run's measurement is reused when the exact list of its frames, their capture and exposure data and the size of each stored thumbnail match what the last pass measured. Labels are always re-derived from the cached measurement and your current corrections, so clearing or setting a correction takes effect on the next pass without re-measuring anything. Matching is exact, so two runs over the same library label it identically, with the same group numbers.
 
 ---
 

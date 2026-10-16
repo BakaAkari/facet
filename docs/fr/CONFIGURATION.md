@@ -1240,14 +1240,14 @@ Les seuils ont été calibrés sur 26 panoramas et 8 non-panoramas confirmés à
 | `step_ortho_abs` | `0.02` | Déplacement latéral toléré sur un seul pas avant d'être lu comme un recadrage |
 | `step_ortho_ratio` | `0.5` | La même limite, en fraction de la taille du pas |
 | `hdr_min_span_stops` | `1.5` | Écart d'exposition au-delà duquel un balayage est un panorama HDR. Les balayages simples couvrent 0,0 à 0,7 IL, les HDR 2,0 à 4,4 |
-| `sift_features` | `400` | Points caractéristiques par vignette. Le corpus est encore détecté à 250 ; 400 garde de la marge |
+| `sift_features` | `400` | Points caractéristiques par vignette. Le corpus est encore détecté à 250 ; 400 garde de la marge Le coût de l'appariement croît avec le carré de cette valeur. Mesuré par paire, l'appariement exact prend environ 2,3 ms avec les 400 points par défaut (l'ancien appariement approximatif : environ 5,2 à 5,5 ms) mais environ 0,12 s à 3000 (avant : 0,047 s) ; une valeur bien supérieure à la valeur par défaut rend donc la passe de mesure plus lente qu'avant. Aucun point de croisement n'a été mesuré. |
 | `match_ratio` | `0.75` | Rapport de Lowe qu'une correspondance doit franchir pour être retenue |
 | `workers` | `0` | Processus parallèles ; `0` choisit selon le nombre de cœurs. L'accélération reste en deçà du nombre de cœurs : le coût est dominé par les lectures aléatoires de vignettes |
 | `probe_stride` | `8` | Nombre d'images entre les sondages rapides qui écartent les rafales ordinaires |
 | `probe_min_drift` | `0.05` | Mouvement en deçà duquel un sondage déclare la série immobile |
 | `max_run_frames` | `500` | Plus longue série mesurée. Un panoramique n'a jamais besoin d'autant d'images, et le plafond borne le cache de descripteurs par série (~220 Ko par image et par processus) |
 
-Modifier ces valeurs ne change rien en soi — la détection est une passe par lots : relancez `--detect-panoramas` (ou l'action de relance dans la visionneuse) pour que le changement atteigne la galerie et le tri. Les modifier invalide aussi le repère incrémental : la passe suivante remesure toute la bibliothèque au lieu de réutiliser des étiquettes calculées avec les anciens seuils.
+Modifier ces valeurs ne change rien en soi — la détection est une passe par lots : relancez `--detect-panoramas` (ou l'action de relance dans la visionneuse) pour que le changement atteigne la galerie et le tri. Les modifier invalide aussi les résultats du détecteur mis en cache par série : la passe suivante remesure toute la bibliothèque au lieu de réutiliser des résultats calculés avec les anciens seuils. Entre deux modifications, un scan ne remesure que les séries dont les images ont changé : la mesure d'une série est réutilisée lorsque la liste exacte de ses images, leurs données de prise de vue et d'exposition et la taille de chaque vignette stockée correspondent à ce que la dernière passe a mesuré. Les étiquettes sont toujours redérivées de la mesure en cache et de vos corrections actuelles : effacer ou poser une correction prend donc effet à la passe suivante, sans rien remesurer. L'appariement est exact, si bien que deux exécutions sur la même bibliothèque l'étiquettent à l'identique, avec les mêmes numéros de groupe.
 
 ---
 

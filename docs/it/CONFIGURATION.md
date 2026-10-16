@@ -1244,14 +1244,14 @@ Le soglie sono state calibrate su 26 panorami e 8 non-panorami confermati a occh
 | `step_ortho_abs` | `0.02` | Spostamento laterale tollerato in un singolo passo prima di leggerlo come ricomposizione |
 | `step_ortho_ratio` | `0.5` | Lo stesso limite come frazione del passo |
 | `hdr_min_span_stops` | `1.5` | Escursione di esposizione oltre la quale una panoramica è un panorama HDR. Le semplici coprono 0,0-0,7 stop, le HDR 2,0-4,4 |
-| `sift_features` | `400` | Caratteristiche per miniatura. Il corpus viene rilevato anche a 250; 400 lascia margine |
+| `sift_features` | `400` | Caratteristiche per miniatura. Il corpus viene rilevato anche a 250; 400 lascia margine Il costo dell'abbinamento cresce con il quadrato di questo valore. Misurato per coppia, l'abbinamento esatto richiede circa 2,3 ms con le 400 caratteristiche predefinite (il precedente abbinamento approssimato: circa 5,2-5,5 ms) ma circa 0,12 s a 3000 (prima: 0,047 s); un valore molto superiore a quello predefinito rende quindi la passata di misura più lenta di prima. Non è stato misurato alcun punto di incrocio. |
 | `match_ratio` | `0.75` | Rapporto di Lowe che una corrispondenza deve superare per essere tenuta |
 | `workers` | `0` | Processi paralleli; `0` sceglie in base ai core. Scala al di sotto del numero di core: domina la lettura casuale delle miniature |
 | `probe_stride` | `8` | Fotogrammi fra i sondaggi economici che scartano le raffiche ordinarie |
 | `probe_min_drift` | `0.05` | Movimento sotto il quale un sondaggio dichiara ferma la serie |
 | `max_run_frames` | `500` | Serie più lunga misurata. Una panoramica non ha mai bisogno di così tanti fotogrammi, e il limite delimita la cache di descrittori per serie (~220 KB per fotogramma e per processo) |
 
-Modificare questi valori non produce nulla da solo — il rilevamento è una passata batch: rilancia `--detect-panoramas` (o l'azione nel visualizzatore) perché la modifica raggiunga la galleria e la selezione. Modificarli invalida anche il segnaposto incrementale: la passata successiva rimisura l'intera libreria invece di riusare etichette calcolate con le soglie precedenti.
+Modificare questi valori non produce nulla da solo — il rilevamento è una passata batch: rilancia `--detect-panoramas` (o l'azione nel visualizzatore) perché la modifica raggiunga la galleria e la selezione. Modificarli invalida anche i risultati del rilevatore messi in cache per serie: la passata successiva rimisura l'intera libreria invece di riusare risultati calcolati con le soglie precedenti. Tra una modifica e l'altra, una scansione rimisura soltanto le serie i cui fotogrammi sono cambiati: la misura di una serie viene riusata quando l'elenco esatto dei suoi fotogrammi, i dati di scatto ed esposizione e la dimensione di ogni miniatura memorizzata coincidono con ciò che ha misurato l'ultima passata. Le etichette vengono sempre ricavate di nuovo dalla misura in cache e dalle tue correzioni attuali, quindi cancellare o impostare una correzione ha effetto alla passata successiva senza rimisurare nulla. L'abbinamento è esatto, per cui due esecuzioni sulla stessa libreria la etichettano in modo identico, con gli stessi numeri di gruppo.
 
 ---
 
