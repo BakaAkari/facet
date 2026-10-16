@@ -33,12 +33,13 @@ from api.schema_startup import PhotoIndexBuild, migrate_schema_at_startup
 from db.schema import init_database
 from facet import LIBRARY_JOB_MAINTENANCE, LibraryLock
 
-# The eight gallery indexes the viewer build step is responsible for, written out on
+# The nine photos indexes the viewer build step is responsible for (eight gallery
+# covering indexes plus the post-scan idx_post_scan), written out on
 # purpose (the registry test lives in tests/test_gallery_indexes.py).
 GALLERY_INDEXES = (
-    'idx_gallery_aggregate', 'idx_gallery_date_desc', 'idx_gallery_date_asc',
+    'idx_gallery_aggregate', 'idx_gallery_date_desc', 'idx_date_asc_cover',
     'idx_gallery_category', 'idx_gallery_camera', 'idx_star_rating_path',
-    'idx_gallery_iaa_asc', 'idx_stats_categories',
+    'idx_gallery_iaa_asc', 'idx_stats_categories', 'idx_post_scan',
 )
 
 

@@ -51,7 +51,11 @@ EXPECTED_REGISTRY = {
         f"aggregate DESC, path, {_C}, category, camera_model, lens_model, "
         "face_ratio, aesthetic, comp_score, face_quality",
     'idx_gallery_date_desc': f"date_taken DESC, path, {_C}",
-    'idx_gallery_date_asc': f"date_taken ASC, path, {_C}",
+    # Supersedes the narrower idx_gallery_date_asc: same position, wider shape (the
+    # post-scan reads' columns ride after the cover tuple); see test_post_scan_indexes.py.
+    'idx_date_asc_cover':
+        f"date_taken ASC, path, {_C}, camera_model, focal_length, f_stop, shutter_speed, iso, "
+        "phash, shadow_clipped, highlight_clipped, scanned_at, render_version, length(thumbnail)",
     'idx_gallery_category': f"category, aggregate DESC, path, {_C}",
     'idx_gallery_camera': f"camera_model, aggregate DESC, path, {_C}, lens_model",
     'idx_star_rating_path': "star_rating DESC, path",
@@ -357,7 +361,7 @@ def test_default_gallery_statements_use_the_covering_indexes(gallery, traced, sp
 
 @pytest.mark.parametrize("sort, direction, index", [
     ("date_taken", "DESC", "idx_gallery_date_desc"),
-    ("date_taken", "ASC", "idx_gallery_date_asc"),
+    ("date_taken", "ASC", "idx_date_asc_cover"),
 ])
 def test_date_sorted_pages_walk_their_covering_index(gallery, traced, sparse_db,
                                                      sort, direction, index):
