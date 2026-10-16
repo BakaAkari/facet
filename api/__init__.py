@@ -356,6 +356,11 @@ async def lifespan(app: FastAPI):
 
     def _repair_dimensions():
         try:
+            # Its full-table walk and marker write compete with the index build:
+            # wait for it (returns at once when none runs), skip if shutdown ended it.
+            from api.schema_startup import INTERRUPTED
+            if index_build.wait() == INTERRUPTED:
+                return
             repair_thumbnail_dimensions()
         except Exception:
             logger.warning("Thumbnail-dimension repair failed", exc_info=True)

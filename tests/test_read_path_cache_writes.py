@@ -23,7 +23,7 @@ import pytest
 from api import schema_startup
 from api.config import invalidate_stats_cache
 from db.stats_cache import (
-    CACHE_WRITE_BUSY_TIMEOUT_MS, METRIC_RANGES_KEY, PENDING_RENDER_KEY,
+    METRIC_RANGES_KEY, PENDING_RENDER_KEY,
     cache_stats_best_effort,
 )
 
@@ -161,7 +161,7 @@ class TestCacheStatsBestEffort:
             conn.execute("PRAGMA busy_timeout = 4321")
             started = time.monotonic()
             assert cache_stats_best_effort(conn, [("update_check", "{}")]) is False
-            assert time.monotonic() - started < max(1.0, CACHE_WRITE_BUSY_TIMEOUT_MS * 20 / 1000)
+            assert time.monotonic() - started < MAX_SECONDS
             assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 4321
         finally:
             conn.close()
@@ -199,3 +199,87 @@ def test_the_capsule_precompute_can_wait_for_the_index_build(monkeypatch, tmp_pa
     waiter.join(5)
     assert not waiter.is_alive()
     assert build.wait() == "built"
+
+
+def _location_rows():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM location_names WHERE display_name = ?",
+                            (GEOCODED_NAME,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+GEOCODED_NAME = "Testville, Nowhere"
+
+
+@pytest.fixture()
+def geocoder(monkeypatch):
+    """A stub reverse geocoder (the real one loads its dataset) and clean cache rows."""
+    monkeypatch.setattr("analyzers.reverse_geocode.reverse_geocode",
+                        lambda lat, lon: GEOCODED_NAME)
+
+    def purge():
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.execute("DELETE FROM location_names WHERE display_name = ?", (GEOCODED_NAME,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    purge()
+    yield
+    purge()
+
+
+def test_location_name_is_fast_and_caches_nothing_while_writes_are_blocked(
+        edition_client, geocoder, write_blocked):
+    """``geocode_grid`` caches the name it computed; that write must not hold the read."""
+    path = "/api/filter_options/location_name?lat=12.34&lng=56.78"
+    edition_client.get(path)
+    resp, elapsed = _timed_get(edition_client, path)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["display_name"] == GEOCODED_NAME
+    assert elapsed < MAX_SECONDS, f"took {elapsed:.1f}s with writes blocked ({write_blocked})"
+    assert _location_rows() == 0
+
+
+def test_location_name_is_cached_when_nothing_blocks_the_write(edition_client, geocoder):
+    resp = edition_client.get("/api/filter_options/location_name?lat=12.34&lng=56.78")
+    assert resp.json()["display_name"] == GEOCODED_NAME
+    assert _location_rows() == 1
+
+
+def test_the_startup_threads_wait_for_the_index_build(monkeypatch):
+    """The capsule precompute and the dimension repair must not start under the build."""
+    from unittest import mock
+    from api import config as api_config, create_app
+    from fastapi.testclient import TestClient
+
+    release = threading.Event()
+    calls = []
+
+    def blocked_run(self):
+        release.wait(20)
+        return "built"
+
+    monkeypatch.setattr(schema_startup.PhotoIndexBuild, "run", blocked_run)
+    monkeypatch.setattr("api.db_helpers.repair_thumbnail_dimensions",
+                        lambda *a, **k: calls.append("repair"))
+    monkeypatch.setattr("analyzers.capsule_generator.generate_all_capsules",
+                        lambda *a, **k: calls.append("capsules") or [])
+    config = {"performance": {"wal_checkpoint_minutes": 0},
+              "viewer": {"features": {"show_capsules": True}}}
+    try:
+        with mock.patch.object(api_config, "_FULL_CONFIG", config), TestClient(create_app()):
+            time.sleep(0.6)
+            assert calls == [], f"{calls} started while the index build was still running"
+            release.set()
+            deadline = time.monotonic() + 10
+            while len(calls) < 2 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert sorted(calls) == ["capsules", "repair"]
+    finally:
+        release.set()
+        from api.routers.capsules import _capsule_cache
+        _capsule_cache.clear()

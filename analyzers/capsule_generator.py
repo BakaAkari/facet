@@ -170,12 +170,19 @@ def geocode_grid(conn, lat, lon, grid_resolution=0.1):
     except (ImportError, Exception):
         name = ""
 
+    # Best effort: this runs on read paths (the lightbox location label, on-demand
+    # capsules), which must not queue behind the gallery index build's write lock.
     try:
-        conn.execute(
-            "INSERT OR IGNORE INTO location_names (lat_grid, lon_grid, display_name) VALUES (?, ?, ?)",
-            [lat_grid, lon_grid, name],
+        from db.stats_cache import best_effort_write
+        best_effort_write(
+            conn,
+            lambda c: c.execute(
+                "INSERT OR IGNORE INTO location_names (lat_grid, lon_grid, display_name) "
+                "VALUES (?, ?, ?)",
+                [lat_grid, lon_grid, name],
+            ),
+            "location_names",
         )
-        conn.commit()
     except Exception:
         pass  # Cache write failure is non-fatal
 
