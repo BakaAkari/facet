@@ -7,6 +7,7 @@ CLI entry point. The scoring engine is in processing/scorer.py.
 from typing import Any
 import importlib
 import atexit
+import fnmatch
 import os
 import random
 import signal
@@ -156,6 +157,59 @@ def _resolve_trainer_cli_context(args):
                 args.user, args.user)
             exit(1)
     return config_path, user_id
+
+
+def _scan_skip_globs(scanning_settings):
+    """Return the validated ``scanning.skip_directories`` globs.
+
+    A bare string is one glob; any other non-list value is a config mistake,
+    warned about and treated as no globs; non-string list items are skipped.
+    """
+    value = scanning_settings.get('skip_directories', [])
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, list):
+        logger.warning("scanning.skip_directories must be a list of directory-name globs, "
+                       "got %s; no directories will be skipped by name", type(value).__name__)
+        return []
+    return [g for g in value if isinstance(g, str)]
+
+
+def _prune_scan_dirs(dirs, skip_hidden, skip_globs):
+    """Return the directory names an os.walk should still descend into."""
+    return [d for d in dirs
+            if not (skip_hidden and d.startswith('.'))
+            and not any(fnmatch.fnmatchcase(d, g) for g in skip_globs)]
+
+
+def _gather_scan_files(photo_paths, scanning_settings):
+    """Collect scannable image files under ``photo_paths`` (files or directories).
+
+    Walk roots are never pruned; only their descendant directories are, by the
+    hidden-directory rule and the ``skip_directories`` name globs.
+    """
+    valid_suffixes = SCANNABLE_IMAGE_EXTENSIONS
+    skip_hidden = scanning_settings.get('skip_hidden_directories', True)
+    skip_globs = _scan_skip_globs(scanning_settings)
+    all_files = []
+    for path_str in photo_paths:
+        base_path = Path(path_str).resolve()
+        if not base_path.exists():
+            logger.warning("Path does not exist: %s", path_str)
+            continue
+        if base_path.is_file():
+            if base_path.suffix.lower() in valid_suffixes:
+                all_files.append(base_path)
+            else:
+                logger.warning("Unsupported file type: %s", path_str)
+        else:
+            for root, dirs, files in os.walk(base_path):
+                dirs[:] = _prune_scan_dirs(dirs, skip_hidden, skip_globs)
+                for f in files:
+                    p = Path(root) / f
+                    if p.suffix.lower() in valid_suffixes:
+                        all_files.append(p)
+    return all_files
 
 
 def _print_scan_summary(db_path, todo_list, raw_paired_skipped):
@@ -1662,35 +1716,7 @@ def _run_scan(args, resumed_run):
     init_global_plugin_manager(config=scorer.config.config)
 
     # 1. Gather files recursively from subfolders (or single files)
-    valid_suffixes = SCANNABLE_IMAGE_EXTENSIONS
-    all_files = []
-
-    # Get scanning settings
-    skip_hidden = scorer.config.get_scanning_settings().get('skip_hidden_directories', True)
-
-    for path_str in args.photo_paths:
-        base_path = Path(path_str).resolve()
-        if not base_path.exists():
-            logger.warning("Path does not exist: %s", path_str)
-            continue
-        if base_path.is_file():
-            # Single file - check if it's a valid image type
-            if base_path.suffix.lower() in valid_suffixes:
-                all_files.append(base_path)
-            else:
-                logger.warning("Unsupported file type: %s", path_str)
-        else:
-            # Directory - use os.walk to traverse, optionally skipping hidden directories
-            for root, dirs, files in os.walk(base_path):
-                # Prune hidden directories if configured
-                if skip_hidden:
-                    dirs[:] = [d for d in dirs if not d.startswith('.')]
-
-                # Add matching files
-                for f in files:
-                    p = Path(root) / f
-                    if p.suffix.lower() in valid_suffixes:
-                        all_files.append(p)
+    all_files = _gather_scan_files(args.photo_paths, scorer.config.get_scanning_settings())
 
     # Deduplicate (needed for case-insensitive filesystems like Windows).
     #

@@ -202,7 +202,8 @@ Steuert das Verhalten beim Scannen von Verzeichnissen.
 ```json
 {
   "scanning": {
-    "skip_hidden_directories": true
+    "skip_hidden_directories": true,
+    "skip_directories": ["@eaDir", "#recycle", "#snapshot", "@Recycle"]
   }
 }
 ```
@@ -210,6 +211,7 @@ Steuert das Verhalten beim Scannen von Verzeichnissen.
 | Einstellung | Standard | Beschreibung |
 |---------|---------|-------------|
 | `skip_hidden_directories` | `true` | Überspringt Verzeichnisse, die mit `.` beginnen, beim Scannen von Fotos |
+| `skip_directories` | `["@eaDir", "#recycle", "#snapshot", "@Recycle"]` | Verzeichnisnamen-Globs (`fnmatch`, Groß-/Kleinschreibung beachtet, auf den Ordnernamen in beliebiger Tiefe angewendet), die vom Scan ausgenommen werden: Synology `@eaDir` (die `SYNOPHOTO_THUMB_*.jpg`-Vorschaubilder sind keine Fotos), `#recycle`, `#snapshot`, QNAP `@Recycle`. Ihre Liste ersetzt den Standard vollständig; `[]` deaktiviert das Ausschließen nach Namen. Das Scan-Stammverzeichnis wird nie ausgenommen. Bereits aus diesen Ordnern indizierte Fotos bleiben in der Datenbank |
 
 ---
 

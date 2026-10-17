@@ -190,7 +190,8 @@ Controls directory scanning behavior.
 ```json
 {
   "scanning": {
-    "skip_hidden_directories": true
+    "skip_hidden_directories": true,
+    "skip_directories": ["@eaDir", "#recycle", "#snapshot", "@Recycle"]
   }
 }
 ```
@@ -198,6 +199,7 @@ Controls directory scanning behavior.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `skip_hidden_directories` | `true` | Skip directories starting with `.` during photo scanning |
+| `skip_directories` | `["@eaDir", "#recycle", "#snapshot", "@Recycle"]` | Directory-name globs (`fnmatch`, case-sensitive, matched on the folder name at any depth) pruned from the scan: Synology `@eaDir` (its `SYNOPHOTO_THUMB_*.jpg` thumbnails are not photos), `#recycle`, `#snapshot`, QNAP `@Recycle`. Your list replaces the default entirely; `[]` disables name pruning. The scan root itself is never pruned. Photos already indexed from these folders stay in the database |
 
 ---
 

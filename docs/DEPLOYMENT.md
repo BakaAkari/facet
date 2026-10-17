@@ -117,6 +117,8 @@ for what is guaranteed, the one case where Facet still takes ownership (a
 pre-existing config the container's `facet` user cannot read), and the recipe for
 making a rootless-Podman-mounted config both yours and writable by the container.
 
+With compose `group_add` (see [Photo Shares Readable Only Through a Group](#photo-shares-readable-only-through-a-group-group_add)), the readability probe runs with those same supplementary groups, so a config readable only through such a group no longer triggers this takeover. If the `setpriv` call used for the probe itself fails, the file is treated as unreadable (takeover path, with the warning on stderr).
+
 ## Building the Angular Client
 
 The FastAPI server serves the pre-built SPA from `client/dist/client/browser/`. Build it before deployment:
@@ -327,6 +329,21 @@ services:
       - /volume1/Photos:/volume1/Photos:ro  # Mount photos for downloads
     restart: always
 ```
+
+### Photo Shares Readable Only Through a Group (`group_add`)
+
+On a NAS the photo share is often readable only through a supplementary group (on Synology, typically `users`, gid 100) rather than by the container's `facet` uid. Give the container that group with compose `group_add`, using the numeric gid from `id <your-user>` on the NAS:
+
+```yaml
+services:
+  facet:
+    group_add:
+      - "100"
+```
+
+The entrypoint starts as root and drops to `facet` with `setpriv`, keeping the `group_add` gids (it previously used `gosu`, which discarded them, so the scanner could not read the share). Check with `docker compose exec facet grep Groups /proc/1/status`: it lists `1000` plus your gids.
+
+Alternative: run unprivileged with `user: "1000:1000"` plus `group_add`. That skips the entrypoint's root branch entirely, so it neither chowns nor seeds `/config`; every mount must already be writable by uid 1000, and the runtime applies `group_add` natively.
 
 ## Container Memory Limits
 

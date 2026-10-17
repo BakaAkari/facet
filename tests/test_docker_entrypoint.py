@@ -6,16 +6,20 @@ docker-entrypoint.sh) lets these tests point ``seed_config()`` at a temp
 directory instead of ``/config`` and ``/app``, with the container command
 replaced by ``true`` so nothing besides the seeding logic actually runs.
 
+The root branch's privilege drop and readability probe are covered by the
+stub-PATH ``TestDropPrivileges`` class below (stub ``id``/``chown``/``setpriv``
+on PATH); the real ownership takeover still needs uid 0 and is not covered.
+
 Only the NON-ROOT tail (``mkdir -p /config; seed_config; exec "$@"``) is
 covered here; the module is skipped outright under uid 0 (see ``_IS_ROOT``
 below) precisely so that `id -u` is always non-zero and the script always
 falls through to that tail — which calls the exact same ``seed_config()``
 the root branch calls first. What the root branch adds on top (chowning a
 freshly seeded file unconditionally, chowning a pre-existing one only as a
-last resort behind a readability probe) needs uid 0 to exercise for real and
-is NOT currently exercised by any automated test; the intended home for such
-a test is a uid-0 container smoke step in .github/workflows/docker-publish.yml
-that bind-mounts a config unreadable by the ``facet`` uid.
+last resort behind a readability probe) needs uid 0 to exercise for real, and
+it is NOT exercised by a real-uid-0 test; the intended home for one is a
+uid-0 container smoke step in .github/workflows/docker-publish.yml that
+bind-mounts a config unreadable by the ``facet`` uid.
 
 This is the regression suite for issue #127: under rootless Podman, an
 operator's pre-existing ``/config/scoring_config.json`` was re-chmod'd 0600
@@ -78,8 +82,8 @@ pytestmark = pytest.mark.skipif(
     sys.platform == "win32" or _IS_ROOT,
     reason="POSIX permission bits, symlinks and sh do not apply on Windows; "
     "and under uid 0 the script's root branch touches absolute host paths "
-    "(/app/data, /app/storage, /config, /home/facet/*) and requires gosu, "
-    "which is only present inside the image",
+    "(/app/data, /app/storage, /config, /home/facet/*) and requires uid 0 and the "
+    "image's setpriv (the stub-PATH class fakes both)",
 )
 
 
@@ -239,3 +243,87 @@ class TestSeedConfigNonRoot:
         assert seeded.read_text() == image.read_text()
         assert _mode_of(seeded) == 0o600
         assert result.stdout == ""
+
+
+def _stub_bin(tmp_path, id_groups):
+    """A PATH dir of stubs that lets the ROOT branch run on a non-root host.
+
+    ``id`` claims uid 0, primary gid 1000 for ``facet`` and ``id_groups`` for
+    ``-G``; ``mkdir`` is inert (the branch names absolute host paths); ``chown``
+    and ``setpriv`` append their arguments to a log. ``setpriv``'s exit status is
+    ``$STUB_SETPRIV_RC``. There is deliberately no ``gosu``.
+    """
+    bin_dir = tmp_path / "stubbin"
+    bin_dir.mkdir()
+    log = tmp_path / "calls.log"
+    stubs = {
+        "id": (
+            'case "$1" in\n'
+            "  -u) echo 0 ;;\n"
+            "  -g) echo 1000 ;;\n"
+            f"  -G) echo '{id_groups}' ;;\n"
+            "esac\n"
+        ),
+        "mkdir": "exit 0\n",
+        "chown": f'echo "chown $*" >> "{log}"\n',
+        "setpriv": f'echo "setpriv $*" >> "{log}"\nexit "${{STUB_SETPRIV_RC:-0}}"\n',
+    }
+    for name, body in stubs.items():
+        stub = bin_dir / name
+        stub.write_text("#!/bin/sh\n" + body)
+        stub.chmod(0o755)
+    return bin_dir, log
+
+
+def _run_root_branch(tmp_path, id_groups, setpriv_rc=0, preexisting=True):
+    bin_dir, log = _stub_bin(tmp_path, id_groups)
+    seeded = tmp_path / "scoring_config.json"
+    if preexisting:
+        seeded.write_text("{}\n")
+    env = dict(os.environ)
+    env.pop("FACET_CONFIG", None)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["SEEDED_CONFIG"] = str(seeded)
+    env["IMAGE_CONFIG"] = str(tmp_path / "no_such_image_config.json")
+    env["STUB_SETPRIV_RC"] = str(setpriv_rc)
+    result = subprocess.run(
+        ["sh", str(ENTRYPOINT), "myserver", "--flag"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    calls = log.read_text().splitlines() if log.exists() else []
+    return result, calls
+
+
+class TestDropPrivileges:
+    """Issue #208: the root branch keeps compose ``group_add`` gids across the drop."""
+
+    def test_extra_group_survives_final_exec_and_probe(self, tmp_path):
+        result, calls = _run_root_branch(tmp_path, "0 101")
+        privs = [c for c in calls if c.startswith("setpriv")]
+        assert len(privs) == 2, (result.stderr, calls)
+        for line in privs:
+            assert "--reuid=facet --regid=facet --groups=1000,101 --" in line
+        assert privs[-1].endswith("-- myserver --flag")
+
+    def test_no_group_add_still_passes_a_nonempty_group_list(self, tmp_path):
+        _, calls = _run_root_branch(tmp_path, "0")
+        privs = [c for c in calls if c.startswith("setpriv")]
+        assert privs and all("--groups=1000 --" in line for line in privs), calls
+
+    def test_root_and_nobody_gids_are_filtered_several_extras_kept(self, tmp_path):
+        _, calls = _run_root_branch(tmp_path, "0 101 65534 102")
+        privs = [c for c in calls if c.startswith("setpriv")]
+        assert privs and all("--groups=1000,101,102 --" in line for line in privs), calls
+
+    def test_group_readable_config_is_not_taken_over(self, tmp_path):
+        result, calls = _run_root_branch(tmp_path, "0 101", setpriv_rc=0)
+        assert not any(c.startswith("chown facet:facet") for c in calls), calls
+        assert "cannot read" not in result.stderr
+
+    def test_probe_failure_is_treated_as_unreadable(self, tmp_path):
+        result, calls = _run_root_branch(tmp_path, "0 101", setpriv_rc=1)
+        assert any(c.startswith("chown facet:facet") for c in calls), calls
+        assert "cannot read" in result.stderr

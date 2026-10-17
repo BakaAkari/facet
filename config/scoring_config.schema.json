@@ -5,6 +5,13 @@
   "type": "object",
   "required": ["categories"],
   "properties": {
+    "scanning": {
+      "type": "object",
+      "properties": {
+        "skip_hidden_directories": { "type": "boolean" },
+        "skip_directories": { "type": "array", "items": { "type": "string" } }
+      }
+    },
     "categories": {
       "type": "array",
       "minItems": 1,

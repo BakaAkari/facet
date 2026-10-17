@@ -1,6 +1,7 @@
 {
   "scanning": {
-    "skip_hidden_directories": true
+    "skip_hidden_directories": true,
+    "skip_directories": ["@eaDir", "#recycle", "#snapshot", "@Recycle"]
   },
   "categories": [
     {
