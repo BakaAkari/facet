@@ -110,6 +110,8 @@ services:
 
 同样的 UID 边界也适用于 `/config/scoring_config.json` 本身。Facet 只会接管由它自己创建的配置文件；已经存在的文件会保留你赋予它的属主和权限模式，而且 Facet 自己的配置写入现在会尽量保持这一点，而不是把文件交给容器所使用的那个 uid。关于哪些行为是有保证的、Facet 仍会接管归属的唯一情形（一个容器内 `facet` 用户读不到的、事先就存在的配置文件），以及如何让一个由 rootless Podman 挂载的配置文件既归你所有又能被容器写入，请见[安装 — 容器内的文件归属](INSTALLATION.md#容器内的文件归属)。
 
+配合 compose 的 `group_add`（见[仅可通过某个用户组读取的照片共享](#仅可通过某个用户组读取的照片共享group_add)），可读性探测会带上相同的附加用户组，因此仅通过此类用户组可读的配置不再触发这种接管。若探测所用的 `setpriv` 调用本身失败，该文件会被视为不可读（走接管路径，并在 stderr 输出警告）。
+
 ## 构建 Angular 客户端
 
 FastAPI 服务器从 `client/dist/client/browser/` 提供预先构建好的 SPA。请在部署前构建它：
@@ -300,6 +302,21 @@ services:
       - /volume1/Photos:/volume1/Photos:ro  # 挂载照片以便下载
     restart: always
 ```
+
+### 仅可通过某个用户组读取的照片共享（`group_add`）
+
+在 NAS 上，照片共享通常只能通过某个附加用户组读取（Synology 上一般是 `users`，gid 100），而容器的 `facet` uid 并不在其中。请用 compose 的 `group_add` 把该组加给容器，gid 取自 NAS 上 `id <你的用户名>` 输出的数字：
+
+```yaml
+services:
+  facet:
+    group_add:
+      - "100"
+```
+
+入口脚本以 root 启动，再用 `setpriv` 降权为 `facet`，并保留 `group_add` 的 gid（此前使用的 `gosu` 会丢弃它们，导致扫描器读不到共享）。可用 `docker compose exec facet grep Groups /proc/1/status` 验证：输出包含 `1000` 以及你的 gid。
+
+替代方案：以非特权方式运行，设置 `user: "1000:1000"` 并加上 `group_add`。这会完全跳过入口脚本的 root 分支，因此既不会 chown，也不会初始化 `/config`；所有挂载必须已可被 uid 1000 写入，`group_add` 由运行时原生应用。
 
 ## 容器内存限制
 

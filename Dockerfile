@@ -228,9 +228,9 @@ RUN if getent passwd 1000 >/dev/null; then userdel --remove "$(getent passwd 100
 
 # Pin HOME so the HuggingFace / InsightFace caches are deterministic. They pick
 # their dir from os.path.expanduser("~"), which is $HOME when set and otherwise
-# the passwd home. gosu does not reset $HOME on the privilege drop, so without
-# this the cache landed in /root or /home/facet depending on the environment's
-# inherited $HOME — and the bind mounts only catch one of them.
+# the passwd home. The entrypoint's privilege drop (setpriv) does not reset
+# $HOME, so without this the cache landed in /root or /home/facet depending on
+# the environment's inherited $HOME — and the bind mounts only catch one of them.
 ENV HOME=/home/facet
 
 # Licensing mode for the whole image. "default" is the no-override value; the

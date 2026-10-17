@@ -169,6 +169,26 @@ seed_config() {
     fi
 }
 
+# Replace this process with "$@" running as the unprivileged `facet` user.
+#
+# setpriv rather than `gosu facet`: gosu resets the supplementary groups to
+# facet's /etc/group entries, silently dropping every gid compose `group_add`
+# gave the root process (issue #208 -- a NAS media share readable only through
+# such a group became unreadable to the scanner). The list is facet's primary
+# gid FIRST, so it is never empty (`--groups=` is rejected), plus the root
+# process's own groups minus 0 (root) and 65534 (nogroup). Duplicates are
+# accepted by setpriv. `--init-groups` is NOT used: it would reset to
+# /etc/group and lose the group_add gids. Unlike gosu, setpriv does not reset
+# HOME to facet's passwd home: it comes from the image's ENV HOME=/home/facet
+# unless the operator overrides it.
+# It execs, so the readability probe below calls it inside a subshell.
+run_as_facet() {
+    facet_gid=$(id -g facet)
+    extra_gids=$(id -G | tr ' ' '\n' | grep -vx -e 0 -e 65534 | paste -sd, -) || true
+    exec setpriv --reuid=facet --regid=facet \
+        --groups="${facet_gid}${extra_gids:+,$extra_gids}" -- "$@"
+}
+
 # The Docker daemon creates any absent bind-mount source on the host as root,
 # which the unprivileged "facet" user cannot write — breaking the SQLite DB at
 # DB_PATH ("unable to open database file"). When the container starts as root,
@@ -201,10 +221,13 @@ if [ "$(id -u)" = '0' ]; then
     # alone").
     #
     # So it only fires as a LAST RESORT, gated on whether `facet` can actually
-    # read the file — probed as that real user (`gosu facet sh -c '[ -r ... ]'`)
+    # read the file — probed as that real user (`run_as_facet sh -c '[ -r ... ]'`)
     # rather than approximated from uid/gid numbers, which permission bits, ACLs
-    # and group membership can all override. An unreadable pre-existing config
-    # is not a theoretical risk: `api/config.py`'s `_read_config` treats it as a
+    # and group membership can all override. The probe carries the SAME
+    # supplementary groups the server will start with (compose `group_add`,
+    # issue #208), so a config readable only through such a group is not mistaken
+    # for unreadable; a failing setpriv counts as unreadable. An unreadable
+    # pre-existing config is not a theoretical risk: `api/config.py`'s `_read_config` treats it as a
     # load failure and `config_load_failed()` locks every route, with no UI left
     # to fix it from — so taking ownership here is the difference between a
     # locked-out install and a working one. The stderr line says what happened
@@ -234,7 +257,7 @@ if [ "$(id -u)" = '0' ]; then
     if [ ! -L "$SEEDED_CONFIG" ]; then
         if [ "${SEEDED_NOW:-0}" = 1 ]; then
             chown facet:facet "$SEEDED_CONFIG" 2>/dev/null || true
-        elif [ -e "$SEEDED_CONFIG" ] && ! gosu facet sh -c '[ -r "$1" ]' _ "$SEEDED_CONFIG"; then
+        elif [ -e "$SEEDED_CONFIG" ] && ! ( run_as_facet sh -c '[ -r "$1" ]' _ "$SEEDED_CONFIG" ); then
             echo "facet: $SEEDED_CONFIG exists but the 'facet' user cannot read" \
                 "it (issue #127) — taking ownership so the server can start." \
                 "Keep your own ownership on the next restart by making it" \
@@ -242,7 +265,7 @@ if [ "$(id -u)" = '0' ]; then
             chown facet:facet "$SEEDED_CONFIG" 2>/dev/null || true
         fi
     fi
-    exec gosu facet "$@"
+    run_as_facet "$@"
 fi
 
 # A `user:` override in compose skips everything above, including the seed — but

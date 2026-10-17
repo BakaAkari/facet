@@ -8,6 +8,10 @@ All notable changes to Facet are documented in this file.
 
 - **`scanning.skip_directories`: directory names the scanner never descends into** (issue #207). A list of name globs (`fnmatch`, case-sensitive, matched against each directory's name, never the scan root itself), defaulting to `["@eaDir", "#recycle", "#snapshot", "@Recycle"]`. On a Synology NAS every photo folder carries an `@eaDir/` of `SYNOPHOTO_THUMB_*.jpg` thumbnails, which were scanned and scored as photos. It applies on top of `skip_hidden_directories`, which is unchanged. A list in your `scoring_config.json` replaces the default wholesale, so keep the NAS entries you still need; `[]` turns it off. Thumbnails an earlier scan already stored stay in the database, since their files still exist. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
+### Fixed
+
+- **The Docker image keeps the groups compose `group_add` gives it** (issue #208). The entrypoint dropped root to the `facet` user with `gosu`, which resets the supplementary groups from the image's `/etc/group`, so a photo share readable only through a NAS group was unreadable to the scanner. It now drops with `setpriv`, keeping `facet`'s own gid plus every gid the container was started with (except 0 and 65534), and the config-readability probe runs with the same groups. Unlike `gosu`, `setpriv` does not reset `HOME`, so a `HOME` set in compose is now honoured instead of being replaced by `/home/facet` (the image default is unchanged). `gosu` stays installed. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 ## [1.21.0] "Rafale" — 2026-10-16
 
 **Upgrading from 1.20.0.** This release changes stored scores and categories (the BREAKING silhouette entry under Changed, and the `quality_percent` and `astro` entries under Fixed), and adds indexes that take minutes to build on a large library. Do these steps in this order:
