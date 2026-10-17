@@ -199,7 +199,8 @@ Contrôle le comportement d'analyse des répertoires.
 ```json
 {
   "scanning": {
-    "skip_hidden_directories": true
+    "skip_hidden_directories": true,
+    "skip_directories": ["@eaDir", "#recycle", "#snapshot", "@Recycle"]
   }
 }
 ```
@@ -207,6 +208,7 @@ Contrôle le comportement d'analyse des répertoires.
 | Réglage | Défaut | Description |
 |---------|--------|-------------|
 | `skip_hidden_directories` | `true` | Ignorer les répertoires commençant par `.` lors de l'analyse des photos |
+| `skip_directories` | `["@eaDir", "#recycle", "#snapshot", "@Recycle"]` | Globs de noms de répertoires (`fnmatch`, sensibles à la casse, appliqués au nom du dossier à toute profondeur) exclus de l'analyse : `@eaDir` de Synology (ses miniatures `SYNOPHOTO_THUMB_*.jpg` ne sont pas des photos), `#recycle`, `#snapshot`, `@Recycle` de QNAP. Votre liste remplace entièrement celle par défaut ; `[]` désactive l'exclusion par nom. La racine de l'analyse n'est jamais exclue. Les photos déjà indexées depuis ces dossiers restent dans la base |
 
 ---
 

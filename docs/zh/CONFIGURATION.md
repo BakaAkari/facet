@@ -188,7 +188,8 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 ```json
 {
   "scanning": {
-    "skip_hidden_directories": true
+    "skip_hidden_directories": true,
+    "skip_directories": ["@eaDir", "#recycle", "#snapshot", "@Recycle"]
   }
 }
 ```
@@ -196,6 +197,7 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 | 设置 | 默认值 | 说明 |
 |---------|---------|-------------|
 | `skip_hidden_directories` | `true` | 扫描照片时跳过以 `.` 开头的目录 |
+| `skip_directories` | `["@eaDir", "#recycle", "#snapshot", "@Recycle"]` | 扫描时跳过的目录名通配符（`fnmatch`，区分大小写，按任意深度的文件夹名匹配）：Synology 的 `@eaDir`（其 `SYNOPHOTO_THUMB_*.jpg` 缩略图不是照片）、`#recycle`、`#snapshot`、QNAP 的 `@Recycle`。你的列表会完全替换默认值；`[]` 表示不按名称跳过。扫描根目录本身永远不会被跳过。已从这些文件夹索引的照片会保留在数据库中 |
 
 ---
 
