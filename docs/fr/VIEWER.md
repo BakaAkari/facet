@@ -162,7 +162,7 @@ existant, y compris ses limites de normalisation Unicode.
 | **Contenu** | Tags, bascule monochrome |
 | **Moments** | Confiance du moment narratif (curseur de plage 0–1 : `min_moment_confidence` / `max_moment_confidence`) |
 
-Les filtres de plage sur Esthétique IAA, Qualité du visage IQA, LIQE et Aesthetic V2.5 ne retiennent que les photos qui ont un score. Une photo qu'un modèle n'a pas pu noter est stockée comme NULL (elle portait auparavant un 5,0 neutre) : même un filtre qui commence à 0 l'exclut, et un tri croissant sur Esthétique (IAA), Qualité du visage (IQA) ou LIQE la place en dernier, dans la galerie comme dans les albums (intelligents et partagés compris). Voir [Dimensions IQA supplémentaires](SCORING.md#dimensions-iqa-supplémentaires).
+Les filtres de plage sur Esthétique IAA, Qualité du visage IQA, LIQE, Aesthetic V2.5, Q-ReAlign et DeQA ne retiennent que les photos qui ont un score. Une photo qu'un modèle n'a pas pu noter est stockée comme NULL (elle portait auparavant un 5,0 neutre) : même un filtre qui commence à 0 l'exclut, et un tri croissant sur Esthétique (IAA), Qualité du visage (IQA), LIQE, Aesthetic V2.5, Q-ReAlign ou DeQA la place en dernier, dans la galerie comme dans les albums (intelligents et partagés compris). Voir [Dimensions IQA supplémentaires](SCORING.md#dimensions-iqa-supplémentaires).
 
 Les filtres de plage Netteté du sujet, Placement du sujet, Séparation de l'arrière-plan et Points de force ne retiennent aussi que les photos mesurées : une photo sans sujet détectable stocke NULL dans ces colonnes (elle portait auparavant un 5.0 neutre), donc même un filtre qui commence à 0 l'exclut, et le panneau de détail et l'infobulle omettent la ligne. La prééminence du sujet vaut 0.0 pour une telle photo. Voir [SCORING.md](SCORING.md).
 
@@ -186,7 +186,7 @@ Colonnes triables regroupées par catégorie (depuis `viewer.sort_options`) :
 
 | Groupe | Colonnes |
 |-------|---------|
-| **Général** | Score agrégé, Esthétique, Score de qualité, Date de prise de vue, Note en étoiles, Esthétique (IAA), Score LIQE |
+| **Général** | Score agrégé, Esthétique, Score de qualité, Date de prise de vue, Note en étoiles, Esthétique (IAA), Score LIQE, Q-ReAlign (esthétique), DeQA, Esthétique v2.5 (les trois derniers n'apparaissent que si au moins une photo a ce score) |
 | **Métriques de visage** | Qualité du visage, Qualité du visage (IQA), Netteté des yeux, Netteté du visage, Proportion du visage, Nombre de visages |
 | **Technique** | Netteté technique, Contraste, Niveau de bruit |
 | **Couleur** | Score de couleur, Saturation |
@@ -203,7 +203,7 @@ Contrôlé par `viewer.features.show_my_taste` (par défaut : `true`). L'état d
 
 ### Métriques masquées en mode commercial
 
-Avec `licensing.mode` réglé sur `commercial`, la visionneuse masque les métriques dont les modèles ne sont pas utilisables commercialement : les filtres de plage LIQE, Aesthetic IAA et (sauf si OFIQ est installé) Face Quality IQA, leurs puces de filtre et leurs options de tri. `/api/config` les liste dans `unavailable_metrics`. Sur la page de réglage des poids, leurs curseurs restent visibles mais désactivés, avec une infobulle ; les poids sont conservés, car le calcul du score les écarte et renormalise. Redémarrez la visionneuse après avoir changé le mode de licence.
+Avec `licensing.mode` réglé sur `commercial`, la visionneuse masque les métriques dont les modèles ne sont pas utilisables commercialement : LIQE, Aesthetic IAA, Face Quality IQA (sauf si OFIQ est installé), DeQA (sauf si `licensing.allow_unclear` est défini) et Aesthetic V2.5 : leurs filtres de plage, puces de filtre et options de tri. `/api/config` les liste dans `unavailable_metrics`. Sur la page de réglage des poids, leurs curseurs restent visibles mais désactivés, avec une infobulle ; les poids sont conservés, car le calcul du score les écarte et renormalise. Redémarrez la visionneuse après avoir changé le mode de licence.
 
 ## Fonctionnalités de la galerie
 

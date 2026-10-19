@@ -163,7 +163,7 @@ python database.py --migrate-user-preferences --user alice
 | **内容** | 标签、黑白开关 |
 | **拍摄时刻** | 叙事时刻置信度（0–1 区间滑块：`min_moment_confidence` / `max_moment_confidence`） |
 
-对美学 IAA、人脸画质 IQA、LIQE 和 Aesthetic V2.5 的范围筛选只匹配有评分的照片。模型未能评分的照片存为 NULL（以前是中性的 5.0），因此即使筛选从 0 开始也会将其排除；按美学（IAA）、人脸画质（IQA）或 LIQE 升序排序时，无论在图库还是相册（包括智能相册和共享相册）中，它都排在最后。见[补充 IQA 维度](SCORING.md#补充-iqa-维度)。
+对美学 IAA、人脸画质 IQA、LIQE、Aesthetic V2.5、Q-ReAlign 和 DeQA 的范围筛选只匹配有评分的照片。模型未能评分的照片存为 NULL（以前是中性的 5.0），因此即使筛选从 0 开始也会将其排除；按美学（IAA）、人脸画质（IQA）、LIQE、Aesthetic V2.5、Q-ReAlign 或 DeQA 升序排序时，无论在图库还是相册（包括智能相册和共享相册）中，它都排在最后。见[补充 IQA 维度](SCORING.md#补充-iqa-维度)。
 
 主体清晰度、主体位置、背景分离度和构图交点的范围筛选同样只匹配有测量值的照片：检测不到主体的照片在这些列中存为 NULL（以前是中性的 5.0），所以即使筛选从 0 开始也会排除它，详情面板和提示框也会省略该行。这类照片的主体突出程度为 0.0。参见 [SCORING.md](SCORING.md)。
 
@@ -185,7 +185,7 @@ python database.py --migrate-user-preferences --user alice
 
 | 分组 | 列 |
 |-------|---------|
-| **常规** | 综合评分、美观度、画质评分、拍摄日期、星级评分、美学评分（IAA）、LIQE 评分 |
+| **常规** | 综合评分、美观度、画质评分、拍摄日期、星级评分、美学评分（IAA）、LIQE 评分、Q-ReAlign（美观度）、DeQA、美学 v2.5（后三项仅在至少有一张照片具有该评分时才会列出） |
 | **人脸指标** | 人脸画质、人脸画质（IQA）、眼睛清晰度、人脸清晰度、人脸占比、人脸数量 |
 | **技术指标** | 技术清晰度、对比度、噪点水平 |
 | **色彩** | 色彩评分、饱和度 |
@@ -202,7 +202,7 @@ python database.py --migrate-user-preferences --user alice
 
 ### 商业模式下隐藏的指标
 
-当 `licensing.mode` 设为 `commercial` 时，查看器会隐藏模型不可商用的指标：LIQE、Aesthetic IAA 以及（未安装 OFIQ 时）Face Quality IQA 的范围筛选器、筛选标签和排序选项。`/api/config` 在 `unavailable_metrics` 中列出这些指标。在权重调整页面，它们的滑块仍可见但被禁用，并带有提示；权重会被保留，因为评分时会跳过并重新归一化。更改许可模式后请重启查看器。
+当 `licensing.mode` 设为 `commercial` 时，查看器会隐藏模型不可商用的指标：LIQE、Aesthetic IAA、Face Quality IQA（未安装 OFIQ 时）、DeQA（未设置 `licensing.allow_unclear` 时）以及 Aesthetic V2.5 的范围筛选器、筛选标签和排序选项。`/api/config` 在 `unavailable_metrics` 中列出这些指标。在权重调整页面，它们的滑块仍可见但被禁用，并带有提示；权重会被保留，因为评分时会跳过并重新归一化。更改许可模式后请重启查看器。
 
 ## 照片库功能
 

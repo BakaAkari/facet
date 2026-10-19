@@ -162,7 +162,7 @@ Unicode-Normalisierung.
 | **Inhalt** | Tags, Monochrom-Umschalter |
 | **Momente** | Narrative-Moment-Konfidenz (0–1-Bereichsregler: `min_moment_confidence` / `max_moment_confidence`) |
 
-Bereichsfilter auf Ästhetik IAA, Gesichtsqualität IQA, LIQE und Aesthetic V2.5 treffen nur auf Fotos mit einem Wert zu. Ein Foto, das ein Modell nicht bewerten konnte, wird als NULL gespeichert (früher trug es eine neutrale 5,0) und daher selbst von einem Filter, der bei 0 beginnt, ausgeschlossen; eine aufsteigende Sortierung nach Ästhetik (IAA), Gesichtsqualität (IQA) oder LIQE stellt es in der Galerie und in Alben (auch intelligenten und geteilten) ans Ende. Siehe [Ergänzende IQA-Dimensionen](SCORING.md#ergänzende-iqa-dimensionen).
+Bereichsfilter auf Ästhetik IAA, Gesichtsqualität IQA, LIQE, Aesthetic V2.5, Q-ReAlign und DeQA treffen nur auf Fotos mit einem Wert zu. Ein Foto, das ein Modell nicht bewerten konnte, wird als NULL gespeichert (früher trug es eine neutrale 5,0) und daher selbst von einem Filter, der bei 0 beginnt, ausgeschlossen; eine aufsteigende Sortierung nach Ästhetik (IAA), Gesichtsqualität (IQA), LIQE, Aesthetic V2.5, Q-ReAlign oder DeQA stellt es in der Galerie und in Alben (auch intelligenten und geteilten) ans Ende. Siehe [Ergänzende IQA-Dimensionen](SCORING.md#ergänzende-iqa-dimensionen).
 
 Bereichsfilter auf Motivschärfe, Motivplatzierung, Hintergrundtrennung und Power-Points treffen ebenso nur auf Fotos mit einem Messwert zu: Ein Foto ohne erkennbares Motiv speichert in diesen Spalten NULL (früher ein neutrales 5.0), sodass es selbst ein Filter ausschließt, der bei 0 beginnt; Detailbereich und Tooltip lassen die Zeile weg. Die Motivprominenz ist für ein solches Foto 0.0. Siehe [SCORING.md](SCORING.md).
 
@@ -186,7 +186,7 @@ Sortierbare Spalten nach Kategorie gruppiert (aus `viewer.sort_options`):
 
 | Gruppe | Spalten |
 |-------|---------|
-| **Allgemein** | Gesamtwertung, Ästhetik, Qualitätswert, Aufnahmedatum, Sternebewertung, Ästhetik (IAA), LIQE-Wert |
+| **Allgemein** | Gesamtwertung, Ästhetik, Qualitätswert, Aufnahmedatum, Sternebewertung, Ästhetik (IAA), LIQE-Wert, Q-ReAlign (Ästhetik), DeQA, Ästhetik v2.5 (die letzten drei erscheinen nur, wenn mindestens ein Foto diesen Wert hat) |
 | **Gesichtsmetriken** | Gesichtsqualität, Gesichtsqualität (IQA), Augenschärfe, Gesichtsschärfe, Gesichtsanteil, Gesichteranzahl |
 | **Technik** | Techn. Schärfe, Kontrast, Rauschniveau |
 | **Farbe** | Farbwert, Sättigung |
@@ -203,7 +203,7 @@ Gesteuert über `viewer.features.show_my_taste` (Standard: `true`). Der Ranker-S
 
 ### Im kommerziellen Modus ausgeblendete Metriken
 
-Ist `licensing.mode` auf `commercial` gesetzt, blendet der Viewer die Metriken aus, deren Modelle nicht kommerziell genutzt werden dürfen: die Bereichsfilter für LIQE, Aesthetic IAA und (sofern OFIQ nicht installiert ist) Face Quality IQA, deren Filter-Chips und Sortieroptionen. `/api/config` listet sie in `unavailable_metrics`. In der Gewichtungsseite bleiben ihre Regler sichtbar, sind aber deaktiviert und mit einem Tooltip versehen; die Gewichte bleiben erhalten, da die Bewertung sie auslässt und neu normalisiert. Den Viewer nach einer Änderung des Lizenzmodus neu starten.
+Ist `licensing.mode` auf `commercial` gesetzt, blendet der Viewer die Metriken aus, deren Modelle nicht kommerziell genutzt werden dürfen: LIQE, Aesthetic IAA, Face Quality IQA (sofern OFIQ nicht installiert ist), DeQA (sofern `licensing.allow_unclear` nicht gesetzt ist) und Aesthetic V2.5: ihre Bereichsfilter, Filter-Chips und Sortieroptionen. `/api/config` listet sie in `unavailable_metrics`. In der Gewichtungsseite bleiben ihre Regler sichtbar, sind aber deaktiviert und mit einem Tooltip versehen; die Gewichte bleiben erhalten, da die Bewertung sie auslässt und neu normalisiert. Den Viewer nach einer Änderung des Lizenzmodus neu starten.
 
 ## Galeriefunktionen
 

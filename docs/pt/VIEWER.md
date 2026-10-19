@@ -162,7 +162,7 @@ limitações de normalização Unicode.
 | **Conteúdo** | Tags, alternância de monocromático |
 | **Momentos** | Confiança do momento narrativo (controle deslizante de faixa 0–1: `min_moment_confidence` / `max_moment_confidence`) |
 
-Os filtros de intervalo de Estética IAA, Qualidade do rosto IQA, LIQE e Aesthetic V2.5 incluem apenas fotos que têm pontuação. Uma foto que um modelo não conseguiu pontuar é gravada como NULL (antes trazia um 5,0 neutro), portanto até um filtro que começa em 0 a exclui, e uma ordenação crescente por Estética (IAA), Qualidade do rosto (IQA) ou LIQE a coloca por último, na galeria e nos álbuns (inteligentes e compartilhados incluídos). Veja [Dimensões Suplementares de IQA](SCORING.md#dimensões-suplementares-de-iqa).
+Os filtros de intervalo de Estética IAA, Qualidade do rosto IQA, LIQE, Aesthetic V2.5, Q-ReAlign e DeQA incluem apenas fotos que têm pontuação. Uma foto que um modelo não conseguiu pontuar é gravada como NULL (antes trazia um 5,0 neutro), portanto até um filtro que começa em 0 a exclui, e uma ordenação crescente por Estética (IAA), Qualidade do rosto (IQA), LIQE, Aesthetic V2.5, Q-ReAlign ou DeQA a coloca por último, na galeria e nos álbuns (inteligentes e compartilhados incluídos). Veja [Dimensões Suplementares de IQA](SCORING.md#dimensões-suplementares-de-iqa).
 
 Os filtros de intervalo de Nitidez do sujeito, Posicionamento do sujeito, Separação do fundo e Pontos de força também só retornam fotos com uma medição: uma foto sem sujeito detectável armazena NULL nessas colunas (antes levava um 5.0 neutro), então até um filtro que começa em 0 a exclui, e o painel de detalhes e a dica omitem a linha. A proeminência do sujeito é 0.0 para uma foto assim. Veja [SCORING.md](SCORING.md).
 
@@ -186,7 +186,7 @@ Colunas ordenáveis agrupadas por categoria (de `viewer.sort_options`):
 
 | Grupo | Colunas |
 |-------|---------|
-| **Geral** | Pontuação Agregada, Estética, Pontuação de Qualidade, Data de Captura, Avaliação por Estrelas, Estética (IAA), Pontuação LIQE |
+| **Geral** | Pontuação Agregada, Estética, Pontuação de Qualidade, Data de Captura, Avaliação por Estrelas, Estética (IAA), Pontuação LIQE, Q-ReAlign (estética), DeQA, Estética v2.5 (as três últimas só aparecem quando pelo menos uma foto tem essa pontuação) |
 | **Métricas de Rosto** | Qualidade do Rosto, Qualidade do Rosto (IQA), Nitidez dos Olhos, Nitidez do Rosto, Proporção do Rosto, Contagem de Rostos |
 | **Técnica** | Nitidez Técnica, Contraste, Nível de Ruído |
 | **Cor** | Pontuação de Cor, Saturação |
@@ -203,7 +203,7 @@ Controlado por `viewer.features.show_my_taste` (padrão: `true`). O status do ra
 
 ### Métricas ocultas no modo comercial
 
-Com `licensing.mode` definido como `commercial`, o visualizador oculta as métricas cujos modelos não podem ser usados comercialmente: os filtros de intervalo de LIQE, Aesthetic IAA e (a menos que o OFIQ esteja instalado) Face Quality IQA, os respetivos chips de filtro e as opções de ordenação. `/api/config` lista-as em `unavailable_metrics`. Na página de ajuste de pesos os controlos continuam visíveis mas desativados, com uma dica; os pesos são mantidos, porque a pontuação os descarta e renormaliza. Reinicie o visualizador depois de alterar o modo de licença.
+Com `licensing.mode` definido como `commercial`, o visualizador oculta as métricas cujos modelos não podem ser usados comercialmente: LIQE, Aesthetic IAA, Face Quality IQA (a menos que o OFIQ esteja instalado), DeQA (a menos que `licensing.allow_unclear` esteja definido) e Aesthetic V2.5: os respetivos filtros de intervalo, chips de filtro e opções de ordenação. `/api/config` lista-as em `unavailable_metrics`. Na página de ajuste de pesos os controlos continuam visíveis mas desativados, com uma dica; os pesos são mantidos, porque a pontuação os descarta e renormaliza. Reinicie o visualizador depois de alterar o modo de licença.
 
 ## Recursos da Galeria
 
