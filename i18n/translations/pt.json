@@ -433,6 +433,7 @@
     "shutter_speed": "Velocidade do obturador",
     "topiq_score": "Pontuação TOPIQ",
     "quality_score": "Pontuação de qualidade",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "Estética (IAA)",
     "liqe_score": "Pontuação LIQE",
     "face_quality_iqa": "Qualidade do rosto (IQA)",

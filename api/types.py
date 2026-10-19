@@ -64,7 +64,10 @@ def unavailable_columns():
     import-time sort tables free of policy state). Empty in default mode.
     """
     import licensing
-    return sorted(_METRIC_COLUMNS.get(m, m) for m in licensing.unavailable_metrics())
+    hidden = set(licensing.unavailable_metrics())
+    if not licensing.loader_allowed('deqa'):
+        hidden.add('deqa_score')
+    return sorted(_METRIC_COLUMNS.get(m, m) for m in hidden)
 
 
 def available_sort_options():
@@ -91,7 +94,7 @@ VALID_SORT_COLS = [opt[0] for opt in SORT_OPTIONS] + ['top_picks_score', 'learne
 # untrained / unlabelled, and the supplementary IQA scores, where a photo the model
 # could not score stores NULL, never 5.0.
 NULLABLE_SORT_COLS = ('learned_score', 'narrative_moment_confidence', 'aesthetic_iaa',
-                      'liqe_score', 'face_quality_iqa', 'aesthetic_v25')
+                      'liqe_score', 'face_quality_iqa', 'aesthetic_v25', 'deqa_score')
 
 
 def order_by_clause(sort_col: str, sort_dir: str, tiebreak: str = '') -> str:

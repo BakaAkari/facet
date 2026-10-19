@@ -14,7 +14,7 @@ import pytest
 from api.routers.gallery import _resolve_order_by
 
 PREFIX = "/null-sort/"
-NULLABLE_SORT_COLUMNS = ("aesthetic_iaa", "liqe_score", "face_quality_iqa")
+NULLABLE_SORT_COLUMNS = ("aesthetic_iaa", "liqe_score", "face_quality_iqa", "deqa_score")
 
 
 @pytest.mark.parametrize("column", NULLABLE_SORT_COLUMNS)

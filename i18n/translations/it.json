@@ -432,6 +432,7 @@
     "focal_length": "Lunghezza focale",
     "shutter_speed": "Tempo di esposizione",
     "quality_score": "Punteggio qualita",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "Estetica (IAA)",
     "liqe_score": "Punteggio LIQE",
     "face_quality_iqa": "Qualita volto (IQA)",

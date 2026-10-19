@@ -447,6 +447,7 @@ export const I18N = {
     shutter_speed: "sort_options.shutter_speed",
     topiq_score: "sort_options.topiq_score",
     quality_score: "sort_options.quality_score",
+    deqa_score: "sort_options.deqa_score",
     aesthetic_iaa: "sort_options.aesthetic_iaa",
     liqe_score: "sort_options.liqe_score",
     face_quality_iqa: "sort_options.face_quality_iqa",

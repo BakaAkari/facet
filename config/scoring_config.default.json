@@ -3455,6 +3455,10 @@
           "label": "Quality Score"
         },
         {
+          "column": "deqa_score",
+          "label": "DeQA"
+        },
+        {
           "column": "date_taken",
           "label": "Date Taken"
         },

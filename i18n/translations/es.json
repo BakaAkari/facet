@@ -432,6 +432,7 @@
     "focal_length": "Distancia focal",
     "shutter_speed": "Velocidad de obturación",
     "quality_score": "Puntuación de calidad",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "Estética (IAA)",
     "liqe_score": "Puntuación LIQE",
     "face_quality_iqa": "Calidad facial (IQA)",

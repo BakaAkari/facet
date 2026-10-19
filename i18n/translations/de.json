@@ -432,6 +432,7 @@
     "focal_length": "Brennweite",
     "shutter_speed": "Verschlusszeit",
     "quality_score": "Qualitätswert",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "Ästhetik (IAA)",
     "liqe_score": "LIQE-Wert",
     "face_quality_iqa": "Gesichtsqualität (IQA)",
