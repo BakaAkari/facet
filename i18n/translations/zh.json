@@ -434,6 +434,7 @@
     "topiq_score": "TOPIQ 评分",
     "quality_score": "画质评分",
     "aesthetic_iaa": "美学评分（IAA）",
+    "aesthetic_v25": "美学 v2.5",
     "liqe_score": "LIQE 评分",
     "face_quality_iqa": "人脸画质（IQA）",
     "composition_pattern": "构图模式",

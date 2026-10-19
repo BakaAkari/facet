@@ -3467,6 +3467,10 @@
           "label": "Aesthetic (IAA)"
         },
         {
+          "column": "aesthetic_v25",
+          "label": "Aesthetic v2.5"
+        },
+        {
           "column": "liqe_score",
           "label": "LIQE Score"
         }

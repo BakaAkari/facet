@@ -434,6 +434,7 @@
     "topiq_score": "Pontuação TOPIQ",
     "quality_score": "Pontuação de qualidade",
     "aesthetic_iaa": "Estética (IAA)",
+    "aesthetic_v25": "Estética v2.5",
     "liqe_score": "Pontuação LIQE",
     "face_quality_iqa": "Qualidade do rosto (IQA)",
     "composition_pattern": "Padrão de composição",

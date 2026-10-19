@@ -448,6 +448,7 @@ export const I18N = {
     topiq_score: "sort_options.topiq_score",
     quality_score: "sort_options.quality_score",
     aesthetic_iaa: "sort_options.aesthetic_iaa",
+    aesthetic_v25: "sort_options.aesthetic_v25",
     liqe_score: "sort_options.liqe_score",
     face_quality_iqa: "sort_options.face_quality_iqa",
     composition_pattern: "sort_options.composition_pattern",

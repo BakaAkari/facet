@@ -433,6 +433,7 @@
     "shutter_speed": "Velocidad de obturación",
     "quality_score": "Puntuación de calidad",
     "aesthetic_iaa": "Estética (IAA)",
+    "aesthetic_v25": "Estética v2.5",
     "liqe_score": "Puntuación LIQE",
     "face_quality_iqa": "Calidad facial (IQA)",
     "composition_pattern": "Patrón de composición",

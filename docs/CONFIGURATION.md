@@ -1297,7 +1297,7 @@ Heavy/experimental quality scorers that add supplementary columns; **never a rep
 |---------|---------|-----------------|--------|-------------|
 | `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B LLM-based IQA (native `transformers` loader, no pyiqa; Apache-2.0 weights, ~2-3GB VRAM/RAM). `"auto"` turns it on for the `8gb`/`16gb`/`24gb` profiles and off for `legacy`/CPU; `true`/`false` override the profile default explicitly. |
 | `qrealign_size` | `"mini"` | `"mini"` · `"lite"` | - | Q-ReAlign size the native scorer loads: `mini` (0.8B) or `lite` (4B). Used by the `qrealign` column and, in `licensing.mode: "commercial"`, as the primary aesthetic and quality model. |
-| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (SigLIP head, ~2GB). Requires the `aesthetic-predictor-v2-5` package. **Deprecated:** AGPL-3.0-licensed and unmaintained upstream since 2024-12-18 — prefer `qrealign`. |
+| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (SigLIP head, ~2GB). Requires the `aesthetic-predictor-v2-5` package. **Deprecated:** AGPL-3.0-licensed and unmaintained upstream since 2024-12-18 — prefer `qrealign`. Sortable in the viewer as **Aesthetic v2.5**, with unscored photos last in either direction. |
 | `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score VLM IQA (16GB+ GPU; skipped & left NULL otherwise). |
 
 **Install the optional dependencies** for whatever you enable: `pip install -e .[iqa-extended]` (adds `aesthetic-predictor-v2-5`), or uncomment the matching line in `requirements.txt`. DeQA-Score downloads via `transformers`.

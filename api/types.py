@@ -64,7 +64,10 @@ def unavailable_columns():
     import-time sort tables free of policy state). Empty in default mode.
     """
     import licensing
-    return sorted(_METRIC_COLUMNS.get(m, m) for m in licensing.unavailable_metrics())
+    hidden = set(licensing.unavailable_metrics())
+    if not licensing.loader_allowed('aesthetic_v25'):
+        hidden.add('aesthetic_v25')
+    return sorted(_METRIC_COLUMNS.get(m, m) for m in hidden)
 
 
 def available_sort_options():

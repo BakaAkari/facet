@@ -14,7 +14,7 @@ import pytest
 from api.routers.gallery import _resolve_order_by
 
 PREFIX = "/null-sort/"
-NULLABLE_SORT_COLUMNS = ("aesthetic_iaa", "liqe_score", "face_quality_iqa")
+NULLABLE_SORT_COLUMNS = ("aesthetic_iaa", "liqe_score", "face_quality_iqa", "aesthetic_v25")
 
 
 @pytest.mark.parametrize("column", NULLABLE_SORT_COLUMNS)
@@ -47,10 +47,7 @@ def test_desc_sort_unchanged_and_null_last(column, seed_photos_prefix, anonymous
 
 
 @pytest.mark.parametrize("column", (*NULLABLE_SORT_COLUMNS, "aesthetic_v25"))
-def test_order_by_clause_guards_asc_only(column, monkeypatch):
-    # aesthetic_v25 is not (yet) a sort option in VALID_SORT_COLS, so the clause
-    # builder is checked directly with it admitted.
-    monkeypatch.setattr("api.routers.gallery.VALID_SORT_COLS", [column])
+def test_order_by_clause_guards_asc_only(column):
     asc = _resolve_order_by({"sort": column, "dir": "ASC"})
     desc = _resolve_order_by({"sort": column, "dir": "DESC"})
     assert asc == f"({column} IS NULL) ASC, {column} ASC, path ASC"
