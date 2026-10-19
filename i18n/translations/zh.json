@@ -532,7 +532,8 @@
     "mode_color": "配色",
     "mode_person": "同一人物",
     "no_faces": "这张照片中未检测到人脸",
-    "no_histogram": "这张照片没有色彩数据"
+    "no_histogram": "这张照片没有色彩数据",
+    "no_visual_features": "视觉相似度不可用：这张照片没有有效的视觉指纹或嵌入向量。请使用 --force 重新扫描以计算它们。"
   },
   "merge_suggestions": {
     "title": "人物合并建议",

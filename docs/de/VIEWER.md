@@ -289,7 +289,7 @@ Anders als „In Ordner aussortieren“, das die Datenbankzeile bis zu einem ern
 
 Klicken Sie bei einem beliebigen Foto auf die Schaltfläche „Ähnliche", um einen Ähnlichkeitsmodus zu wählen:
 
-- **Visuell** (Standard) — pHash-Hamming-Distanz (70%) + CLIP/SigLIP-Kosinusähnlichkeit (30%). Greift auf CLIP allein zurück, wenn kein pHash verfügbar ist.
+- **Visuell** (Standard) — vergleicht nur die Merkmale, die beide Fotos besitzen: pHash-Ähnlichkeit (70%) + CLIP/SigLIP-Kosinusähnlichkeit (30%), wenn beide Fotos beides haben; teilen sie nur eines davon (kein pHash oder ein fehlendes, unlesbares oder anders dimensioniertes Embedding), zählt dieses voll; ein Foto, das keines teilt, wird nie aufgeführt, auch nicht bei 0%. Alle Treffer über dem Schwellenwert werden seitenweise geliefert statt nur der ersten 500, und die Rangfolge bleibt zwei Minuten (oder bis zur nächsten Datenbankänderung) erhalten, sodass weitere Seiten ohne erneuten Durchlauf der Bibliothek laden. Hat das Foto selbst weder pHash noch Embedding, sagt die Galerie das und empfiehlt, es mit `--force` erneut zu scannen (ein einfaches `python facet.py <dir>` überspringt bereits verarbeitete Dateien). Die API antwortet mit `422` bei einem `limit` außerhalb von 1–500, einem negativen `offset` oder einem `min_similarity` außerhalb von 0–1.
 - **Farbe** — Histogrammschnittmenge (70%) + Sättigungsdistanz (10%) + Helligkeitsdistanz (10%) + Monochrom-Bonus (10%). Vorfilterung nach Monochrom-Flag und Sättigungsbereich.
 - **Person** — Findet Fotos mit derselben Person/denselben Personen. Verwendet `person_id`, wenn verfügbar (schnell), andernfalls Rückgriff auf die Kosinusähnlichkeit der Gesichts-Embeddings.
 

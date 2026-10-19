@@ -532,7 +532,8 @@
     "mode_color": "Paleta de cores",
     "mode_person": "Mesma pessoa",
     "no_faces": "Nenhum rosto detectado nesta foto",
-    "no_histogram": "Nenhum dado de cor disponível para esta foto"
+    "no_histogram": "Nenhum dado de cor disponível para esta foto",
+    "no_visual_features": "A similaridade visual não está disponível: esta foto não tem uma impressão visual nem um embedding válidos. Digitalize-a novamente com --force para calculá-los."
   },
   "merge_suggestions": {
     "title": "Sugestões de mesclagem",

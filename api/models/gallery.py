@@ -1,7 +1,7 @@
 """Pydantic models for gallery endpoints."""
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Any, Literal, Optional
 
 from api.models.common import CoercedInt, PaginationEnvelope
 
@@ -190,6 +190,25 @@ class PhotoPathsResponse(BaseModel):
 
     total: int
     paths: list[str]
+
+
+class SimilarPhotosResponse(BaseModel):
+    """One page of ``GET /api/similar_photos/{path}``.
+
+    ``similar`` holds basic match rows, or full ``Photo`` rows plus
+    ``similarity`` under ``full=1``. ``total`` and ``has_more`` describe the
+    whole thresholded match set in visual mode; color and person modes rank
+    at most the top 500 matches, so they describe that capped ranking. ``message`` is a
+    machine code (translated by the client), present only when the source
+    photo cannot be compared at all.
+    """
+
+    source: str
+    mode: Literal['visual', 'color', 'person']
+    similar: list[dict[str, Any]]
+    total: int
+    has_more: bool
+    message: Optional[Literal['no_visual_features', 'no_histogram', 'no_faces']] = None
 
 
 # --- Gallery query parameters ---

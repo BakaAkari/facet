@@ -532,7 +532,8 @@
     "mode_color": "Farbpalette",
     "mode_person": "Gleiche Person",
     "no_faces": "Keine Gesichter auf diesem Foto erkannt",
-    "no_histogram": "Keine Farbdaten für dieses Foto verfügbar"
+    "no_histogram": "Keine Farbdaten für dieses Foto verfügbar",
+    "no_visual_features": "Visuelle Ähnlichkeit ist nicht verfügbar: Dieses Foto hat keinen gültigen visuellen Fingerabdruck und kein gültiges Embedding. Scanne es mit --force erneut, um sie zu berechnen."
   },
   "merge_suggestions": {
     "title": "Zusammenführungsvorschläge",

@@ -289,7 +289,7 @@ Unlike Cull to folder, which leaves the database row alone until a rescan, Delet
 
 Click the "Similar" button on any photo to choose a similarity mode:
 
-- **Visual** (default) — pHash hamming distance (70%) + CLIP/SigLIP cosine similarity (30%). Falls back to CLIP-only when no pHash is available.
+- **Visual** (default) — compares only the evidence both photos carry: pHash similarity (70%) + CLIP/SigLIP cosine similarity (30%) when both photos have both; when they share only one of the two (no pHash, or a missing, unreadable or different-dimension embedding), that one counts at full weight; a photo sharing neither is never listed, even at 0%. Every match above the threshold is returned, page by page, rather than the first 500, and the ranking is kept for two minutes (or until the database changes) so further pages load without a rescan of the library. If the photo itself has neither a pHash nor an embedding, the gallery says so and suggests rescanning it with `--force` (a plain `python facet.py <dir>` skips files already processed). The API answers `422` for a `limit` outside 1–500, a negative `offset` or a `min_similarity` outside 0–1.
 - **Color** — Histogram intersection (70%) + saturation distance (10%) + luminance distance (10%) + monochrome bonus (10%). Pre-filters by monochrome flag and saturation range.
 - **Person** — Finds photos containing the same person(s). Uses `person_id` when available (fast), otherwise falls back to face embedding cosine similarity.
 

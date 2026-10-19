@@ -53,7 +53,7 @@ describe('GalleryComponent', () => {
       total: signal(0),
       loading: signal(false),
       loadError: signal(false),
-      loadErrorDetail: signal<string | undefined>(undefined),
+      loadErrorKey: signal<string | undefined>(undefined),
       hasMore: signal(false),
       cameras: signal([]),
       lenses: signal([]),
@@ -177,23 +177,23 @@ describe('GalleryComponent', () => {
     component = TestBed.runInInjectionContext(() => new GalleryComponent());
   });
 
-  it('renders an unavailable visual-index explanation instead of a silent empty gallery', () => {
+  it('renders the translated reason a similar search cannot run instead of a silent empty gallery', () => {
     mockStore.loadError.set(true);
-    mockStore.loadErrorDetail.set('Visual similarity is unavailable: indexing is required.');
+    mockStore.loadErrorKey.set(I18N.similar.no_visual_features);
     const fixture = TestBed.createComponent(GalleryComponent);
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('indexing is required');
+    const alerts = fixture.nativeElement.querySelectorAll('[role="alert"]');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toContain(I18N.similar.no_visual_features);
+    expect(alerts[0].textContent).not.toContain(I18N.gallery.load_error.message);
     fixture.destroy();
   });
 
-  it('renders server explanation as text rather than HTML', () => {
+  it('falls back to the generic load-error message when the server gave no reason', () => {
     mockStore.loadError.set(true);
-    mockStore.loadErrorDetail.set('<img src=x onerror=alert(1)>');
     const fixture = TestBed.createComponent(GalleryComponent);
     fixture.detectChanges();
-    const alert = fixture.nativeElement.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain('<img src=x onerror=alert(1)>');
-    expect(alert?.querySelector('img')).toBeNull();
+    expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain(I18N.gallery.load_error.message);
     fixture.destroy();
   });
 
