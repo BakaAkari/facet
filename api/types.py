@@ -51,11 +51,13 @@ def _build_sort_options():
 SORT_OPTIONS, SORT_OPTIONS_GROUPED = _build_sort_options()
 
 # licensing.unavailable_metrics() speaks in weight keys; the viewer sorts and
-# filters by photos columns. The two differ only for LIQE ('liqe' -> 'liqe_score').
+# filters by photos columns. The two differ for LIQE ('liqe' -> 'liqe_score') and
+# DeQA ('deqa' -> 'deqa_score').
 _METRIC_COLUMNS = {
     'liqe': 'liqe_score',
     'aesthetic_iaa': 'aesthetic_iaa',
     'face_quality_iqa': 'face_quality_iqa',
+    'deqa': 'deqa_score',
 }
 
 
@@ -66,19 +68,16 @@ def unavailable_columns():
     import-time sort tables free of policy state). Empty in default mode.
     """
     import licensing
-    hidden = set(licensing.unavailable_metrics())
-    if not licensing.loader_allowed('deqa'):
-        hidden.add('deqa_score')
-    return sorted(_METRIC_COLUMNS.get(m, m) for m in hidden)
+    return sorted(_METRIC_COLUMNS.get(m, m) for m in licensing.unavailable_metrics())
 
 
 # Sorts whose column stays all-NULL on installs that never compute it (the model is
 # off, the library predates it, a CPU-only scanner): config cannot tell, because
 # "auto" resolves from the SCANNER's GPU and the viewer may run elsewhere. The
 # option is listed only once some photo carries a value. Adding a sibling metric
-# (deqa_score, aesthetic_v25) is one entry here. VALID_SORT_COLS is untouched, so
-# an explicit ``sort=<column>`` request keeps working.
-DATA_GATED_SORT_COLS = ('qrealign_score',)
+# is one entry here. VALID_SORT_COLS is untouched, so an explicit ``sort=<column>``
+# request keeps working.
+DATA_GATED_SORT_COLS = ('qrealign_score', 'deqa_score')
 DATA_GATE_TTL_SECONDS = 60
 _data_gate_cache = {'cols': frozenset(), 'expires': 0.0}
 _data_gate_lock = threading.Lock()
