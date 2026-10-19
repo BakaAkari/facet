@@ -126,6 +126,12 @@ python database.py --migrate-user-preferences --user alice
 
 ## Filtering Options
 
+Gallery text search preserves Unicode words and treats filename punctuation as
+word boundaries. For example, `IMG_0042.JPG` searches for the prefixes `IMG`,
+`0042`, and `JPG` together. Cyrillic and CJK terms are searchable; FTS operators
+such as `OR` are treated as literal words. Matching follows SQLite's existing
+tokenizer rules, including its Unicode normalization limitations.
+
 <details><summary>Full filter sidebar — every section expanded (click to view)</summary>
 <p align="center"><img src="screenshots/filter-sidebar-full.jpg" alt="Filter sidebar with every section expanded" width="360"></p>
 </details>
