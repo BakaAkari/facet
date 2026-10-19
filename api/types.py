@@ -75,8 +75,10 @@ def unavailable_columns():
 # off, the library predates it, a CPU-only scanner): config cannot tell, because
 # "auto" resolves from the SCANNER's GPU and the viewer may run elsewhere. The
 # option is listed only once some photo carries a value. Adding a sibling metric
-# is one entry here. VALID_SORT_COLS is untouched, so an explicit ``sort=<column>``
-# request keeps working.
+# is one entry here (``NULLABLE_SORT_COLS`` derives from it) plus its
+# ``(col DESC, path)`` index in ``db/schema.py`` INDEXES and
+# ``ANALYZE_ON_BUILD_INDEXES``, which keeps the DESC sort off a temp B-tree.
+# VALID_SORT_COLS is untouched, so an explicit ``sort=<column>`` request keeps working.
 DATA_GATED_SORT_COLS = ('qrealign_score', 'deqa_score', 'aesthetic_v25')
 DATA_GATE_TTL_SECONDS = 60
 _data_gate_cache = {'cols': frozenset(), 'expires': 0.0}
@@ -102,6 +104,21 @@ def _store_populated_cols(cols):
         _data_gate_cache['expires'] = time.monotonic() + DATA_GATE_TTL_SECONDS
 
 
+def _probe_sql(col):
+    return f'SELECT 1 FROM photos WHERE {col} IS NOT NULL LIMIT 1'
+
+
+def _finish_populated_cols(cols):
+    """Freeze the probed set, cache it and return it."""
+    cols = frozenset(cols)
+    _store_populated_cols(cols)
+    return cols
+
+
+def _log_absent_col(col):
+    logger.debug("Data-gated sort column %s is absent from photos", col)
+
+
 def populated_gated_cols(conn):
     """Data-gated sort columns with at least one non-NULL value (sync connection)."""
     cached = _cached_populated_cols()
@@ -110,13 +127,11 @@ def populated_gated_cols(conn):
     cols = set()
     for col in DATA_GATED_SORT_COLS:
         try:
-            if conn.execute(f'SELECT 1 FROM photos WHERE {col} IS NOT NULL LIMIT 1').fetchone():
+            if conn.execute(_probe_sql(col)).fetchone():
                 cols.add(col)
         except sqlite3.OperationalError:
-            logger.debug("Data-gated sort column %s is absent from photos", col)
-    cols = frozenset(cols)
-    _store_populated_cols(cols)
-    return cols
+            _log_absent_col(col)
+    return _finish_populated_cols(cols)
 
 
 async def populated_gated_cols_async(conn):
@@ -127,17 +142,15 @@ async def populated_gated_cols_async(conn):
     cols = set()
     for col in DATA_GATED_SORT_COLS:
         try:
-            cur = await conn.execute(f'SELECT 1 FROM photos WHERE {col} IS NOT NULL LIMIT 1')
+            cur = await conn.execute(_probe_sql(col))
             row = await cur.fetchone()
             await cur.close()
         except sqlite3.OperationalError:
-            logger.debug("Data-gated sort column %s is absent from photos", col)
+            _log_absent_col(col)
             continue
         if row:
             cols.add(col)
-    cols = frozenset(cols)
-    _store_populated_cols(cols)
-    return cols
+    return _finish_populated_cols(cols)
 
 
 def available_sort_options(populated_cols):
@@ -172,8 +185,7 @@ VALID_SORT_COLS = [opt[0] for opt in SORT_OPTIONS] + ['top_picks_score', 'learne
 # through its own seconds expression (see ``order_by_clause``) and always sinks its
 # missing and invalid values.
 NULLABLE_SORT_COLS = ('learned_score', 'narrative_moment_confidence', 'aesthetic_iaa',
-                      'liqe_score', 'face_quality_iqa', 'aesthetic_v25', 'qrealign_score',
-                      'deqa_score')
+                      'liqe_score', 'face_quality_iqa') + DATA_GATED_SORT_COLS
 
 
 def order_by_clause(sort_col: str, sort_dir: str, tiebreak: str = '') -> str:

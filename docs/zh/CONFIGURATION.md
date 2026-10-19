@@ -1282,10 +1282,10 @@ IEC 61966-2-1。NCLX 传递特征值 16：ISO/IEC 23001-8 / ITU-T H.273。
 
 | 设置 | 默认值 | 可接受的取值 | 列 | 说明 |
 |---------|---------|-----------------|--------|-------------|
-| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B 基于 LLM 的 IQA（原生 `transformers` 加载器，不依赖 pyiqa，Apache-2.0 权重，约 2-3GB 显存/内存）。`"auto"` 会在 `8gb`/`16gb`/`24gb` 配置档下开启它、在 `legacy`/CPU 下关闭它；`true`/`false` 则显式覆盖配置档默认值。　可在查看器中按 **Q-ReAlign（美观度）** 排序；只有至少一张照片具有 Q-ReAlign 评分时才会出现该选项，无论升序还是降序，未评分的照片都排在最后。该列包含美学任务；画质使用 `quality_score`。 |
+| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B 基于 LLM 的 IQA（原生 `transformers` 加载器，不依赖 pyiqa，Apache-2.0 权重，约 2-3GB 显存/内存）。`"auto"` 会在 `8gb`/`16gb`/`24gb` 配置档下开启它、在 `legacy`/CPU 下关闭它；`true`/`false` 则显式覆盖配置档默认值。可在查看器中按 **Q-ReAlign（美观度）** 排序；只有至少一张照片具有 Q-ReAlign 评分时才会出现该选项，无论升序还是降序，未评分的照片都排在最后。该列包含美学任务；画质使用 `quality_score`。 |
 | `qrealign_size` | `"mini"` | `"mini"` · `"lite"` | - | 原生评分器加载的 Q-ReAlign 规格：`mini`（0.8B）或 `lite`（4B）。用于 `qrealign` 列，并在 `licensing.mode: "commercial"` 下作为主要的美学与质量模型。 |
-| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5（SigLIP 头，约 2GB）。需要 `aesthetic-predictor-v2-5` 包。**已弃用：** 采用 AGPL-3.0 许可，且上游自 2024-12-18 起无人维护 — 请优先使用 `qrealign`。　可在查看器中按 **美学 v2.5** 排序（至少一张照片具有美学 v2.5 评分时才会出现该选项），无论升序还是降序，未评分的照片都排在最后。 |
-| `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score 视觉语言模型 IQA（需 16GB 以上 GPU；否则跳过并留作 NULL）。　可在查看器中按 **DeQA** 排序（至少一张照片具有 DeQA 评分时才会出现该选项），无论升序还是降序，未评分的照片都排在最后。 |
+| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5（SigLIP 头，约 2GB）。需要 `aesthetic-predictor-v2-5` 包。**已弃用：** 采用 AGPL-3.0 许可，且上游自 2024-12-18 起无人维护 — 请优先使用 `qrealign`。可在查看器中按 **美学 v2.5** 排序（至少一张照片具有美学 v2.5 评分时才会出现该选项），无论升序还是降序，未评分的照片都排在最后。 |
+| `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score 视觉语言模型 IQA（需 16GB 以上 GPU；否则跳过并留作 NULL）。可在查看器中按 **DeQA** 排序（至少一张照片具有 DeQA 评分时才会出现该选项），无论升序还是降序，未评分的照片都排在最后。 |
 
 **请为你启用的功能安装可选依赖**：`pip install -e .[iqa-extended]`（会装上 `aesthetic-predictor-v2-5`），或者取消 `requirements.txt` 中对应那一行的注释。DeQA-Score 通过 `transformers` 下载。
 

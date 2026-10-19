@@ -13,6 +13,7 @@ pass-by-accident. ``app.dependency_overrides`` is the documented FastAPI
 mechanism that actually bypasses the captured reference.
 """
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -339,6 +340,51 @@ def seed_photos_prefix():
             conn.execute("DELETE FROM photos WHERE path LIKE ?", (prefix + "%",))
         conn.commit()
         conn.close()
+
+
+ALBUM_OWNER = "test"  # the user_id the edition_client fixture authenticates as
+
+
+def photo_names(resp):
+    """Basenames of the ``photos`` in a gallery/album response, in response order."""
+    assert resp.status_code == 200, resp.text
+    return [p["path"].rsplit("/", 1)[1] for p in resp.json()["photos"]]
+
+
+@pytest.fixture()
+def album_factory():
+    """Factory of factories: ``album_factory(prefix, token, name)`` returns ``make``.
+
+    ``make(smart_filter=None, member_names=())`` inserts an album row (owned by
+    ``ALBUM_OWNER``, members stored as ``prefix + name``) into the shared DB;
+    every album made is deleted on teardown.
+    """
+    ids = []
+
+    def factory(prefix, token, name):
+        def make(*, smart_filter=None, member_names=()):
+            with sqlite3.connect(_TEST_DB_FILE.name) as conn:
+                cur = conn.execute(
+                    "INSERT INTO albums (user_id, name, is_smart, smart_filter_json, share_token) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (ALBUM_OWNER, name, 1 if smart_filter is not None else 0,
+                     json.dumps(smart_filter) if smart_filter is not None else None, token),
+                )
+                album_id = cur.lastrowid
+                ids.append(album_id)
+                for pos, member in enumerate(member_names):
+                    conn.execute(
+                        "INSERT INTO album_photos (album_id, photo_path, position) VALUES (?, ?, ?)",
+                        (album_id, prefix + member, pos),
+                    )
+            return album_id
+        return make
+
+    yield factory
+    with sqlite3.connect(_TEST_DB_FILE.name) as conn:
+        for album_id in ids:
+            conn.execute("DELETE FROM album_photos WHERE album_id = ?", (album_id,))
+            conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
 
 
 @pytest.fixture()

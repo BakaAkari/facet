@@ -10,16 +10,18 @@ The root branch's privilege drop and readability probe are covered by the
 stub-PATH ``TestDropPrivileges`` class below (stub ``id``/``chown``/``setpriv``
 on PATH); the real ownership takeover still needs uid 0 and is not covered.
 
-Only the NON-ROOT tail (``mkdir -p /config; seed_config; exec "$@"``) is
-covered here; the module is skipped outright under uid 0 (see ``_IS_ROOT``
-below) precisely so that `id -u` is always non-zero and the script always
-falls through to that tail — which calls the exact same ``seed_config()``
-the root branch calls first. What the root branch adds on top (chowning a
-freshly seeded file unconditionally, chowning a pre-existing one only as a
-last resort behind a readability probe) needs uid 0 to exercise for real, and
-it is NOT exercised by a real-uid-0 test; the intended home for one is a
-uid-0 container smoke step in .github/workflows/docker-publish.yml that
-bind-mounts a config unreadable by the ``facet`` uid.
+The NON-ROOT tail (``mkdir -p /config; seed_config; exec "$@"``) is covered by
+the real-script tests: the module is skipped outright under uid 0 (see
+``_IS_ROOT`` below) so that `id -u` is always non-zero and the script falls
+through to that tail, which calls the exact same ``seed_config()`` the root
+branch calls first. What the root branch adds on top (chowning a freshly
+seeded file unconditionally, chowning a pre-existing one only as a last resort
+behind a readability probe) is covered through the stubs in
+``TestDropPrivileges``, which assert the ``chown``/``setpriv`` calls; the real
+ownership change still needs uid 0 and is not exercised by a real-uid-0 test.
+The intended home for one is a uid-0 container smoke step in
+.github/workflows/docker-publish.yml that bind-mounts a config unreadable by
+the ``facet`` uid.
 
 This is the regression suite for issue #127: under rootless Podman, an
 operator's pre-existing ``/config/scoring_config.json`` was re-chmod'd 0600
@@ -275,7 +277,9 @@ def _stub_bin(tmp_path, id_groups):
     return bin_dir, log
 
 
-def _run_root_branch(tmp_path, id_groups, setpriv_rc=0, preexisting=True):
+def _run_root_branch(
+    tmp_path, id_groups, setpriv_rc=0, preexisting=True, image_config=None
+):
     bin_dir, log = _stub_bin(tmp_path, id_groups)
     seeded = tmp_path / "scoring_config.json"
     if preexisting:
@@ -284,7 +288,7 @@ def _run_root_branch(tmp_path, id_groups, setpriv_rc=0, preexisting=True):
     env.pop("FACET_CONFIG", None)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["SEEDED_CONFIG"] = str(seeded)
-    env["IMAGE_CONFIG"] = str(tmp_path / "no_such_image_config.json")
+    env["IMAGE_CONFIG"] = str(image_config or tmp_path / "no_such_image_config.json")
     env["STUB_SETPRIV_RC"] = str(setpriv_rc)
     result = subprocess.run(
         ["sh", str(ENTRYPOINT), "myserver", "--flag"],
@@ -327,3 +331,15 @@ class TestDropPrivileges:
         result, calls = _run_root_branch(tmp_path, "0 101", setpriv_rc=1)
         assert any(c.startswith("chown facet:facet") for c in calls), calls
         assert "cannot read" in result.stderr
+
+    def test_freshly_seeded_config_is_chowned_without_a_probe(self, tmp_path):
+        image = tmp_path / "image_config.json"
+        image.write_text("{}\n")
+        result, calls = _run_root_branch(
+            tmp_path, "0 101", preexisting=False, image_config=image
+        )
+        assert result.returncode == 0, result.stderr
+        seeded = str(tmp_path / "scoring_config.json")
+        assert f"chown facet:facet {seeded}" in calls, calls
+        assert len([c for c in calls if c.startswith("setpriv")]) == 1, calls
+        assert "cannot read" not in result.stderr

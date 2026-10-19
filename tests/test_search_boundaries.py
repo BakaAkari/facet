@@ -93,6 +93,7 @@ def test_real_sqlite_punctuation_unicode_literal_operators_and_prefix(term, expe
         ("한-夜.JPG", {"한-夜.JPG"}),
         ("filename:unrelated.JPG", set()),
         ("OR", {"OR.JPG"}),
+        ('* : () "', set()),
     ],
 )
 def test_full_api_uses_real_fts_for_filename(tmp_path, term, expected):

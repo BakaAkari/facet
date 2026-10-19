@@ -5,7 +5,6 @@ through the real endpoints against rows in the SHARED session database (seeded w
 ``seed_photos_prefix``), driven by the auth-overridden client fixtures.
 """
 
-import json
 import sqlite3
 
 import pytest
@@ -13,10 +12,9 @@ import pytest
 from api.exposure import exposure_seconds_sql
 from api.routers.albums import _compute_smart_album_cover
 from api.routers.gallery import _resolve_order_by
-from tests.conftest import _TEST_DB_FILE
+from tests.conftest import _TEST_DB_FILE, photo_names as _names
 
 PREFIX = "/shutter-sort/"
-OWNER = "test"  # the user_id the edition_client fixture authenticates as
 TOKEN = "shutter-sort-share-token"
 EXPOSURES = [
     ("long", "120"), ("medium", "30"), ("short", "0.25"), ("fraction", "1/500"),
@@ -49,7 +47,10 @@ def _seconds(value):
 @pytest.mark.parametrize("value,expected", [
     ("120", 120), ("30", 30), ("0.25", 0.25), ("1/4", 0.25), ("1/250", 0.004),
     ("0.004", 0.004), (" 1 / 250 ", 0.004), ("1e-3", 0.001), (120, 120),
-    (0.004, 0.004), ("1/500", 0.002),
+    (0.004, 0.004), ("1/500", 0.002), ("2.5", 2.5), ("1E-05", 1e-5), ("4.5e-1", 0.45),
+    (" 1/250 ", 0.004), ("1 / 250", 0.004), ("0.0125", 0.0125), ("1e+2", 100),
+    # Leading or trailing bare '.' are accepted: SQLite parses both and they are harmless.
+    (".5", 0.5), ("5.", 5), ("1/.5", 2),
 ])
 def test_expression_valid_values(value, expected):
     assert _seconds(value) == pytest.approx(expected)
@@ -58,6 +59,11 @@ def test_expression_valid_values(value, expected):
 @pytest.mark.parametrize("value", [
     None, "", "garbage", "None", "120foo", "0", "-1", "1/0", "0/1", "1/-2", "-1/-2",
     "1/2/3", "inf", "nan", "1e999", "1; DROP TABLE photos",
+    # Whitelist-passing malformed text that CAST(... AS REAL) would read by numeric prefix.
+    "1-2", "1 2", "1.2.3", "1e", "1/4-3", "1+1", "+1", "1e+", "1e1.5", ".e5", "1/", "/4",
+    "1/2 3", "1e5e5", "1/1.2.3", "1/1e", "-", ".", "e5",
+    # Overflow on the plain-decimal and plain-rational fast paths.
+    "9" * 400, "9" * 400 + "/1", "1/" + "9" * 400,
 ])
 def test_expression_invalid_values_are_null(value):
     assert _seconds(value) is None
@@ -67,11 +73,6 @@ def test_expression_uses_the_given_column():
     with sqlite3.connect(":memory:") as conn:
         assert conn.execute(
             f"SELECT {exposure_seconds_sql('ss')} FROM (SELECT '1/4' AS ss)").fetchone()[0] == 0.25
-
-
-def _names(resp):
-    assert resp.status_code == 200, resp.text
-    return [p["path"].rsplit("/", 1)[1] for p in resp.json()["photos"]]
 
 
 @pytest.mark.parametrize("direction,expected", ORDERS)
@@ -118,32 +119,8 @@ def test_sort_injection_falls_back_safely():
 
 
 @pytest.fixture()
-def make_album():
-    """Insert an album row into the shared DB; every one is deleted on teardown."""
-    ids = []
-
-    def make(*, smart_filter=None, member_names=()):
-        with sqlite3.connect(_TEST_DB_FILE.name) as conn:
-            cur = conn.execute(
-                "INSERT INTO albums (user_id, name, is_smart, smart_filter_json, share_token) "
-                "VALUES (?, 'shutter sort', ?, ?, ?)",
-                (OWNER, 1 if smart_filter is not None else 0,
-                 json.dumps(smart_filter) if smart_filter is not None else None, TOKEN),
-            )
-            album_id = cur.lastrowid
-            ids.append(album_id)
-            for pos, name in enumerate(member_names):
-                conn.execute(
-                    "INSERT INTO album_photos (album_id, photo_path, position) VALUES (?, ?, ?)",
-                    (album_id, PREFIX + name, pos),
-                )
-        return album_id
-
-    yield make
-    with sqlite3.connect(_TEST_DB_FILE.name) as conn:
-        for album_id in ids:
-            conn.execute("DELETE FROM album_photos WHERE album_id = ?", (album_id,))
-            conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
+def make_album(album_factory):
+    return album_factory(PREFIX, TOKEN, "shutter sort")
 
 
 @pytest.mark.parametrize("direction,expected", ORDERS)
