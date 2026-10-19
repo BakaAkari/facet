@@ -4004,40 +4004,19 @@ def main():
         else:
             output_file = args.export_json
 
-        with get_connection(args.db) as conn:
-            cursor = conn.execute("""
-                SELECT path, filename, date_taken, category, aggregate, aesthetic,
-                       comp_score, face_quality, tech_sharpness, exposure_score,
-                       color_score, tags, camera_model, lens_model
-                FROM photos
-                ORDER BY aggregate DESC
-            """)
-
-            photos = []
-            for row in cursor:
-                photos.append({
-                    'path': row['path'],
-                    'filename': row['filename'],
-                    'date_taken': row['date_taken'],
-                    'category': row['category'],
-                    'scores': {
-                        'aggregate': row['aggregate'],
-                        'aesthetic': row['aesthetic'],
-                        'comp_score': row['comp_score'],
-                        'face_quality': row['face_quality'],
-                        'tech_sharpness': row['tech_sharpness'],
-                        'exposure_score': row['exposure_score'],
-                        'color_score': row['color_score'],
-                    },
-                    'tags': row['tags'],
-                    'camera_model': row['camera_model'],
-                    'lens_model': row['lens_model'],
-                })
-
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump({'photos': photos, 'count': len(photos)}, f, indent=2)
-
-        logger.info("Exported %d photos to %s", len(photos), output_file)
+        # Refuse output aliases of the source library before opening for write.
+        protected = {
+            base + suffix
+            for base in (str(args.db), os.path.realpath(args.db))
+            for suffix in ('', '-wal', '-shm', '-journal')
+        }
+        if any(os.path.realpath(output_file) == os.path.realpath(path)
+               or (os.path.exists(output_file) and os.path.exists(path)
+                   and os.path.samefile(output_file, path)) for path in protected):
+            raise ValueError('JSON output must not overwrite the source database')
+        with get_connection(args.db) as conn, open(output_file, 'w', encoding='utf-8') as stream:
+            count = write_json_export(conn, stream)
+        logger.info("Exported %d photos to %s", count, output_file)
         exit()
 
     # Export manifest mode (lightweight - no GPU needed): a compact JSON feed
@@ -4165,6 +4144,50 @@ def main():
         if lock is not None:
             lock.release()
 
+
+
+_JSON_LEGACY_SCORE_COLUMNS = (
+    'aggregate', 'aesthetic', 'comp_score', 'face_quality', 'tech_sharpness',
+    'exposure_score', 'color_score',
+)
+
+
+def write_json_export(conn, stream):
+    """Write stored scores row by row, preserving the legacy JSON envelope.
+
+    Optional metrics absent from older schemas are omitted, whereas stored NULL,
+    zero, and text values are emitted verbatim. No BLOBs or model calls are used.
+    """
+    from metric_columns import JSON_SCORE_COLUMNS
+
+    available = {row[1] for row in conn.execute('PRAGMA table_info(photos)')}
+    score_columns = tuple(dict.fromkeys(
+        _JSON_LEGACY_SCORE_COLUMNS
+        + tuple(column for column in JSON_SCORE_COLUMNS if column in available)
+    ))
+    metadata = ('path', 'filename', 'date_taken', 'category', 'tags', 'camera_model', 'lens_model')
+    columns = ', '.join(metadata + score_columns)
+    cursor = conn.execute(f'SELECT {columns} FROM photos ORDER BY aggregate DESC')
+    encoder = json.JSONEncoder(indent=2)
+    stream.write('{\n  "photos": [')
+    count = 0
+    for row in cursor:
+        photo = {
+            'path': row['path'], 'filename': row['filename'],
+            'date_taken': row['date_taken'], 'category': row['category'],
+            'scores': {column: row[column] for column in score_columns},
+            'tags': row['tags'], 'camera_model': row['camera_model'],
+            'lens_model': row['lens_model'],
+        }
+        stream.write(',\n' if count else '\n')
+        stream.write('    ')
+        for chunk in encoder.iterencode(photo):
+            stream.write(chunk.replace('\n', '\n    '))
+        count += 1
+    if count:
+        stream.write('\n  ')
+    stream.write('],\n  "count": ' + str(count) + '\n}')
+    return count
 
 if __name__ == '__main__':
     main()
