@@ -6,7 +6,7 @@ SQL_FUNCTION = 'photo_exposure_seconds'
 
 def exposure_seconds(value: object) -> float | None:
     """Return positive finite seconds for decimal or rational EXIF values."""
-    if type(value) not in (str, int, float):
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return None
     try:
         if isinstance(value, str) and '/' in value:
