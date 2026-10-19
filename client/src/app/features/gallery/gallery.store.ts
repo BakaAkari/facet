@@ -264,6 +264,7 @@ export class GalleryStore {
   /** Set when the current photo request failed; the grid stays empty rather than
    *  silently reinstating the previous view's photos. Cleared on every new load. */
   readonly loadError = signal(false);
+  readonly loadErrorDetail = signal<string | undefined>(undefined);
   private _loadSeq = 0;
   readonly hasMore = signal(false);
   readonly config = signal<ViewerConfig | null>(null);
@@ -701,6 +702,7 @@ export class GalleryStore {
     const seq = ++this._loadSeq;
     this.photos.set([]);
     this.loadError.set(false);
+    this.loadErrorDetail.set(undefined);
     this.loading.set(true);
     try {
       const f = this.filters();
@@ -711,6 +713,10 @@ export class GalleryStore {
         this.photos.set(normalisePhotoFlagsAll(res.similar ?? []));
         this.total.set(res.total);
         this.hasMore.set(res.has_more);
+        if ((f.similarity_mode || 'visual') === 'visual' && res.message && !(res.similar?.length)) {
+          this.loadErrorDetail.set(res.message);
+          this.loadError.set(true);
+        }
         return;
       }
 
@@ -1501,10 +1507,10 @@ export class GalleryStore {
   }
 
   /** Fetch a page of similar photos from the API */
-  private fetchSimilarPage(f: GalleryFilters, offset: number): Promise<{ similar: Photo[]; total: number; has_more: boolean }> {
+  private fetchSimilarPage(f: GalleryFilters, offset: number): Promise<{ similar: Photo[]; total: number; has_more: boolean; message?: string }> {
     const minSim = (parseInt(f.min_similarity || '70', 10) / 100).toString();
     return firstValueFrom(
-      this.api.get<{ similar: Photo[]; total: number; has_more: boolean }>(
+      this.api.get<{ similar: Photo[]; total: number; has_more: boolean; message?: string }>(
         `/similar_photos/${encodeURIComponent(f.similar_to)}`,
         { limit: f.per_page, offset, min_similarity: minSim, mode: f.similarity_mode || 'visual', full: 1 },
       ),

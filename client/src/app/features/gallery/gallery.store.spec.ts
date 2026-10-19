@@ -384,6 +384,30 @@ describe('GalleryStore', () => {
       expect(store.loading()).toBe(false);
     });
 
+    it('keeps an unavailable visual-index explanation visible and clears it on retry', async () => {
+      store.filters.set({ ...DEFAULT_FILTERS, similar_to: '/a.jpg', min_similarity: '0' });
+      apiGet.mockReturnValue(of({ similar: [], total: 0, has_more: false, message: 'Visual similarity is unavailable: indexing is required.' }));
+      await store.loadPhotos();
+      expect(store.loadError()).toBe(true);
+      expect(store.loadErrorDetail()).toContain('indexing is required');
+      expect(apiGet).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ min_similarity: '0' }));
+      apiGet.mockReturnValue(of({ similar: [makePhoto()], total: 1, has_more: false }));
+      await store.loadPhotos();
+      expect(store.loadError()).toBe(false);
+      expect(store.loadErrorDetail()).toBeUndefined();
+      expect(store.photos()).toHaveLength(1);
+    });
+
+    for (const mode of ['color', 'person'] as const) {
+      it(`does not display raw unavailable codes from the existing ${mode} API`, async () => {
+        store.filters.set({ ...DEFAULT_FILTERS, similar_to: '/a.jpg', similarity_mode: mode });
+        apiGet.mockReturnValue(of({ similar: [], total: 0, has_more: false, message: 'no_histogram' }));
+        await store.loadPhotos();
+        expect(store.loadError()).toBe(false);
+        expect(store.loadErrorDetail()).toBeUndefined();
+      });
+    }
+
     it('should surface the error when the semantic-search branch fails', async () => {
       store.filters.set({ ...DEFAULT_FILTERS, semanticQuery: 'sunset' });
       apiGet.mockReturnValue(throwError(() => new Error('Network error')));

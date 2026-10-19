@@ -1332,100 +1332,9 @@ def _vec_knn_similar(conn, source_embedding, photo_path, min_similarity, vis_sql
 
 
 def _find_similar_visual(conn, source, photo_path, min_similarity, vis_sql, vis_params):
-    """Find visually similar photos using pHash hamming distance (primary) + CLIP cosine (secondary)."""
-    import numpy as np
-    from utils.duplicate import _POPCOUNT_TABLE
-    from utils.embedding import bytes_to_normalized_embedding
-    PHASH_W = 0.7
-    CLIP_W = 0.3
-
-    source_phash = np.uint64(int(source['phash'], 16)) if source.get('phash') else None
-
-    source_embedding = bytes_to_normalized_embedding(source.get('clip_embedding'))
-
-    if source_phash is None and source_embedding is None:
-        return [], None
-
-    rows = conn.execute(f"""
-        SELECT path, filename, phash, date_taken, aggregate, aesthetic
-        FROM photos
-        WHERE path != ? AND phash IS NOT NULL AND {vis_sql}
-    """, [photo_path] + vis_params).fetchall()
-    rows = [dict(r) for r in rows]
-
-    if not rows:
-        # CLIP-only fallback (no pHash candidates). Prefer the indexed vec0 KNN
-        # path; _vec_knn_similar returns None when sqlite-vec is unavailable, in
-        # which case we keep the original brute-force NumPy scan below unchanged.
-        vec_results = _vec_knn_similar(conn, source_embedding, photo_path, min_similarity, vis_sql, vis_params)
-        if vec_results is not None:
-            return vec_results, None
-        clip_rows = conn.execute(f"""
-            SELECT path, filename, clip_embedding, date_taken, aggregate, aesthetic
-            FROM photos
-            WHERE path != ? AND clip_embedding IS NOT NULL AND {vis_sql}
-            LIMIT 5000
-        """, [photo_path] + vis_params).fetchall()
-        rows = [dict(r) for r in clip_rows]
-        if not rows or source_embedding is None:
-            return [], None
-        results = []
-        for r in rows:
-            e = bytes_to_normalized_embedding(r['clip_embedding'])
-            if e is None:
-                continue
-            sim = max(0.0, float(np.dot(source_embedding, e)))
-            if sim >= min_similarity:
-                results.append(_similar_result(r, sim))
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        return results[:500], None
-
-    hashes = np.array([int(r['phash'], 16) for r in rows], dtype=np.uint64)
-    xor = np.bitwise_xor(hashes, source_phash)
-    hamming = np.zeros(len(rows), dtype=np.int32)
-    for byte_idx in range(8):
-        shift = np.uint64(byte_idx * 8)
-        byte_vals = ((xor >> shift) & np.uint64(0xFF)).astype(np.int32)
-        hamming += _POPCOUNT_TABLE[byte_vals]
-    phash_sims = 1.0 - hamming / 64.0
-
-    if source_embedding is not None:
-        phash_floor = max(0.0, (min_similarity - CLIP_W) / PHASH_W)
-    else:
-        phash_floor = min_similarity
-    candidate_indices = np.where(phash_sims >= phash_floor)[0]
-
-    clip_by_path: dict = {}
-    if source_embedding is not None and len(candidate_indices) > 0:
-        cand_paths = [rows[i]['path'] for i in candidate_indices]
-        for start in range(0, len(cand_paths), 500):
-            chunk = cand_paths[start:start + 500]
-            placeholders = ','.join('?' * len(chunk))
-            clip_rows = conn.execute(
-                f"SELECT path, clip_embedding FROM photos "
-                f"WHERE path IN ({placeholders}) AND clip_embedding IS NOT NULL",
-                chunk,
-            ).fetchall()
-            for cr in clip_rows:
-                e = bytes_to_normalized_embedding(cr['clip_embedding'])
-                if e is not None:
-                    clip_by_path[cr['path']] = e
-
-    results = []
-    for i in candidate_indices:
-        row = rows[i]
-        phash_sim = float(phash_sims[i])
-        cand_clip = clip_by_path.get(row['path'])
-        if source_embedding is not None and cand_clip is not None:
-            clip_sim = max(0.0, float(np.dot(source_embedding, cand_clip)))
-            sim = phash_sim * PHASH_W + clip_sim * CLIP_W
-        else:
-            sim = phash_sim * PHASH_W
-        if sim >= min_similarity:
-            results.append(_similar_result(row, sim))
-
-    results.sort(key=lambda x: x['similarity'], reverse=True)
-    return results[:500], None
+    """Compare valid shared visual evidence; the endpoint paginates the full set."""
+    from api.visual_similarity import find_visual
+    return find_visual(conn, source, photo_path, min_similarity, vis_sql, vis_params, _similar_result)
 
 
 def _find_similar_color(conn, source, photo_path, min_similarity, vis_sql, vis_params):
@@ -1587,9 +1496,9 @@ _MODE_DEFAULT_MIN_SIM = {
 async def api_similar_photos(
     photo_path: str,
     mode: str = Query("visual"),
-    limit: int = Query(20),
-    offset: int = Query(0),
-    min_similarity: Optional[float] = Query(None),
+    limit: int = Query(20, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0, allow_inf_nan=False),
     full: int = Query(0),
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):

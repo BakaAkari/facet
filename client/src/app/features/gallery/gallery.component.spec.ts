@@ -53,6 +53,7 @@ describe('GalleryComponent', () => {
       total: signal(0),
       loading: signal(false),
       loadError: signal(false),
+      loadErrorDetail: signal<string | undefined>(undefined),
       hasMore: signal(false),
       cameras: signal([]),
       lenses: signal([]),
@@ -174,6 +175,26 @@ describe('GalleryComponent', () => {
       ],
     });
     component = TestBed.runInInjectionContext(() => new GalleryComponent());
+  });
+
+  it('renders an unavailable visual-index explanation instead of a silent empty gallery', () => {
+    mockStore.loadError.set(true);
+    mockStore.loadErrorDetail.set('Visual similarity is unavailable: indexing is required.');
+    const fixture = TestBed.createComponent(GalleryComponent);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain('indexing is required');
+    fixture.destroy();
+  });
+
+  it('renders server explanation as text rather than HTML', () => {
+    mockStore.loadError.set(true);
+    mockStore.loadErrorDetail.set('<img src=x onerror=alert(1)>');
+    const fixture = TestBed.createComponent(GalleryComponent);
+    fixture.detectChanges();
+    const alert = fixture.nativeElement.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('<img src=x onerror=alert(1)>');
+    expect(alert?.querySelector('img')).toBeNull();
+    fixture.destroy();
   });
 
   // Shared by every cursor describe below. The component is built without a

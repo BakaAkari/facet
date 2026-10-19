@@ -505,7 +505,11 @@ const RENDER_MIGRATION_DISMISSED_KEY = 'facet_render_migration_dismissed';
         @if (!store.loading() && store.loadError()) {
           <div class="flex flex-col items-center justify-center gap-4 p-16" role="alert">
             <mat-icon class="!text-6xl !w-16 !h-16 text-[var(--mat-sys-error)]">cloud_off</mat-icon>
-            <p class="text-lg text-center">{{ I18N.gallery.load_error.message | translate }}</p>
+            @if (store.loadErrorDetail(); as detail) {
+              <p role="alert" class="text-lg text-center max-w-xl break-words">{{ I18N.errors.server_detail | translate }} {{ detail }}</p>
+            } @else {
+              <p class="text-lg text-center">{{ I18N.gallery.load_error.message | translate }}</p>
+            }
             <button mat-flat-button color="primary" (click)="store.loadPhotos()">
               <mat-icon>refresh</mat-icon>
               {{ I18N.gallery.load_error.retry | translate }}
