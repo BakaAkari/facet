@@ -17,14 +17,14 @@ describe('Shared photo detail extended metric availability', () => {
     ],
   }));
 
-  it('preserves zero, displays present NULL, and hides fields omitted by an older payload', () => {
+  it('preserves zero, hides present NULL (no library config in the shared view), and hides fields omitted by an older payload', () => {
     const view = TestBed.createComponent(SharedPhotoDetailComponent);
     vi.spyOn(view.componentInstance, 'ngOnInit').mockResolvedValue(undefined);
     view.componentInstance.photo.set(makePhoto({ aesthetic_v25: 0, qrealign_score: null, deqa_score: null }));
     view.detectChanges();
     expect(view.nativeElement.querySelector('[data-testid="aesthetic_v25-score"]').textContent.trim()).toBe('0.0');
     for (const key of ['qrealign_score', 'deqa_score']) {
-      expect(view.nativeElement.querySelector(`[data-testid="${key}-score"]`).textContent).toContain('tooltip.not_computed');
+      expect(view.nativeElement.querySelector(`[data-testid="${key}-row"]`)).toBeNull();
     }
     view.componentInstance.photo.set(makePhoto());
     view.detectChanges();

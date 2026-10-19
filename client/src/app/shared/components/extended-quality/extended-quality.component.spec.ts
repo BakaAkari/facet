@@ -15,9 +15,12 @@ describe('ExtendedQualityComponent score availability', () => {
     }],
   }));
 
-  function render(photo: object, tooltip = false) {
+  const ALL = ['aesthetic_v25', 'qrealign_score', 'deqa_score'];
+
+  function render(photo: object, tooltip = false, populated: string[] = ALL) {
     const fixture = TestBed.createComponent(ExtendedQualityComponent);
     fixture.componentRef.setInput('photo', photo);
+    fixture.componentRef.setInput('populated', populated);
     fixture.componentRef.setInput('tooltip', tooltip);
     fixture.detectChanges();
     return fixture;
@@ -42,6 +45,16 @@ describe('ExtendedQualityComponent score availability', () => {
       });
     }
 
+    it(`hides present NULL ${key} when that metric is not populated in the library`, () => {
+      const fixture = render({ [key]: null }, false, ALL.filter(k => k !== key));
+      expect(fixture.nativeElement.querySelector(`[data-testid="${key}-row"]`)).toBeNull();
+    });
+
+    it(`still shows a non-null ${key} when that metric is not populated`, () => {
+      const fixture = render({ [key]: 3 }, false, []);
+      expect(fixture.nativeElement.querySelector(`[data-testid="${key}-score"]`).textContent.trim()).toBe('3.0');
+    });
+
     it(`keeps omitted/undefined ${key} hidden for older payloads`, () => {
       for (const photo of [{}, { [key]: undefined }, Object.create({ [key]: 8 })]) {
         const fixture = render(photo);
@@ -51,13 +64,28 @@ describe('ExtendedQualityComponent score availability', () => {
     });
   }
 
-  it('does not turn invalid stored values into model scores', () => {
-    for (const value of [NaN, Infinity, -1, 11, '0']) {
+  it('renders any finite number as its value, with no 0..10 clamp', () => {
+    for (const [value, text] of [[-1, '-1.0'], [11, '11.0']] as const) {
       const fixture = render({ aesthetic_v25: value });
-      expect(fixture.nativeElement.textContent).toContain('Not computed');
-      expect(fixture.nativeElement.textContent).not.toContain('0.0');
+      expect(fixture.nativeElement.querySelector('[data-testid="aesthetic_v25-score"]').textContent.trim()).toBe(text);
       fixture.destroy();
     }
+  });
+
+  it('hides non-finite and non-number values instead of labelling them not computed', () => {
+    for (const value of [NaN, Infinity, -Infinity, '0']) {
+      const fixture = render({ aesthetic_v25: value });
+      expect(fixture.nativeElement.querySelector('[data-testid="aesthetic_v25-row"]')).toBeNull();
+      expect(fixture.nativeElement.textContent).not.toContain('Not computed');
+      fixture.destroy();
+    }
+  });
+
+  it('colours the label by tooltip mode', () => {
+    const label = (tooltip: boolean) =>
+      render({ deqa_score: 5 }, tooltip).nativeElement.querySelector('[data-testid="deqa_score-row"] span') as HTMLElement;
+    expect(label(true).style.color).toBe('var(--facet-tooltip-text-secondary)');
+    expect(label(false).style.color).toBe('var(--mat-sys-on-surface-variant)');
   });
 
   it('updates available rows and their state when a different photo is selected', () => {

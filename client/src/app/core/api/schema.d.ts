@@ -7551,6 +7551,11 @@ export interface components {
             pagination: {
                 [key: string]: unknown;
             };
+            /**
+             * Populated Scores
+             * @default []
+             */
+            populated_scores?: string[];
             /** Quality Levels */
             quality_levels: [
                 string,

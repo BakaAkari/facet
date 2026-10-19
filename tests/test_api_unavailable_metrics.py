@@ -28,3 +28,13 @@ def test_commercial_mode_lists_column_names_and_drops_sorts(edition_client):
     assert not hidden & flat
     assert not hidden & grouped
     assert 'aggregate' in flat
+
+
+def test_config_lists_populated_scores_matching_the_sort_gate(edition_client):
+    from api.types import DATA_GATED_SORT_COLS
+    body = edition_client.get('/api/config').json()
+    populated = body['populated_scores']
+    assert populated == sorted(populated)
+    assert set(populated) <= set(DATA_GATED_SORT_COLS)
+    flat, _ = _sort_columns(body)
+    assert {c for c in DATA_GATED_SORT_COLS if c in flat} == set(populated)

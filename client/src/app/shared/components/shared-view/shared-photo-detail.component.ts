@@ -1,4 +1,3 @@
-import { ExtendedQualityComponent } from '../extended-quality/extended-quality.component';
 import { Component, inject, signal, effect, OnInit, HostListener } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { MatIconModule } from '@angular/material/icon';
@@ -6,6 +5,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatMenuModule } from '@angular/material/menu';
 import { firstValueFrom } from 'rxjs';
+import { ExtendedQualityComponent } from '../extended-quality/extended-quality.component';
 import { Photo, normalisePhotoFlags } from '../../models/photo.model';
 import { FixedPipe } from '../../pipes/fixed.pipe';
 import { ShutterSpeedPipe } from '../../pipes/shutter-speed.pipe';
