@@ -177,6 +177,12 @@ Filter by SAMP-Net detected patterns (the model emits exactly these 8, from
 
 ## Sorting
 
+Shutter speeds sort by exposure duration in seconds, including decimal and
+rational EXIF values: `1/250` and `0.004` are equal. Missing, malformed, zero,
+negative, and nonfinite values appear last in either direction. Equal values
+retain the path tie-break. This also applies to album ordering and smart-album
+covers; stored EXIF text is unchanged.
+
 Sortable columns grouped by category (from `viewer.sort_options`):
 
 | Group | Columns |

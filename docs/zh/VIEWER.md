@@ -126,6 +126,11 @@ python database.py --migrate-user-preferences --user alice
 
 ## 筛选选项
 
+照片库的文本搜索会保留 Unicode 单词，并将文件名中的标点视为单词边界。例如，
+`IMG_0042.JPG` 会同时搜索前缀 `IMG`、`0042` 和 `JPG`。西里尔文和中日韩文字均可
+搜索；`OR` 等 FTS 运算符会被视为普通字面词。匹配遵循 SQLite 现有分词器的规则，
+包括其 Unicode 规范化方面的限制。
+
 <details><summary>完整的筛选侧边栏——所有分区均已展开（点击查看）</summary>
 <p align="center"><img src="../screenshots/filter-sidebar-full.jpg" alt="所有分区均已展开的筛选侧边栏" width="360"></p>
 </details>
@@ -170,6 +175,11 @@ python database.py --migrate-user-preferences --user alice
 - surround、quarter、cross、rule_of_thirds
 
 ## 排序
+
+快门速度按以秒为单位的曝光时长排序，包括十进制和分数形式的 EXIF 值：`1/250` 与
+`0.004` 相等。缺失、格式错误、为零、为负以及非有限的值在两个方向上都排在最后。
+相等的值保留按路径的次级排序。这同样适用于相册排序和智能相册封面；存储的 EXIF
+文本不会被修改。
 
 可排序的列按分类分组（来自 `viewer.sort_options`）：
 

@@ -27,6 +27,7 @@ from api.db_helpers import (
     to_exif_date, to_iso_date,
 )
 from api.config_writes import update_category_weights
+from api.exposure import exposure_seconds_sql
 from api.models.stats import (
     StatsCategoryCorrelationsResponse, StatsCategoryOverlapResponse,
     StatsCategoryRecomputeResponse, StatsCategoryStat,
@@ -587,12 +588,7 @@ async def api_stats_settings(
                 COUNT(*) as cnt,
                 MIN(ss) as sort_key
                 FROM (
-                    SELECT CASE
-                        WHEN INSTR(shutter_speed, '/') > 0
-                        THEN CAST(SUBSTR(shutter_speed, 1, INSTR(shutter_speed, '/') - 1) AS REAL)
-                             / CAST(SUBSTR(shutter_speed, INSTR(shutter_speed, '/') + 1) AS REAL)
-                        ELSE CAST(shutter_speed AS REAL)
-                    END as ss
+                    SELECT {exposure_seconds_sql()} as ss
                     FROM photos
                     WHERE shutter_speed IS NOT NULL AND shutter_speed != ''{vis}
                 ) WHERE ss IS NOT NULL AND ss > 0
