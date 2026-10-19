@@ -240,10 +240,11 @@ class TestDatabaseCli:
         # Check that photos were deleted and stats_cache was cleared
         conn = sqlite3.connect(seeded_db)
         count = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
-        stats_count = conn.execute("SELECT COUNT(*) FROM stats_cache").fetchone()[0]
+        stats_rows = conn.execute("SELECT key, value FROM stats_cache").fetchall()
         conn.close()
         assert count == 0
-        assert stats_count == 0
+        # Only the metric-ranges eviction tombstone survives the wipe.
+        assert stats_rows == [('metric_ranges', None)]
 
     def test_cleanup_missing_photos_all_missing_refused_without_force(self, seeded_db):
         # Every photo missing looks like an unmounted volume → refuse to wipe.
