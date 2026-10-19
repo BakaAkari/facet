@@ -49,6 +49,11 @@
     "viewer": {
       "type": "object",
       "properties": {
+        "trusted_local_editing": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow direct loopback same-origin editing on a healthy single-user viewer without a browse password; forwarded requests are excluded."
+        },
         "cull": {
           "type": "object",
           "properties": {

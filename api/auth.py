@@ -9,6 +9,9 @@ import collections
 import hmac
 import hashlib
 import logging
+import ipaddress
+import re
+from urllib.parse import urlsplit
 import os
 import threading
 import time
@@ -151,16 +154,57 @@ def _is_open_install(password_key):
     return not VIEWER_CONFIG.get(password_key, '')
 
 
+
+def _trusted_local_editing(request: Request) -> bool:
+    """Request-only opt-in; forwarded identities and browser cross-origin fail closed."""
+    if (VIEWER_CONFIG.get('trusted_local_editing') is not True
+            or config_load_failed() or is_multi_user_enabled()
+            or VIEWER_CONFIG.get(VIEWER_PASSWORD_KEY, '')):
+        return False
+    if any(key.lower() in ('forwarded', 'via', 'x-real-ip') or key.lower().startswith('x-forwarded-')
+           for key in request.headers):
+        return False
+    try:
+        if request.client is None or not ipaddress.ip_address(request.client.host).is_loopback:
+            return False
+        hosts = request.headers.getlist('host')
+        if len(hosts) != 1 or not re.fullmatch(
+                r'(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?', hosts[0], re.I):
+            return False
+        target = urlsplit(request.url.scheme + '://' + hosts[0])
+        target_origin = (target.scheme, target.hostname, target.port or (443 if target.scheme == 'https' else 80))
+        if target.scheme not in ('http', 'https'):
+            return False
+        sites = request.headers.getlist('sec-fetch-site')
+        if len(sites) > 1 or (sites and sites[0] not in ('same-origin', 'none')):
+            return False
+        for name in ('origin', 'referer'):
+            values = request.headers.getlist(name)
+            if len(values) > 1:
+                return False
+            if values:
+                origin = urlsplit(values[0])
+                if (origin.username is not None or origin.password is not None
+                        or (origin.scheme, origin.hostname, origin.port or (443 if origin.scheme == 'https' else 80)) != target_origin):
+                    return False
+                if name == 'origin' and (origin.path not in ('', '/') or origin.query or origin.fragment):
+                    return False
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 class CurrentUser:
     """Represents the current authenticated user."""
-    __slots__ = ('user_id', 'role', 'display_name', 'edition_authenticated')
+    __slots__ = ('user_id', 'role', 'display_name', 'edition_authenticated', 'trusted_local_editing')
 
     def __init__(self, user_id=None, role='user', display_name='',
-                 edition_authenticated=False):
+                 edition_authenticated=False, trusted_local_editing=False):
         self.user_id = user_id
         self.role = role
         self.display_name = display_name
         self.edition_authenticated = edition_authenticated
+        self.trusted_local_editing = trusted_local_editing
 
     @property
     def is_authenticated(self):
@@ -168,6 +212,8 @@ class CurrentUser:
 
     @property
     def is_edition(self):
+        if self.trusted_local_editing:
+            return True
         if is_multi_user_enabled():
             return self.role in ('admin', 'superadmin')
         # An edition claim counts only while an edition password backs it: a
@@ -205,7 +251,7 @@ async def get_optional_user(
         # it arrived in the cookie or as a Bearer, must not lock an open
         # install out: the same request carrying no token at all is let in.
         if _is_open_install(VIEWER_PASSWORD_KEY):
-            return CurrentUser()
+            return CurrentUser(trusted_local_editing=_trusted_local_editing(request))
         return None
 
     # Share-client (proofing) tokens grant access ONLY through
@@ -220,6 +266,7 @@ async def get_optional_user(
         role=payload.get('role', 'user'),
         display_name=payload.get('display_name', ''),
         edition_authenticated=payload.get('edition', False),
+        trusted_local_editing=_trusted_local_editing(request),
     )
 
 

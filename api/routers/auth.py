@@ -212,7 +212,7 @@ def auth_status(user: Optional[CurrentUser] = Depends(get_optional_user)):
         # required" — the precise wire-level claim the two login endpoints in
         # this file were changed to stop making, while they answer 503 to
         # everyone. One question, one predicate, three consistent answers.
-        edition_password_required=(not multi_user) and not _is_open_install(EDITION_PASSWORD_KEY),
+        edition_password_required=(not multi_user) and not (user and user.trusted_local_editing) and not _is_open_install(EDITION_PASSWORD_KEY),
         login_password_required=(not multi_user) and not _is_open_install(VIEWER_PASSWORD_KEY),
         user_id=user.user_id if user else None,
         user_role=user.role if user else None,
