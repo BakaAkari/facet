@@ -1,7 +1,6 @@
 """Extended scores survive portable JSON export without changing XMP/user data."""
 
 import json
-import re
 import sqlite3
 import subprocess
 import sys
@@ -93,23 +92,38 @@ def test_json_roundtrip_preserves_extended_zero_null_and_legacy_user_data(
     assert sidecars == {p: Path(p).with_suffix(".xmp").read_bytes() for p in paths}
 
 
+@pytest.mark.parametrize("scope", ["all", "paths", "root"])
 @pytest.mark.parametrize("present", [(), ("qrealign_score",)])
 def test_older_schema_omits_unsupported_scores_without_fabricated_nulls(
-    tmp_path, present
+    tmp_path, present, scope
 ):
-    db, _ = seed(tmp_path)
+    db, paths = seed(tmp_path)
+    removed = set(METRICS) - set(present)
     with sqlite3.connect(db) as conn:
-        for metric in set(METRICS) - set(present):
-            indexes = conn.execute(
-                "SELECT name,sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL"
-            ).fetchall()
-            for name, sql in indexes:
-                if re.search(r"\b" + metric + r"\b", sql):
-                    conn.execute('DROP INDEX "' + name.replace('"', '""') + '"')
-            conn.execute("ALTER TABLE photos DROP COLUMN " + metric)
-    photos = build_manifest(db)["photos"]
-    for p in photos:
-        assert set(p["scores"]) == set(LEGACY) | set(present)
+        # Rebuild without ALTER TABLE DROP COLUMN (needs SQLite 3.35; floor is 3.31.1).
+        kept = [
+            row[1]
+            for row in conn.execute("PRAGMA table_info(photos)")
+            if row[1] not in removed
+        ]
+        cols = ",".join('"' + c + '"' for c in kept)
+        conn.execute("CREATE TABLE photos_reduced AS SELECT " + cols + " FROM photos")
+        conn.execute("DROP TABLE photos")
+        conn.execute("ALTER TABLE photos_reduced RENAME TO photos")
+    kwargs = (
+        {"paths": list(reversed(paths))}
+        if scope == "paths"
+        else {"root": str(tmp_path)}
+        if scope == "root"
+        else {}
+    )
+    photos = {p["filename"]: p for p in build_manifest(db, **kwargs)["photos"]}
+    assert set(photos) == {"zero.jpg", "missing.jpg", "scored.jpg"}
+    for name, value in [("zero", 0.0), ("missing", None), ("scored", 7.25)]:
+        scores = photos[name + ".jpg"]["scores"]
+        assert set(scores) == set(LEGACY) | set(present)
+        assert {k: scores[k] for k in LEGACY} == LEGACY
+        assert {k: scores[k] for k in present} == dict.fromkeys(present, value)
 
 
 def test_cli_manifest_carries_extended_null_and_zero(tmp_path):
