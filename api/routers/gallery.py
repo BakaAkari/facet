@@ -7,6 +7,7 @@ import asyncio
 import logging
 import math
 import sqlite3
+import unicodedata
 from typing import NoReturn, Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
@@ -48,10 +49,6 @@ logger = logging.getLogger(__name__)
 
 
 
-_FTS_TOKEN_CHARS = set(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-)
-
 # Hue-bucket name -> [start_deg, end_deg) half-open ranges over dominant_hue (0-360).
 # Eight perceptual buckets; 'red' wraps the 0/360 boundary so it is matched with OR.
 HUE_BUCKETS = {
@@ -88,20 +85,23 @@ _QUALITY_TIER_KEYS = {'excellent', 'good', 'fair', 'poor'}
 
 
 def _fts5_query_from(term: str) -> Optional[str]:
-    """Convert free-text user input into an FTS5 query string.
+    """Quote Unicode word prefixes, keeping punctuation as token boundaries.
 
-    Splits on whitespace, strips FTS5 syntax characters from each token,
-    quotes the survivor and adds a `*` prefix-match wildcard, then ANDs
-    the tokens together (FTS5 default behaviour). Returns ``None`` if no
-    safe token remains, which short-circuits the search to "match nothing"
-    rather than risking an injected FTS5 expression.
+    Preserve Unicode letters, numbers and private-use characters as tokens. Combining marks continue an existing token. Operators remain
+    quoted literals rather than executable FTS syntax.
     """
-    tokens = []
-    for raw in term.split():
-        cleaned = ''.join(ch for ch in raw if ch in _FTS_TOKEN_CHARS)
-        if cleaned:
-            tokens.append(f'"{cleaned}"*')
-    return ' '.join(tokens) if tokens else None
+    tokens: list[str] = []
+    current: list[str] = []
+    for character in term:
+        category = unicodedata.category(character)
+        if category[0] in ('L', 'N') or category == 'Co' or (category[0] == 'M' and current):
+            current.append(character)
+        elif current:
+            tokens.append(''.join(current))
+            current = []
+    if current:
+        tokens.append(''.join(current))
+    return ' '.join(f'"{token}"*' for token in tokens) if tokens else None
 
 
 def _apply_search_filter(where_clauses, sql_params, term: str, conn, include_manual=True):
