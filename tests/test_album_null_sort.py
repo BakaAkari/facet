@@ -24,7 +24,7 @@ PREFIX = "/album-null-sort/"
 OWNER = "test"  # the user_id the edition_client fixture authenticates as
 TOKEN = "null-sort-share-token"
 NULLABLE_SORT_COLUMNS = ("aesthetic_iaa", "liqe_score", "face_quality_iqa", "qrealign_score",
-                         "deqa_score")
+                         "deqa_score", "aesthetic_v25")
 
 
 def _rows(column):

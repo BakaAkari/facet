@@ -77,7 +77,7 @@ def unavailable_columns():
 # option is listed only once some photo carries a value. Adding a sibling metric
 # is one entry here. VALID_SORT_COLS is untouched, so an explicit ``sort=<column>``
 # request keeps working.
-DATA_GATED_SORT_COLS = ('qrealign_score', 'deqa_score')
+DATA_GATED_SORT_COLS = ('qrealign_score', 'deqa_score', 'aesthetic_v25')
 DATA_GATE_TTL_SECONDS = 60
 _data_gate_cache = {'cols': frozenset(), 'expires': 0.0}
 _data_gate_lock = threading.Lock()

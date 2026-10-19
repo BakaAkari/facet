@@ -398,7 +398,6 @@ INDEXES = [
     ('idx_aesthetic_iaa', 'photos', 'aesthetic_iaa'),
     ('idx_face_quality_iqa', 'photos', 'face_quality_iqa'),
     ('idx_liqe_score', 'photos', 'liqe_score'),
-    ('idx_aesthetic_v25', 'photos', 'aesthetic_v25'),
     ('idx_eye_sharpness', 'photos', 'eye_sharpness'),
     ('idx_face_sharpness', 'photos', 'face_sharpness'),
     ('idx_face_confidence', 'photos', 'face_confidence'),
@@ -449,6 +448,9 @@ INDEXES = [
     # DeQA sort + min/max_deqa range filter: same (X DESC, path) shape and ANALYZE-on-build
     # as idx_qrealign_sort. Replaces the bare idx_deqa_score (dropped on upgrade).
     ('idx_deqa_sort', 'photos', 'deqa_score DESC, path'),
+    # Aesthetic v2.5 sort + min/max_aesthetic_v25 range filter: same shape and ANALYZE-on-build.
+    # Replaces the bare idx_aesthetic_v25 (dropped on upgrade).
+    ('idx_aesthetic_v25_sort', 'photos', 'aesthetic_v25 DESC, path'),
     # Covering index for _shoot_type_evidence's GROUP BY (category,
     # narrative_moment): leading columns match the GROUP BY exactly, with
     # face_count and date_taken (read by the conditional SUMs) appended so the
@@ -1341,11 +1343,11 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
         # leading `date_taken ASC, path`, plus the columns the post-scan reads need),
         # so a library the first gallery-index release already upgraded drops its
         # narrow copy instead of maintaining two near-identical B-trees.
-        # idx_qrealign_score and idx_deqa_score are superseded by idx_qrealign_sort and
-        # idx_deqa_sort (X DESC, path).
+        # idx_qrealign_score, idx_deqa_score and idx_aesthetic_v25 are superseded by
+        # idx_qrealign_sort, idx_deqa_sort and idx_aesthetic_v25_sort (X DESC, path).
         for stale_idx in ('idx_burst_moment', 'idx_burst_learned', 'idx_qalign_score',
                           'idx_render_version', 'idx_gallery_date_asc', 'idx_qrealign_score',
-                          'idx_deqa_score'):
+                          'idx_deqa_score', 'idx_aesthetic_v25'):
             conn.execute(f'DROP INDEX IF EXISTS {stale_idx}')
 
         # Create every remaining index group (photo_tags, comparisons,
@@ -1420,7 +1422,7 @@ ANALYZE_KEY_INDEXES = ('idx_moment_confidence', 'idx_gallery_aggregate')
 # stale partial stats. A one-index ANALYZE scans the small covering index, not the
 # 16 GB table, so it costs seconds where ``ANALYZE photos`` costs the whole file.
 ANALYZE_ON_BUILD_INDEXES = ('idx_post_scan', 'idx_date_asc_cover', 'idx_qrealign_sort',
-                            'idx_deqa_sort')
+                            'idx_deqa_sort', 'idx_aesthetic_v25_sort')
 
 
 def missing_photo_indexes(conn):

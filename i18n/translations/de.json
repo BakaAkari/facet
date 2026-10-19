@@ -435,6 +435,7 @@
     "quality_score": "Qualitätswert",
     "deqa_score": "DeQA",
     "aesthetic_iaa": "Ästhetik (IAA)",
+    "aesthetic_v25": "Ästhetik v2.5",
     "liqe_score": "LIQE-Wert",
     "face_quality_iqa": "Gesichtsqualität (IQA)",
     "composition_pattern": "Kompositionsmuster",
