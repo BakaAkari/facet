@@ -84,6 +84,7 @@
     "end_of_results": "Ende der Ergebnisse"
   },
   "tooltip": {
+    "not_computed": "Nicht berechnet",
     "category": "Kategorie",
     "aggregate": "Gesamtwertung",
     "quality_section": "Qualität",

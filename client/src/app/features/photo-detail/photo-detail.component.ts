@@ -1,3 +1,4 @@
+import { ExtendedQualityComponent } from '../../shared/components/extended-quality/extended-quality.component';
 import { Component, inject, signal, computed, effect, OnInit, HostListener, DestroyRef, ElementRef, viewChild } from '@angular/core';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -50,6 +51,7 @@ const SOCIAL_SOURCE_KEYS: Record<string, string> = {
 @Component({
   selector: 'app-photo-detail',
   imports: [
+    ExtendedQualityComponent,
     MatIconModule,
     MatButtonModule,
     MatTooltipModule,
@@ -348,15 +350,7 @@ const SOCIAL_SOURCE_KEYS: Record<string, string> = {
               @if (p.liqe_score !== null) {
                 <div class="flex justify-between items-baseline gap-2"><span class="text-[var(--mat-sys-on-surface-variant)]">{{ I18N.tooltip.liqe_score | translate }}</span><span class="text-[var(--mat-sys-primary)] font-medium">{{ p.liqe_score | fixed:1 }}</span></div>
               }
-              @if (p.qrealign_score !== undefined && p.qrealign_score !== null) {
-                <div class="flex justify-between items-baseline gap-2"><span class="text-[var(--mat-sys-on-surface-variant)]">{{ I18N.tooltip.qrealign_score | translate }}</span><span class="text-[var(--mat-sys-primary)] font-medium">{{ p.qrealign_score | fixed:1 }}</span></div>
-              }
-              @if (p.aesthetic_v25 !== undefined && p.aesthetic_v25 !== null) {
-                <div class="flex justify-between items-baseline gap-2"><span class="text-[var(--mat-sys-on-surface-variant)]">{{ I18N.tooltip.aesthetic_v25 | translate }}</span><span class="text-[var(--mat-sys-primary)] font-medium">{{ p.aesthetic_v25 | fixed:1 }}</span></div>
-              }
-              @if (p.deqa_score !== undefined && p.deqa_score !== null) {
-                <div class="flex justify-between items-baseline gap-2"><span class="text-[var(--mat-sys-on-surface-variant)]">{{ I18N.tooltip.deqa_score | translate }}</span><span class="text-[var(--mat-sys-primary)] font-medium">{{ p.deqa_score | fixed:1 }}</span></div>
-              }
+              <app-extended-quality [photo]="p" />
             </div>
           </div>
 

@@ -40,6 +40,15 @@ describe('PhotoTooltipComponent', () => {
     fixture = TestBed.createComponent(TestHostComponent);
   });
 
+  it('keeps present NULL extended metrics visible in the actual hover template', () => {
+    fixture.componentInstance.photo.set(makePhotoFull({ aesthetic_v25: null, qrealign_score: null, deqa_score: 0 }));
+    fixture.detectChanges();
+    for (const key of ['aesthetic_v25', 'qrealign_score']) {
+      expect(fixture.nativeElement.querySelector(`[data-testid="${key}-score"]`).textContent).toContain('tooltip.not_computed');
+    }
+    expect(fixture.nativeElement.querySelector('[data-testid="deqa_score-score"]').textContent.trim()).toBe('0.0');
+  });
+
   it('creates the host', () => {
     expect(fixture.componentInstance).toBeTruthy();
   });

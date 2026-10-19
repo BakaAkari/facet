@@ -1,3 +1,4 @@
+import { ExtendedQualityComponent } from '../../shared/components/extended-quality/extended-quality.component';
 import { Component, DestroyRef, Pipe, PipeTransform, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
 import { TitleCasePipe } from '@angular/common';
 import { Router } from '@angular/router';
@@ -42,6 +43,7 @@ export class CategoryLabelPipe implements PipeTransform {
 @Component({
   selector: 'app-photo-tooltip',
   imports: [
+    ExtendedQualityComponent,
     MatIconModule, FixedPipe, ShutterSpeedPipe, TranslatePipe, ThumbnailUrlPipe, PersonThumbnailUrlPipe,
     CategoryLabelPipe, IsLensNamePipe, PhotoSetKindIconPipe, PhotoSetKindLabelPipe, EvOffsetPipe,
     MomentLabelPipe, HistogramComponent,
@@ -165,6 +167,7 @@ export class CategoryLabelPipe implements PipeTransform {
                   @if (p.liqe_score !== null) {
                     <div class="flex justify-between"><span class="text-[var(--facet-tooltip-text-secondary)]">{{ 'tooltip.liqe_score' | translate }}</span><span class="text-[var(--mat-sys-primary)] font-medium">{{ p.liqe_score | fixed:1 }}</span></div>
                   }
+                  <app-extended-quality [photo]="p" [tooltip]="true" />
                 </div>
               </div>
 

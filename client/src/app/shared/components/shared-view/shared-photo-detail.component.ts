@@ -1,3 +1,4 @@
+import { ExtendedQualityComponent } from '../extended-quality/extended-quality.component';
 import { Component, inject, signal, effect, OnInit, HostListener } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { MatIconModule } from '@angular/material/icon';
@@ -21,6 +22,7 @@ import { i18nKeys } from '../../../core/i18n/keys';
   selector: 'app-shared-photo-detail',
   standalone: true,
   imports: [
+    ExtendedQualityComponent,
     MatIconModule, MatButtonModule, MatTooltipModule, MatMenuModule,
     FixedPipe, ShutterSpeedPipe, TranslatePipe, ThumbnailUrlPipe,
     CategoryLabelPipe, IsLensNamePipe, DownloadIconPipe,
@@ -145,6 +147,7 @@ import { i18nKeys } from '../../../core/i18n/keys';
               @if (p.liqe_score !== null) {
                 <div class="flex justify-between items-baseline gap-2"><span class="text-[var(--mat-sys-on-surface-variant)]">{{ I18N.tooltip.liqe_score | translate }}</span><span class="text-[var(--mat-sys-primary)] font-medium">{{ p.liqe_score | fixed:1 }}</span></div>
               }
+              <app-extended-quality [photo]="p" />
             </div>
           </div>
 
