@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field
 from api.auth import CurrentUser, get_optional_user, require_edition
 from api.config import VIEWER_CONFIG, server_scoring_config
 from api.database import get_async_db, get_db
-from api.exposure import SQL_FUNCTION, exposure_seconds
 from api.db_helpers import (
     get_visibility_clause, get_photos_from_clause,
     build_photo_select_columns, sanitize_float_values,
@@ -352,7 +351,6 @@ def warm_smart_album_covers(db_path):
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.create_function(SQL_FUNCTION, 1, exposure_seconds, deterministic=True)
     try:
         rows = conn.execute(
             "SELECT * FROM albums WHERE is_smart = 1 AND smart_filter_json IS NOT NULL "

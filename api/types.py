@@ -10,7 +10,7 @@ import time
 from api.config import VIEWER_CONFIG, _photo_types_cache, _photo_types_lock, server_scoring_config
 from api.top_picks import get_top_picks_score_sql
 from api.db_helpers import build_hide_clauses
-from api.exposure import SQL_FUNCTION
+from api.exposure import exposure_seconds_sql
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,9 @@ VALID_SORT_COLS = [opt[0] for opt in SORT_OPTIONS] + ['top_picks_score', 'learne
 
 # Sort columns that can be NULL: learned_score / narrative_moment_confidence when
 # untrained / unlabelled, and the supplementary IQA scores, where a photo the model
-# could not score stores NULL, never 5.0.
+# could not score stores NULL, never 5.0. ``shutter_speed`` is not listed: it sorts
+# through its own seconds expression (see ``order_by_clause``) and always sinks its
+# missing and invalid values.
 NULLABLE_SORT_COLS = ('learned_score', 'narrative_moment_confidence', 'aesthetic_iaa',
                       'liqe_score', 'face_quality_iqa', 'aesthetic_v25')
 
@@ -106,13 +108,15 @@ def order_by_clause(sort_col: str, sort_dir: str, tiebreak: str = '') -> str:
     temp B-tree (the default, common direction). In ASC the explicit guard stays,
     since NULLs would otherwise sort first. A column outside ``NULLABLE_SORT_COLS``
     (including a computed expression such as the top-picks score) is never guarded.
-    Shutter speed is projected from decimal/rational EXIF text to positive seconds;
-    invalid exposures sink with missing values without changing stored EXIF.
+    ``shutter_speed`` is the exception: it sorts on ``exposure_seconds_sql()`` (text
+    projected to positive seconds, NULL when missing or invalid), evaluated once per
+    row, and sinks NULLs in both directions (``NULLS LAST`` in ASC, which needs
+    SQLite 3.30+; the project floor is 3.31.1). Stored EXIF text is never changed.
     """
     tail = f", {tiebreak}" if tiebreak else ""
     if sort_col == 'shutter_speed':
-        seconds = f'{SQL_FUNCTION}(shutter_speed)'
-        return f"({seconds} IS NULL) ASC, {seconds} {sort_dir}{tail}"
+        nulls = ' NULLS LAST' if sort_dir == 'ASC' else ''
+        return f"{exposure_seconds_sql()} {sort_dir}{nulls}{tail}"
     if sort_col in NULLABLE_SORT_COLS and sort_dir == 'ASC':
         return f"({sort_col} IS NULL) ASC, {sort_col} ASC{tail}"
     return f"{sort_col} {sort_dir}{tail}"

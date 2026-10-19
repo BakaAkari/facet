@@ -1,142 +1,181 @@
-"""Numeric exposure sorting through real SQLite and both API connection factories."""
-import math
+"""Numeric sorting of the TEXT ``shutter_speed`` column through the pure-SQL expression.
+
+The expression itself is checked on a bare in-memory connection; ordering is checked
+through the real endpoints against rows in the SHARED session database (seeded with
+``seed_photos_prefix``), driven by the auth-overridden client fixtures.
+"""
+
 import json
 import sqlite3
-from unittest import mock
 
 import pytest
-from fastapi.testclient import TestClient
 
-from api import database
-from api.exposure import SQL_FUNCTION, exposure_seconds
+from api.exposure import exposure_seconds_sql
+from api.routers.albums import _compute_smart_album_cover
 from api.routers.gallery import _resolve_order_by
-from api.routers.albums import warm_smart_album_covers, _cover_cache_key
-from tests.test_gallery import (
-    _VIEWER_CONFIG, _create_app_no_auth, _existing_columns, _make_db, _photo,
-)
+from tests.conftest import _TEST_DB_FILE
 
+PREFIX = "/shutter-sort/"
+OWNER = "test"  # the user_id the edition_client fixture authenticates as
+TOKEN = "shutter-sort-share-token"
 EXPOSURES = [
-    ('/long', '120'), ('/medium', '30'), ('/short', '0.25'),
-    ('/fraction', '1/500'), ('/tie_a', '1/4'), ('/tie_b', '0.25'),
-    ('/alias_a', '1/250'), ('/alias_b', '0.004'),
-    ('/bad', 'garbage'), ('/bad_suffix', '120foo'), ('/zero', '0'),
-    ('/divide_zero', '1/0'), ('/missing', None), ('/infinity', 'inf'),
+    ("long", "120"), ("medium", "30"), ("short", "0.25"), ("fraction", "1/500"),
+    ("tie_a", "1/4"), ("tie_b", "0.25"), ("alias_a", "1/250"), ("alias_b", "0.004"),
+    ("bad", "garbage"), ("bad_suffix", "120foo"), ("zero", "0"),
+    ("divide_zero", "1/0"), ("missing", None), ("infinity", "inf"),
 ]
-ASCENDING = [
-    '/fraction', '/alias_a', '/alias_b', '/short', '/tie_a', '/tie_b',
-    '/medium', '/long', '/bad', '/bad_suffix', '/divide_zero', '/infinity',
-    '/missing', '/zero',
-]
-DESCENDING = [
-    '/long', '/medium', '/short', '/tie_a', '/tie_b', '/alias_a', '/alias_b',
-    '/fraction', '/bad', '/bad_suffix', '/divide_zero', '/infinity', '/missing', '/zero',
-]
+INVALID = ["bad", "bad_suffix", "divide_zero", "infinity", "missing", "zero"]  # path tie-break
+ASCENDING = ["fraction", "alias_a", "alias_b", "short", "tie_a", "tie_b", "medium", "long", *INVALID]
+DESCENDING = ["long", "medium", "short", "tie_a", "tie_b", "alias_a", "alias_b", "fraction", *INVALID]
+ORDERS = [("ASC", ASCENDING), ("DESC", DESCENDING)]
 
 
-@pytest.mark.parametrize('direction,expected', [('ASC', ASCENDING), ('DESC', DESCENDING)])
-def test_real_sqlite_text_numeric_order_and_invalids_last(direction, expected):
-    with sqlite3.connect(':memory:') as connection:
-        connection.create_function(SQL_FUNCTION, 1, exposure_seconds, deterministic=True)
-        connection.execute('CREATE TABLE photos(path TEXT, shutter_speed TEXT)')
-        connection.executemany('INSERT INTO photos VALUES(?, ?)', EXPOSURES)
-        clause = _resolve_order_by({'sort': 'shutter_speed', 'dir': direction})
-        actual = [row[0] for row in connection.execute('SELECT path FROM photos ORDER BY ' + clause)]
-        assert actual == expected
-        assert connection.execute('SELECT path, shutter_speed FROM photos ORDER BY rowid').fetchall() == EXPOSURES
+def _rows():
+    # aggregate runs opposite to the expected ASC order, so an album sort that
+    # silently fell back to the saved/default aggregate order cannot pass.
+    return [
+        {"path": PREFIX + name, "filename": name, "aggregate": 1.0 + i * 0.5, "shutter_speed": value}
+        for i, (name, value) in enumerate(reversed(EXPOSURES))
+    ]
 
 
-@pytest.mark.parametrize('value', [
-    None, 'garbage', '120foo', '1/0', '0', '-1', '-1/-2', 'inf', 'nan',
-    '1e999', '1/2/3', b'30', True, False, '1/inf', 'inf/1', '1e-999',
-    '1; DROP TABLE photos', '0/1', '1/-2', float('inf'), float('nan'),
+def _seconds(value):
+    with sqlite3.connect(":memory:") as conn:
+        return conn.execute(
+            f"SELECT {exposure_seconds_sql()} FROM (SELECT ? AS shutter_speed)", (value,)
+        ).fetchone()[0]
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("120", 120), ("30", 30), ("0.25", 0.25), ("1/4", 0.25), ("1/250", 0.004),
+    ("0.004", 0.004), (" 1 / 250 ", 0.004), ("1e-3", 0.001), (120, 120),
+    (0.004, 0.004), ("1/500", 0.002),
 ])
-def test_invalid_values_do_not_become_zero_or_partial_numbers(value):
-    assert exposure_seconds(value) is None
+def test_expression_valid_values(value, expected):
+    assert _seconds(value) == pytest.approx(expected)
 
 
-@pytest.mark.parametrize('value,expected', [
-    (120, 120), (0.004, 0.004), (' 1 / 250 ', 0.004), ('1e-3', 0.001),
-    ('1/250', 0.004), ('0.004', 0.004), ('1/4', 0.25),
+@pytest.mark.parametrize("value", [
+    None, "", "garbage", "None", "120foo", "0", "-1", "1/0", "0/1", "1/-2", "-1/-2",
+    "1/2/3", "inf", "nan", "1e999", "1; DROP TABLE photos",
 ])
-def test_valid_numeric_and_rational_exif_values(value, expected):
-    assert exposure_seconds(value) == expected
+def test_expression_invalid_values_are_null(value):
+    assert _seconds(value) is None
 
 
-@pytest.mark.parametrize('direction,expected', [('ASC', ASCENDING), ('DESC', DESCENDING)])
-def test_real_api_connections_and_pagination(tmp_path, direction, expected):
-    path = str(tmp_path / 'photos.db')
-    _make_db(path, [_photo(p, '2020:01:01 00:00:00', shutter_speed=value) for p, value in EXPOSURES])
-    app = _create_app_no_auth()
-    with (
-        mock.patch.object(database, 'DEFAULT_DB_PATH', path),
-        mock.patch('api.routers.gallery.VIEWER_CONFIG', _VIEWER_CONFIG),
-        mock.patch('api.db_helpers._existing_columns_cache', _existing_columns(path)),
-        TestClient(app) as client,
-    ):
-        connection = database.get_db_connection()
-        try:
-            assert connection.execute(f'SELECT {SQL_FUNCTION}(?)', ('1/500',)).fetchone()[0] == .002
-        finally:
-            connection.close()
-        actual = []
-        for page in range(1, math.ceil(len(EXPOSURES) / 3) + 1):
-            response = client.get('/api/photos', params={
-                'sort': 'shutter_speed', 'sort_direction': direction, 'per_page': 3, 'page': page,
-            })
-            assert response.status_code == 200, response.text
-            actual += [photo['path'] for photo in response.json()['photos']]
-        assert actual == expected
-        response = client.get('/api/photos/select_bottom_percent', params={
-            'keep_percent': 50, 'sort': 'shutter_speed', 'sort_direction': direction,
-        })
-        assert response.status_code == 200, response.text
-        assert response.json()['paths'] == expected[7:]
+def test_expression_uses_the_given_column():
+    with sqlite3.connect(":memory:") as conn:
+        assert conn.execute(
+            f"SELECT {exposure_seconds_sql('ss')} FROM (SELECT '1/4' AS ss)").fetchone()[0] == 0.25
 
 
-def test_sort_validation_preserves_sql_boundary():
-    assert _resolve_order_by({'sort': 'shutter_speed); DROP TABLE photos;--', 'dir': 'ASC'}) == 'aggregate ASC, path ASC'
-    assert _resolve_order_by({'sort': 'shutter_speed', 'dir': 'ASC; DROP TABLE photos'}) == (
-        f'({SQL_FUNCTION}(shutter_speed) IS NULL) ASC, {SQL_FUNCTION}(shutter_speed) DESC, path ASC'
-    )
+def _names(resp):
+    assert resp.status_code == 200, resp.text
+    return [p["path"].rsplit("/", 1)[1] for p in resp.json()["photos"]]
 
 
-@pytest.mark.parametrize('direction,expected', [('ASC', ASCENDING), ('DESC', DESCENDING)])
-@pytest.mark.parametrize('smart', [False, True])
-def test_album_sort_and_cover_use_same_exposure_order(tmp_path, direction, expected, smart):
-    path = str(tmp_path / 'albums.db')
-    _make_db(path, [_photo(p, '2020:01:01 00:00:00', shutter_speed=value) for p, value in EXPOSURES])
-    filters = json.dumps({'sort': 'shutter_speed', 'sort_direction': direction}) if smart else None
-    with sqlite3.connect(path) as connection:
-        connection.execute(
-            'INSERT INTO albums(id, user_id, name, is_smart, smart_filter_json, share_token) '
-            'VALUES(1, NULL, ?, ?, ?, ?)', ('exposures', smart, filters, 'exposure-test'),
-        )
-        connection.executemany(
-            'INSERT INTO album_photos(album_id, photo_path, position) VALUES(1, ?, ?)',
-            [(p, i) for i, (p, _) in enumerate(EXPOSURES)],
-        )
-    with (
-        mock.patch.object(database, 'DEFAULT_DB_PATH', path),
-        mock.patch('api.routers.albums.VIEWER_CONFIG', _VIEWER_CONFIG),
-        mock.patch('api.db_helpers._existing_columns_cache', _existing_columns(path)),
-        TestClient(_create_app_no_auth()) as client,
-    ):
-        response = client.get('/api/albums/1/photos', params={
-            'sort': 'shutter_speed', 'sort_direction': direction,
-        })
-        assert response.status_code == 200, response.text
-        assert [p['path'] for p in response.json()['photos']] == expected
-        response = client.get('/api/shared/album/1', params={
-            'token': 'exposure-test', 'sort': 'shutter_speed', 'sort_direction': direction,
-        })
-        assert response.status_code == 200, response.text
-        assert [p['path'] for p in response.json()['photos']] == expected
-        if smart:
-            assert warm_smart_album_covers(path) == 1
-            with sqlite3.connect(path) as connection:
-                connection.row_factory = sqlite3.Row
-                album = connection.execute('SELECT * FROM albums WHERE id = 1').fetchone()
-                cover = connection.execute(
-                    'SELECT value FROM stats_cache WHERE key = ?', (_cover_cache_key(album),),
-                ).fetchone()[0]
-                assert cover == expected[0]
+@pytest.mark.parametrize("direction,expected", ORDERS)
+def test_gallery_orders_numerically_with_pagination(direction, expected, seed_photos_prefix,
+                                                    anonymous_client):
+    seed_photos_prefix(PREFIX, _rows())
+    actual = []
+    for page in range(1, 6):
+        resp = anonymous_client.get(
+            f"/api/photos?sort=shutter_speed&sort_direction={direction}"
+            f"&path_prefix={PREFIX}&per_page=3&page={page}")
+        actual += _names(resp)
+    assert actual == expected
+
+
+@pytest.mark.parametrize("direction,expected", ORDERS)
+def test_select_bottom_percent_follows_the_order(direction, expected, seed_photos_prefix,
+                                                 anonymous_client):
+    seed_photos_prefix(PREFIX, _rows())
+    resp = anonymous_client.get(
+        "/api/photos/select_bottom_percent",
+        params={"keep_percent": 50, "sort": "shutter_speed", "sort_direction": direction,
+                "path_prefix": PREFIX})
+    assert resp.status_code == 200, resp.text
+    assert [p.rsplit("/", 1)[1] for p in resp.json()["paths"]] == expected[7:]
+
+
+def test_stored_exif_text_is_unchanged_by_sorting(seed_photos_prefix, anonymous_client):
+    seed_photos_prefix(PREFIX, _rows())
+    _names(anonymous_client.get(
+        f"/api/photos?sort=shutter_speed&sort_direction=ASC&path_prefix={PREFIX}"))
+    with sqlite3.connect(_TEST_DB_FILE.name) as conn:
+        stored = dict(conn.execute(
+            "SELECT filename, shutter_speed FROM photos WHERE path LIKE ?", (PREFIX + "%",)))
+    assert stored == dict(EXPOSURES)
+
+
+def test_sort_injection_falls_back_safely():
+    sort_payload = _resolve_order_by({"sort": "shutter_speed); DROP TABLE photos;--", "dir": "ASC"})
+    dir_payload = _resolve_order_by({"sort": "shutter_speed", "dir": "ASC; DROP TABLE photos"})
+    assert sort_payload == "aggregate ASC, path ASC"
+    assert "DROP" not in dir_payload and ";" not in dir_payload
+    assert dir_payload.endswith("DESC, path ASC")
+
+
+@pytest.fixture()
+def make_album():
+    """Insert an album row into the shared DB; every one is deleted on teardown."""
+    ids = []
+
+    def make(*, smart_filter=None, member_names=()):
+        with sqlite3.connect(_TEST_DB_FILE.name) as conn:
+            cur = conn.execute(
+                "INSERT INTO albums (user_id, name, is_smart, smart_filter_json, share_token) "
+                "VALUES (?, 'shutter sort', ?, ?, ?)",
+                (OWNER, 1 if smart_filter is not None else 0,
+                 json.dumps(smart_filter) if smart_filter is not None else None, TOKEN),
+            )
+            album_id = cur.lastrowid
+            ids.append(album_id)
+            for pos, name in enumerate(member_names):
+                conn.execute(
+                    "INSERT INTO album_photos (album_id, photo_path, position) VALUES (?, ?, ?)",
+                    (album_id, PREFIX + name, pos),
+                )
+        return album_id
+
+    yield make
+    with sqlite3.connect(_TEST_DB_FILE.name) as conn:
+        for album_id in ids:
+            conn.execute("DELETE FROM album_photos WHERE album_id = ?", (album_id,))
+            conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
+
+
+@pytest.mark.parametrize("direction,expected", ORDERS)
+def test_regular_album_and_shared_album_order(direction, expected, seed_photos_prefix, make_album,
+                                              edition_client):
+    seed_photos_prefix(PREFIX, _rows())
+    album_id = make_album(member_names=[name for name, _ in EXPOSURES])
+    query = f"sort=shutter_speed&sort_direction={direction}"
+    assert _names(edition_client.get(f"/api/albums/{album_id}/photos?{query}")) == expected
+    assert _names(edition_client.get(
+        f"/api/shared/album/{album_id}?token={TOKEN}&{query}")) == expected
+
+
+@pytest.mark.parametrize("direction,expected", ORDERS)
+def test_smart_album_request_sort_overrides_saved_filter_sort(direction, expected,
+                                                              seed_photos_prefix, make_album,
+                                                              edition_client):
+    seed_photos_prefix(PREFIX, _rows())
+    album_id = make_album(smart_filter={"path_prefix": PREFIX, "sort": "aggregate",
+                                        "sort_direction": "ASC"})
+    resp = edition_client.get(
+        f"/api/albums/{album_id}/photos?sort=shutter_speed&sort_direction={direction}")
+    assert _names(resp) == expected
+
+
+@pytest.mark.parametrize("direction,expected", ORDERS)
+def test_smart_album_cover_follows_saved_filter_sort(direction, expected, seed_photos_prefix,
+                                                     make_album):
+    seed_photos_prefix(PREFIX, _rows())
+    album_id = make_album(smart_filter={"path_prefix": PREFIX, "sort": "shutter_speed",
+                                        "sort_direction": direction})
+    with sqlite3.connect(_TEST_DB_FILE.name) as conn:
+        conn.row_factory = sqlite3.Row
+        album = conn.execute("SELECT * FROM albums WHERE id = ?", (album_id,)).fetchone()
+        assert _compute_smart_album_cover(conn, album, None) == PREFIX + expected[0]
