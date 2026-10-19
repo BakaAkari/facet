@@ -46,6 +46,21 @@
         }
       }
     },
+    "auto_retrain": {
+      "type": "object",
+      "description": "Personal learning dispatch policy; external retains genuine comparisons and pending counts without local learned inference.",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "native",
+            "external"
+          ],
+          "default": "native"
+        }
+      },
+      "additionalProperties": true
+    },
     "viewer": {
       "type": "object",
       "properties": {

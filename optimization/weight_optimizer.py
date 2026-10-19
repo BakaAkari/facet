@@ -463,6 +463,9 @@ class WeightOptimizer:
             - gate: the optimize_weights_with_cv result, or None when it was not run
             - per_comparison: list of (photo_a, photo_b, winner, predicted_correct)
         """
+        from optimization.auto_retrain import learning_backend, external_learning_result
+        if learning_backend(self.config_path) != 'native':
+            return external_learning_result()
         with get_connection(self.db_path) as conn:
             comparisons, X_a, X_b, winners, row_weights = self._fetch_comparison_data(
                 conn, category=category, include_ties=include_ties, sources=sources,
@@ -597,6 +600,9 @@ class WeightOptimizer:
             - discordant_new / discordant_old: McNemar's b and c
             - p_value, passed, suggest_changes (= passed)
         """
+        from optimization.auto_retrain import learning_backend, external_learning_result
+        if learning_backend(self.config_path) != 'native':
+            return external_learning_result()
         with get_connection(self.db_path) as conn:
             all_data, X_a, X_b, winners, row_weights = self._fetch_comparison_data(
                 conn, category=category, include_ties=include_ties, sources=sources,
@@ -697,6 +703,9 @@ class WeightOptimizer:
             - confidence_intervals: per-component CI width
             - stable_components: components with narrow CIs
         """
+        from optimization.auto_retrain import learning_backend, external_learning_result
+        if learning_backend(self.config_path) != 'native':
+            return external_learning_result()
         with get_connection(self.db_path) as conn:
             all_data, X_a, X_b, winners, row_weights = self._fetch_comparison_data(
                 conn, category=category, include_ties=True, sources=sources,

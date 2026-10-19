@@ -143,6 +143,9 @@ def train_keeper_head(db_path=DEFAULT_DB_PATH, category=None, user_id=None,
     failed gate (and not ``force``) returns ``{'gated': True, 'written': False}``
     and persists nothing.
     """
+    from optimization.auto_retrain import learning_backend, external_learning_result
+    if learning_backend(config_path) != 'native':
+        return external_learning_result()
     if config_path is None:
         config_path = _default_config_path()
     weights = _burst_weights_for(config_path)
@@ -211,6 +214,9 @@ def keeper_probs_for_group(head, optimizer, rows, category=None):
     the members whose embedding matches ``head.emb_dim``, or None when fewer than
     two match or ``head`` is None.
     """
+    from optimization.auto_retrain import learning_backend
+    if learning_backend(getattr(optimizer, 'config_path', None)) != 'native':
+        return None
     if head is None:
         return None
     scored = []

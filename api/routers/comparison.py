@@ -757,6 +757,11 @@ def api_comparison_learned_weights(
     include_ties_bool = include_ties.lower() == 'true'
     use_cv_bool = use_cv.lower() == 'true'
 
+    from optimization.auto_retrain import learning_backend, external_learning_result
+    if learning_backend(server_config_path()) != 'native':
+        deferred = external_learning_result()
+        return {'available': False, 'message': deferred['error']}
+
     from optimization import WeightOptimizer
 
     optimizer = WeightOptimizer(DEFAULT_DB_PATH, server_config_path())
@@ -1438,6 +1443,11 @@ def api_comparison_confidence(
     user: CurrentUser = Depends(require_edition),
 ):
     """Get bootstrap confidence intervals for weights."""
+    from optimization.auto_retrain import learning_backend, external_learning_result
+    if learning_backend(server_config_path()) != 'native':
+        deferred = external_learning_result()
+        return {'available': False, 'message': deferred['error']}
+
     from optimization import WeightOptimizer
 
     optimizer = WeightOptimizer(DEFAULT_DB_PATH, server_config_path())

@@ -378,6 +378,9 @@ def train_ranker(db_path=DEFAULT_DB_PATH, category=None, user_id=None,
     ``force``), returns ``{'error': ...}`` / ``{'gated': True, ...}`` and writes
     nothing.
     """
+    from optimization.auto_retrain import learning_backend, external_learning_result
+    if learning_backend(config_path) != 'native':
+        return external_learning_result()
     config_path = resolve_scoring_config_path(config_path)
     piaa = _load_piaa_config(config_path)
     prior_enabled = bool(piaa.get('enabled', False))
