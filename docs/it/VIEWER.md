@@ -175,6 +175,13 @@ da `models/samp_net.py`):
 
 ## Ordinamento
 
+I tempi di scatto sono ordinati per durata dell'esposizione in secondi, compresi
+i valori EXIF decimali e razionali: `1/250` e `0.004` sono uguali. I valori
+mancanti, malformati, nulli, negativi e non finiti compaiono per ultimi in
+entrambe le direzioni. I valori uguali mantengono lo spareggio per percorso. Vale
+anche per l'ordinamento degli album e le copertine degli album intelligenti; il
+testo EXIF memorizzato non viene modificato.
+
 Colonne ordinabili raggruppate per categoria (da `viewer.sort_options`):
 
 | Gruppo | Colonne |

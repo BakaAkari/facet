@@ -175,6 +175,13 @@ em `models/samp_net.py`):
 
 ## Ordenação
 
+As velocidades do obturador são ordenadas pela duração da exposição em segundos,
+incluindo valores EXIF decimais e racionais: `1/250` e `0.004` são iguais. Valores
+ausentes, malformados, zero, negativos e não finitos aparecem por último em ambas
+as direções. Valores iguais mantêm o desempate por caminho. Isso também se aplica
+à ordenação de álbuns e às capas de álbuns inteligentes; o texto EXIF armazenado
+não é alterado.
+
 Colunas ordenáveis agrupadas por categoria (de `viewer.sort_options`):
 
 | Grupo | Colunas |

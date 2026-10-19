@@ -175,6 +175,13 @@ Nach von SAMP-Net erkannten Mustern filtern (das Modell liefert genau diese 8, a
 
 ## Sortierung
 
+Verschlusszeiten werden nach Belichtungsdauer in Sekunden sortiert, einschließlich
+dezimaler und rationaler EXIF-Werte: `1/250` und `0.004` sind gleich. Fehlende,
+fehlerhafte, null, negative und nicht endliche Werte erscheinen in beiden
+Richtungen zuletzt. Gleiche Werte behalten die Pfad-Reihenfolge als Tie-Break. Das
+gilt auch für die Album-Sortierung und die Cover intelligenter Alben; der
+gespeicherte EXIF-Text bleibt unverändert.
+
 Sortierbare Spalten nach Kategorie gruppiert (aus `viewer.sort_options`):
 
 | Gruppe | Spalten |

@@ -175,6 +175,13 @@ Filtrer par les motifs détectés par SAMP-Net (le modèle n'en émet que ces
 
 ## Tri
 
+Les vitesses d'obturation sont triées par durée d'exposition en secondes, y compris
+les valeurs EXIF décimales et rationnelles : `1/250` et `0.004` sont égales. Les
+valeurs manquantes, malformées, nulles, négatives et non finies apparaissent en
+dernier dans les deux sens. Les valeurs égales conservent le départage par chemin.
+Cela s'applique aussi au tri des albums et aux couvertures des albums intelligents ;
+le texte EXIF stocké n'est pas modifié.
+
 Colonnes triables regroupées par catégorie (depuis `viewer.sort_options`) :
 
 | Groupe | Colonnes |

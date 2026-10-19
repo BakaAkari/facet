@@ -175,6 +175,13 @@ Filtra por los patrones detectados por SAMP-Net (el modelo emite exactamente est
 
 ## Ordenación
 
+Las velocidades de obturación se ordenan por duración de la exposición en
+segundos, incluidos los valores EXIF decimales y racionales: `1/250` y `0.004` son
+iguales. Los valores ausentes, mal formados, cero, negativos y no finitos aparecen
+al final en ambas direcciones. Los valores iguales mantienen el desempate por ruta.
+También se aplica a la ordenación de álbumes y a las portadas de los álbumes
+inteligentes; el texto EXIF almacenado no cambia.
+
 Columnas ordenables agrupadas por categoría (desde `viewer.sort_options`):
 
 | Grupo | Columnas |
