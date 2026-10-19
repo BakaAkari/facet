@@ -12,12 +12,16 @@ class CompositionAnalyzer:
     """Evaluates the mathematical placement of subjects within the frame."""
 
     @staticmethod
-    def detect_subject_region(img_cv):
+    def detect_subject_region(img_cv, *, strict_errors=False):
         """Detect the main subject region using multiple strategies.
 
         Uses a cascading approach:
         1. Adaptive Canny edge detection with relaxed thresholds
         2. Saliency-based detection using spectral residual
+
+        With strict_errors=True, unavailable/failed spectral processing raises
+        RuntimeError instead of being confused with a successful no-region result.
+        Existing callers keep the historical best-effort behavior by default.
 
         Returns:
             Bounding box [x1, y1, x2, y2] of detected subject, or None if none found.
@@ -77,7 +81,17 @@ class CompositionAnalyzer:
         try:
             saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
             success, saliency_map = saliency.computeSaliency(img_cv)
+            if not success and strict_errors:
+                raise RuntimeError('Spectral residual computeSaliency failed')
             if success:
+                if strict_errors and (not isinstance(saliency_map, np.ndarray)
+                        or saliency_map.shape != gray.shape
+                        or not np.issubdtype(saliency_map.dtype, np.number)
+                        or np.issubdtype(saliency_map.dtype, np.complexfloating)
+                        or not np.isfinite(saliency_map).all()
+                        or (saliency_map < 0).any()
+                        or (saliency_map > 1).any()):
+                    raise RuntimeError('Invalid spectral residual saliency map')
                 saliency_map = (saliency_map * 255).astype(np.uint8)
                 _, thresh = cv2.threshold(saliency_map, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                 sal_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -85,8 +99,10 @@ class CompositionAnalyzer:
                     largest = max(sal_contours, key=cv2.contourArea)
                     x, y, bw, bh = cv2.boundingRect(largest)
                     return [x, y, x + bw, y + bh]
-        except (cv2.error, AttributeError):
-            # Saliency module may not be available in all OpenCV builds
+        except (cv2.error, AttributeError) as error:
+            # Saliency module may not be available in all OpenCV builds.
+            if strict_errors:
+                raise RuntimeError('Spectral residual capability or execution unavailable') from error
             pass
 
         return None
