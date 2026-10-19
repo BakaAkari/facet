@@ -186,10 +186,12 @@ describe('PhotoCritiqueDialogComponent current calculation DOM', () => {
     expect(fixture.nativeElement.textContent).toContain('critique.cached_commentary');
     expect(fixture.nativeElement.textContent).toContain('Synthetic cached commentary');
   });
-  it('keeps older response rendering without claiming a current calculation', async () => {
-    const fixture = await render({ score_basis: undefined, current_formula_score: undefined });
-    expect(fixture.nativeElement.querySelector('[data-testid="score-calculation-context"]')).toBeNull();
-    expect(fixture.nativeElement.querySelector('[data-testid="score-calculation-total"]')).toBeNull();
-    expect(fixture.nativeElement.textContent).toContain('8.60');
+  it('labels blink and skin tone as advisories, never as penalties', async () => {
+    const fixture = await render({ penalties: { blink: true, skin_tone: { cast: 'red', delta: 9 } } });
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('critique.advisories');
+    expect(text).not.toContain('critique.penalties');
+    expect(text).toContain('critique.penalty.blink');
+    expect(text).toContain('critique.penalty.skin_tone');
   });
 });

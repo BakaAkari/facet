@@ -132,18 +132,47 @@ def test_snapshot_and_photo_are_not_mixed_across_external_commit(snapshot):
     assert fresh["aggregate"] == fresh["current_formula_score"] == 8.0
 
 
-@pytest.mark.parametrize(
-    "value",
-    [None, "[]", "{invalid", '{"percentiles":{"raw_sharpness_variance":"bad"}}'],
-)
-def test_missing_or_invalid_snapshot_does_not_invent_an_explanation(snapshot, value):
+def test_absent_snapshot_explains_the_stored_metrics_the_scan_scored(snapshot):
+    """Only --recompute-average persists a snapshot, so a scan-only library has
+    none under the default percentile method; the scan scored the stored
+    metrics with no normalizer, and the explanation must do the same."""
+    from processing.scorer import Facet
+
     path, config, queries, client = snapshot
+    assert config.get_normalization_settings()["method"] == "percentile"
     with sqlite3.connect(path) as conn:
         conn.execute("DELETE FROM stats_cache")
-        if value is not None:
-            conn.execute(
-                "INSERT INTO stats_cache VALUES('percentiles_snapshot',?,0)", (value,)
-            )
+        conn.row_factory = sqlite3.Row
+        row = dict(conn.execute("SELECT * FROM photos").fetchone())
+    native = Facet.__new__(Facet)
+    native.config = config
+    expected, _ = native.calculate_aggregate_logic(
+        Facet.prepare_scoring_row(row, config, None)
+    )
+    result = get(client)
+    assert "explanation_unavailable_reason" not in result
+    assert result["normalization_basis"] == "stored_metrics"
+    assert result["current_formula_score"] == round(expected, 2) == 1.0
+    assert [term["value"] for term in result["breakdown"]] == [1.0]
+
+
+def test_absent_stats_cache_table_explains_the_stored_metrics(snapshot):
+    path, config, queries, client = snapshot
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE stats_cache")
+    result = get(client)
+    assert result["normalization_basis"] == "stored_metrics"
+    assert result["current_formula_score"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["[]", "{invalid", '{"percentiles":{"raw_sharpness_variance":"bad"}}'],
+)
+def test_malformed_snapshot_does_not_invent_an_explanation(snapshot, value):
+    path, config, queries, client = snapshot
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE stats_cache SET value=?", (value,))
     result = get(client)
     assert result["aggregate"] == 2.0 and result["stored_score_state"] == "present"
     assert result["current_formula_score"] is None and result["breakdown"] == []
@@ -216,7 +245,7 @@ def test_unavailable_normalization_does_not_invent_a_default_category_reason(sna
     path, config, queries, client = snapshot
     with sqlite3.connect(path) as conn:
         conn.execute("UPDATE photos SET category='portrait'")
-        conn.execute("DELETE FROM stats_cache")
+        conn.execute("UPDATE stats_cache SET value='{invalid'")
     result = get(client)
     assert result["category"] == result["category_reason"]["category"] == "portrait"
     assert result["category_reason"]["reason_key"] == "unavailable"

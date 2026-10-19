@@ -192,7 +192,35 @@ def test_rejection_trail_uses_effective_context_not_global_category_order(config
         config=config,
     )
     assert result["category"] == "sports"
-    assert result["category_reason"].get("rejected", []) == []
+    assert result["category_reason"]["rejected"] == []
+
+
+def test_rejection_trail_follows_the_context_promotion_order(config):
+    from api.routers.critique import _build_rule_critique
+
+    config.get_weights = lambda category: {"noise": 1.0}
+    result = _build_rule_critique(
+        {
+            "noise_sigma": 2.0,
+            "tags": "sports",
+            "shutter_speed": "1/500",
+            "scoring_context": "portrait_session",
+        },
+        config=config,
+    )
+    assert result["category"] == "sports"
+    # The global order would start at astro; portrait_session promotes the
+    # portrait categories, so they are the first ones rejected.
+    assert [
+        (entry["category"], entry["mismatch"]["key"])
+        for entry in result["category_reason"]["rejected"]
+    ] == [
+        ("portrait", "face_ratio_min"),
+        ("portrait_bw", "face_ratio_min"),
+        ("fashion", "has_face"),
+        ("astro", "luminance_max"),
+        ("group_portrait", "face_ratio_min"),
+    ]
 
 
 def test_native_nonpositive_comparison_does_not_turn_nan_weight_into_json_nan(config):

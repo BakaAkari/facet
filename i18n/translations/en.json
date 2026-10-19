@@ -1718,7 +1718,6 @@
     "strengths": "Strengths",
     "weaknesses": "Weaknesses",
     "suggestions": "Suggestions",
-    "penalties": "Penalties",
     "distortions": "Detected Distortions",
     "vlm_title": "AI Critique",
     "vlm_loading": "Generating AI critique...",
@@ -1848,9 +1847,6 @@
     },
     "penalty": {
       "blink": "Blink detected",
-      "noise": "Noise: {value}",
-      "highlight_clipping": "Highlight clip: {value}",
-      "shadow_clipping": "Shadow clip: {value}",
       "skin_tone": "Skin tone cast: {cast} (ΔE {delta})"
     },
     "current_formula": "Current calculation",

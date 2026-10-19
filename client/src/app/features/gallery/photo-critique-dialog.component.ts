@@ -12,6 +12,7 @@ import { I18nService } from '../../core/services/i18n.service';
 import { TranslatePipe } from '../../shared/pipes/translate.pipe';
 import { ThumbnailUrlPipe } from '../../shared/pipes/thumbnail-url.pipe';
 import { I18N, i18nKeys } from '../../core/i18n/keys';
+import type { MediaCritiqueResponse } from '../../core/api/types';
 
 interface FaceMarker {
   bbox: number[] | null;
@@ -67,16 +68,16 @@ interface CritiqueResponse {
   category: string;
   category_reason: CategoryReason;
   aggregate: number | null;
-  score_basis?: 'current_formula';
+  score_basis?: MediaCritiqueResponse['score_basis'];
   current_formula_score?: number | null;
   native_adjustment?: number | null;
   stored_score_matches_current_formula?: boolean | null;
-  explanation_unavailable_reason?: string;
+  explanation_unavailable_reason?: MediaCritiqueResponse['explanation_unavailable_reason'];
   breakdown: CritiqueBreakdown[];
   strengths: CritiqueMetricRef[];
   weaknesses: CritiqueMetricRef[];
   suggestions: string[];
-  penalties: Record<string, number | boolean | SkinTonePenalty>;
+  penalties: { blink?: boolean; skin_tone?: SkinTonePenalty };
   distortions?: string[];
   vlm_critique?: string;
   vlm_source?: string;
@@ -249,22 +250,20 @@ export class DistortionLabelPipe implements PipeTransform {
           }
         </div>
 
-        @if (c.score_basis) {
-          <div class="text-sm mb-3" data-testid="score-calculation-context">
-            <div>{{ I18N.critique.stored_score | translate }}:
-              @if (c.aggregate !== null && c.aggregate !== undefined) { {{ c.aggregate | number:'1.2-2' }} }
-              @else { {{ I18N.critique.stored_unavailable | translate }} }
-            </div>
-            @if (c.current_formula_score !== null && c.current_formula_score !== undefined) {
-              <p class="text-xs opacity-60">{{ I18N.critique.calculation_note | translate }}</p>
-              @if (c.stored_score_matches_current_formula === false) {
-                <p class="text-xs text-amber-400">{{ I18N.critique.different_score | translate }}</p>
-              }
-            } @else {
-              <p class="text-xs opacity-60">{{ I18N.critique.calculation_unavailable | translate }}</p>
-            }
+        <div class="text-sm mb-3" data-testid="score-calculation-context">
+          <div>{{ I18N.critique.stored_score | translate }}:
+            @if (c.aggregate !== null && c.aggregate !== undefined) { {{ c.aggregate | number:'1.2-2' }} }
+            @else { {{ I18N.critique.stored_unavailable | translate }} }
           </div>
-        }
+          @if (c.current_formula_score !== null && c.current_formula_score !== undefined) {
+            <p class="text-xs opacity-60">{{ I18N.critique.calculation_note | translate }}</p>
+            @if (c.stored_score_matches_current_formula === false) {
+              <p class="text-xs text-amber-400">{{ I18N.critique.different_score | translate }}</p>
+            }
+          } @else {
+            <p class="text-xs opacity-60">{{ I18N.critique.calculation_unavailable | translate }}</p>
+          }
+        </div>
 
         <!-- Score breakdown table -->
         <div class="text-xs uppercase tracking-wider opacity-50 mb-2">{{ I18N.critique.breakdown | translate }}</div>
@@ -279,7 +278,7 @@ export class DistortionLabelPipe implements PipeTransform {
               </tr>
             }
           </tbody>
-          @if (c.score_basis && c.current_formula_score !== null && c.current_formula_score !== undefined) {
+          @if (c.current_formula_score !== null && c.current_formula_score !== undefined) {
             <tfoot data-testid="score-calculation-total">
               <tr><td colspan="3">{{ I18N.critique.adjustments | translate }}</td>
                 <td class="text-right">{{ c.native_adjustment | number:'1.2-2' }}</td></tr>
@@ -377,11 +376,8 @@ export class DistortionLabelPipe implements PipeTransform {
         <!-- Penalties -->
         @if (hasPenalties()) {
           <div class="mt-3 text-xs opacity-60">
-            <span class="uppercase tracking-wider">{{ (c.score_basis ? I18N.critique.advisories : I18N.critique.penalties) | translate }}:</span>
-            @if (c.penalties['blink']) { <span class="ml-2 text-red-400">{{ I18N.critique.penalty.blink | translate }}</span> }
-            @if (c.penalties['noise']) { <span class="ml-2">{{ I18N.critique.penalty.noise | translate:{ value: '' + c.penalties['noise'] } }}</span> }
-            @if (c.penalties['highlight_clipping']) { <span class="ml-2">{{ I18N.critique.penalty.highlight_clipping | translate:{ value: '' + c.penalties['highlight_clipping'] } }}</span> }
-            @if (c.penalties['shadow_clipping']) { <span class="ml-2">{{ I18N.critique.penalty.shadow_clipping | translate:{ value: '' + c.penalties['shadow_clipping'] } }}</span> }
+            <span class="uppercase tracking-wider">{{ I18N.critique.advisories | translate }}:</span>
+            @if (c.penalties.blink) { <span class="ml-2 text-red-400">{{ I18N.critique.penalty.blink | translate }}</span> }
             @if (skinTone(); as st) { <span class="ml-2 text-amber-400">{{ I18N.critique.penalty.skin_tone | translate:{ cast: ('critique.skin_cast.' + st.cast | translate), delta: '' + st.delta } }}</span> }
           </div>
         }
@@ -432,10 +428,9 @@ export class PhotoCritiqueDialogComponent implements OnInit {
     return !!(c && Object.keys(c.penalties).length > 0);
   });
 
-  protected readonly skinTone = computed<SkinTonePenalty | null>(() => {
-    const p = this.critique()?.penalties['skin_tone'];
-    return p && typeof p === 'object' ? p : null;
-  });
+  protected readonly skinTone = computed<SkinTonePenalty | null>(
+    () => this.critique()?.penalties.skin_tone ?? null,
+  );
 
   protected readonly vlmRefreshing = signal(false);
 

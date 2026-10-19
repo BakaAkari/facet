@@ -1718,7 +1718,6 @@
     "strengths": "优点",
     "weaknesses": "不足",
     "suggestions": "建议",
-    "penalties": "扣分项",
     "distortions": "检测到的成像缺陷",
     "vlm_title": "AI 点评",
     "vlm_loading": "正在生成 AI 点评…",
@@ -1848,9 +1847,6 @@
     },
     "penalty": {
       "blink": "检测到闭眼",
-      "noise": "噪点：{value}",
-      "highlight_clipping": "高光溢出：{value}",
-      "shadow_clipping": "阴影溢出：{value}",
       "skin_tone": "肤色偏色：{cast}（ΔE {delta}）"
     },
     "current_formula": "当前计算",

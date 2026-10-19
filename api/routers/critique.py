@@ -8,6 +8,8 @@ import asyncio
 import json
 import logging
 import math
+import sqlite3
+import string
 
 from typing import Optional
 
@@ -286,6 +288,19 @@ def _identify_strengths_weaknesses(breakdown):
     return strengths, weaknesses, suggestions
 
 
+def _finite_number(value):
+    """True for a finite int or float; a bool or a stringified SQLite value is not one."""
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _stored_score(photo):
+    """The stored aggregate as ``(value, state)``: the value only when it is a finite number."""
+    stored = photo.get('aggregate')
+    if _finite_number(stored):
+        return float(stored), 'present'
+    return None, 'missing' if stored is None else 'invalid'
+
+
 def _check_penalties(photo):
     """Surface advisory flags (blink and skin-tone cast), without scoring math.
 
@@ -300,7 +315,7 @@ def _check_penalties(photo):
     if photo.get('is_blink'):
         penalties['blink'] = True
     skin_delta = photo.get('skin_tone_delta')
-    if type(skin_delta) in (int, float) and math.isfinite(skin_delta) and photo.get('skin_tone_cast'):
+    if _finite_number(skin_delta) and photo.get('skin_tone_cast'):
         penalties['skin_tone'] = {
             'cast': photo['skin_tone_cast'],
             'delta': round(float(skin_delta), 1),
@@ -343,25 +358,23 @@ def _build_rule_critique(photo, *, config=None, normalizer=None, overrides=None)
     # Advisory flags remain separate from the reconciled native adjustment.
     penalties = _check_penalties(photo)
     category_reason = _build_category_reason(prepared, category, sc)
-    stored = photo.get('aggregate')
-    stored_valid = type(stored) in (int, float) and math.isfinite(stored)
+    stored, stored_state = _stored_score(photo)
     displayed_total = round(float(current_total), 2)
     display_base_cents = sum(round(item['contribution'] * 100) for item in breakdown)
 
     return {
         'category': category or 'default',
         'category_reason': category_reason,
-        'aggregate': float(stored) if stored_valid else None,
+        'aggregate': stored,
         'score_basis': 'current_formula',
         'current_formula_score': displayed_total,
         'native_adjustment': (round(displayed_total * 100) - display_base_cents) / 100,
         'stored_score_matches_current_formula': (
-            round(float(stored), 2) == displayed_total if stored_valid else None),
+            round(stored, 2) == displayed_total if stored is not None else None),
         'normalization_basis': ('persisted_percentiles' if normalizer is not None
                                 else 'stored_metrics'),
         'generation_state': 'unknown',
-        'stored_score_state': ('present' if stored_valid else
-                               'missing' if stored is None else 'invalid'),
+        'stored_score_state': stored_state,
         'breakdown': breakdown,
         'strengths': sorted(strengths, key=lambda x: x['value'], reverse=True)[:5],
         'weaknesses': sorted(weaknesses, key=lambda x: x['value'])[:5],
@@ -372,16 +385,15 @@ def _build_rule_critique(photo, *, config=None, normalizer=None, overrides=None)
 
 
 def _unavailable_critique(photo, reason):
-    stored = photo.get('aggregate')
-    valid = type(stored) in (int, float) and math.isfinite(stored)
+    stored, stored_state = _stored_score(photo)
     category = photo.get('category') or 'default'
     return {'category': category,
             'category_reason': {'reason_key': 'unavailable', 'category': category, 'details': []},
-            'aggregate': float(stored) if valid else None,
+            'aggregate': stored,
             'score_basis': 'current_formula', 'current_formula_score': None,
             'native_adjustment': None, 'stored_score_matches_current_formula': None,
             'explanation_unavailable_reason': reason, 'generation_state': 'unknown',
-            'stored_score_state': 'present' if valid else 'missing' if stored is None else 'invalid',
+            'stored_score_state': stored_state,
             'breakdown': [], 'strengths': [], 'weaknesses': [], 'suggestions': [],
             'penalties': _check_penalties(photo),
             'distortions': _parse_distortions(photo.get('distortion_attributes'))}
@@ -391,12 +403,35 @@ def _usable_snapshot(snapshot):
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get('percentiles'), dict):
         return False
     def finite(value):
-        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+        return _finite_number(value) and value >= 0
     categories = snapshot.get('category_percentiles', {})
     return (all(finite(value) for value in snapshot['percentiles'].values())
             and isinstance(categories, dict)
             and all(isinstance(values, dict) and all(finite(value) for value in values.values())
                     for values in categories.values()))
+
+
+def _snapshot_malformed(conn):
+    """True when a percentile snapshot is persisted but cannot be scored with.
+
+    An ABSENT snapshot is not malformed. Only ``--recompute-average`` persists
+    one; a scan scores every photo from its stored metrics with no normalizer,
+    and ``PercentileNormalizer.from_snapshot`` answers None in that case so the
+    explanation reads the stored metrics exactly as the scan did.
+    ``load_persisted`` also answers None for a row that does not parse, so the
+    row is probed to tell that apart from an absent one.
+    """
+    from config.percentile_normalizer import PercentileNormalizer
+
+    snapshot = PercentileNormalizer.load_persisted(conn)
+    if snapshot is not None:
+        return not _usable_snapshot(snapshot)
+    try:
+        row = conn.execute("SELECT 1 FROM stats_cache WHERE key = ?",
+                           (PercentileNormalizer.PERSIST_KEY,)).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return row is not None
 
 
 def _load_rule_critique(path, user):
@@ -425,8 +460,7 @@ def _load_rule_critique(path, user):
         if set(SERVED_ROW_COLUMNS) - existing:
             return photo, _unavailable_critique(photo, 'missing_scoring_inputs')
         settings = config.get_normalization_settings()
-        if settings.get('method') == 'percentile' and not _usable_snapshot(
-                PercentileNormalizer.load_persisted(conn)):
+        if settings.get('method') == 'percentile' and _snapshot_malformed(conn):
             return photo, _unavailable_critique(photo, 'normalization_snapshot_unavailable')
         normalizer = PercentileNormalizer.from_snapshot(conn, settings)
         has_overrides = conn.execute(
@@ -559,22 +593,24 @@ def _build_vlm_prompt(rule_critique, photo):
     vlm_cfg = _FULL_CONFIG.get('critique', {}).get('vlm', {})
     template = vlm_cfg.get('prompt_template') or _DEFAULT_VLM_PROMPT
 
-    lines = []
-    for item in rule_critique.get('breakdown', [])[:12]:
-        suffix = (', higher quality is better' if rule_critique.get('score_basis') else
-                  ', lower is better' if item['metric_key'] == 'noise_sigma' else '')
-        lines.append(f"- {item['metric']}: {item['value']} (weight {item['weight']:.0%}{suffix})")
+    lines = [f"- {item['metric']}: {item['value']} (weight {item['weight']:.0%}, higher quality is better)"
+             for item in rule_critique.get('breakdown', [])[:12]]
     breakdown = '\n'.join(lines) or '- no per-metric data available'
 
-    penalty_keys = list(rule_critique.get('penalties', {}))
-    penalties = f"Penalties applied: {', '.join(penalty_keys)}.\n" if penalty_keys else ''
+    advisory_keys = list(rule_critique.get('penalties', {}))
+    advisories = f"Detected conditions: {', '.join(advisory_keys)}.\n" if advisory_keys else ''
 
-    if rule_critique.get('score_basis'):
-        penalties = ("These inputs describe a current-formula recalculation, not verified "
-                     "historical publication provenance. Stored score: "
-                     f"{rule_critique.get('aggregate')}. Current formula: "
-                     f"{rule_critique.get('current_formula_score')}. Net adjustments and rounding: "
-                     f"{rule_critique.get('native_adjustment')}.\n")
+    stored = rule_critique.get('aggregate')
+    current = rule_critique.get('current_formula_score')
+    stored_text = f"{stored:.2f}" if stored is not None else 'unavailable'
+    if current is not None:
+        scope = ("These inputs describe a current-formula recalculation, not verified "
+                 f"historical publication provenance. Stored score: {stored_text}. "
+                 f"Current formula: {current:.2f}. Net adjustments and rounding: "
+                 f"{rule_critique.get('native_adjustment'):.2f}.\n")
+    else:
+        scope = f"Stored score: {stored_text}. No current-formula breakdown is available.\n"
+
     exif_parts = []
     if photo.get('f_stop'):
         exif_parts.append(f"f/{photo['f_stop']}")
@@ -586,18 +622,18 @@ def _build_vlm_prompt(rule_critique, photo):
         exif_parts.append(f"{photo['focal_length']}mm")
     exif = ', '.join(exif_parts) or 'unknown'
 
-    aggregate = (rule_critique.get('current_formula_score')
-                 if rule_critique.get('score_basis') else rule_critique.get('aggregate'))
+    aggregate = current if current is not None else stored
     prompt = template.format(
         category=rule_critique.get('category', 'photo'),
         aggregate=f"{aggregate:.1f}" if aggregate is not None else 'unscored',
         breakdown=breakdown,
-        penalties=penalties,
+        penalties=advisories + scope,
         exif=exif,
     )
 
-    if rule_critique.get('score_basis'):
-        prompt += "\n" + penalties  # Custom templates must retain the scope statement too.
+    # A custom template that omits {penalties} must still carry the scope statement.
+    if 'penalties' not in {field for _, field, _, _ in string.Formatter().parse(template)}:
+        prompt += "\n" + scope
     return prompt
 
 

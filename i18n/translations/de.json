@@ -1718,7 +1718,6 @@
     "strengths": "Starken",
     "weaknesses": "Schwachen",
     "suggestions": "Vorschlage",
-    "penalties": "Strafen",
     "distortions": "Erkannte Verzerrungen",
     "vlm_title": "KI-Kritik",
     "vlm_loading": "KI-Kritik wird erstellt...",
@@ -1848,9 +1847,6 @@
     },
     "penalty": {
       "blink": "Blinzeln erkannt",
-      "noise": "Rauschen: {value}",
-      "highlight_clipping": "Lichter-Clipping: {value}",
-      "shadow_clipping": "Schatten-Clipping: {value}",
       "skin_tone": "Hautton-Farbstich: {cast} (ΔE {delta})"
     },
     "current_formula": "Aktuelle Berechnung",

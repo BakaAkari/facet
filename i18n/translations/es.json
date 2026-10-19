@@ -1718,7 +1718,6 @@
     "strengths": "Fortalezas",
     "weaknesses": "Debilidades",
     "suggestions": "Sugerencias",
-    "penalties": "Penalizaciones",
     "distortions": "Distorsiones detectadas",
     "vlm_title": "Critica IA",
     "vlm_loading": "Generando critica IA...",
@@ -1848,9 +1847,6 @@
     },
     "penalty": {
       "blink": "Parpadeo detectado",
-      "noise": "Ruido: {value}",
-      "highlight_clipping": "Recorte de altas luces: {value}",
-      "shadow_clipping": "Recorte de sombras: {value}",
       "skin_tone": "Tono de piel: dominante {cast} (ΔE {delta})"
     },
     "current_formula": "Cálculo actual",

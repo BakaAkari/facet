@@ -5726,13 +5726,13 @@ export interface components {
              */
             distortions?: string[];
             /** Explanation Unavailable Reason */
-            explanation_unavailable_reason?: string | null;
+            explanation_unavailable_reason?: ("missing_scoring_inputs" | "normalization_snapshot_unavailable" | "invalid_scoring_inputs") | null;
             /** Generation State */
-            generation_state?: string | null;
+            generation_state?: "unknown" | null;
             /** Native Adjustment */
             native_adjustment?: number | null;
             /** Normalization Basis */
-            normalization_basis?: string | null;
+            normalization_basis?: ("persisted_percentiles" | "stored_metrics") | null;
             /**
              * Penalties
              * @default {}
@@ -5741,11 +5741,11 @@ export interface components {
                 [key: string]: unknown;
             };
             /** Score Basis */
-            score_basis?: string | null;
+            score_basis?: "current_formula" | null;
             /** Stored Score Matches Current Formula */
             stored_score_matches_current_formula?: boolean | null;
             /** Stored Score State */
-            stored_score_state?: string | null;
+            stored_score_state?: ("present" | "missing" | "invalid") | null;
             /**
              * Strengths
              * @default []

@@ -1718,7 +1718,6 @@
     "strengths": "Punti di forza",
     "weaknesses": "Punti deboli",
     "suggestions": "Suggerimenti",
-    "penalties": "Penalita",
     "distortions": "Distorsioni rilevate",
     "vlm_title": "Critica IA",
     "vlm_loading": "Generazione critica IA...",
@@ -1848,9 +1847,6 @@
     },
     "penalty": {
       "blink": "Battito di ciglia rilevato",
-      "noise": "Rumore: {value}",
-      "highlight_clipping": "Taglio alte luci: {value}",
-      "shadow_clipping": "Taglio ombre: {value}",
       "skin_tone": "Incarnato: dominante {cast} (ΔE {delta})"
     },
     "current_formula": "Calcolo attuale",

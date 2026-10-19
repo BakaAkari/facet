@@ -1718,7 +1718,6 @@
     "strengths": "Points forts",
     "weaknesses": "Points faibles",
     "suggestions": "Suggestions",
-    "penalties": "Pénalités",
     "distortions": "Distorsions détectées",
     "vlm_title": "Critique IA",
     "vlm_loading": "Génération de la critique IA...",
@@ -1848,9 +1847,6 @@
     },
     "penalty": {
       "blink": "Clignement détecté",
-      "noise": "Bruit : {value}",
-      "highlight_clipping": "Écrêtage hautes lumières : {value}",
-      "shadow_clipping": "Écrêtage ombres : {value}",
       "skin_tone": "Teinte de peau : dominante {cast} (ΔE {delta})"
     },
     "current_formula": "Calcul actuel",
