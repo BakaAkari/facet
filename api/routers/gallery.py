@@ -1727,11 +1727,11 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
     from api.auth import is_edition_enabled, is_edition_authenticated
     from api.raw_processing import get_cull_styles
     from api.routers.search import search_threshold_default
-    from api.types import QUALITY_LEVELS, TYPE_LABELS, available_sort_options, unavailable_columns
+    from api.types import QUALITY_LEVELS, TYPE_LABELS, available_sort_options, populated_gated_cols, unavailable_columns
 
-    sort_options, sort_options_grouped = available_sort_options()
     features = dict(VIEWER_CONFIG.get('features', {}))
     with get_db() as conn:
+        sort_options, sort_options_grouped = available_sort_options(populated_gated_cols(conn))
         has_embeddings = conn.execute(
             "SELECT 1 FROM photos WHERE clip_embedding IS NOT NULL LIMIT 1"
         ).fetchone() is not None

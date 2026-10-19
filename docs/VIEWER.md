@@ -181,7 +181,7 @@ Sortable columns grouped by category (from `viewer.sort_options`):
 
 | Group | Columns |
 |-------|---------|
-| **General** | Aggregate Score, Aesthetic, Quality Score, Date Taken, Star Rating, Aesthetic (IAA), LIQE Score, Q-ReAlign (Aesthetic) |
+| **General** | Aggregate Score, Aesthetic, Quality Score, Date Taken, Star Rating, Aesthetic (IAA), LIQE Score, Q-ReAlign (Aesthetic) (listed only once at least one photo has a Q-ReAlign score) |
 | **Face Metrics** | Face Quality, Face Quality (IQA), Eye Sharpness, Face Sharpness, Face Ratio, Face Count |
 | **Technical** | Tech Sharpness, Contrast, Noise Level |
 | **Color** | Color Score, Saturation |

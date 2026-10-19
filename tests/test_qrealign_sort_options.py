@@ -5,31 +5,74 @@ from pathlib import Path
 import pytest
 
 import licensing
-from api.types import VALID_SORT_COLS
+from api.database import get_db
+from api.types import VALID_SORT_COLS, reset_data_gate_cache
 
 COLUMN = 'qrealign_score'
 LOADER = 'qrealign'
 LABEL = 'Q-ReAlign (Aesthetic)'
 PREFIX = "/qrealign_score-sort/"
+KEYS_TS = (Path(__file__).resolve().parents[1] / "client/src/app/core/i18n/keys.ts").read_text()
 
 
-def test_metric_is_advertised_and_allowed(anonymous_client):
+@pytest.fixture
+def populated_qrealign(seed_photos_prefix):
+    """One scored photo, so the data gate lists the sort; the cache is dropped around it."""
+    reset_data_gate_cache()
+    seed_photos_prefix(PREFIX + "gate/", [
+        {"path": PREFIX + "gate/a.jpg", "filename": "a.jpg", "aggregate": 5.0, COLUMN: 6.0}])
+    reset_data_gate_cache()
+    yield
+    reset_data_gate_cache()
+
+
+def _advertised(body):
+    flat = [column for column, _ in body["sort_options"]]
+    grouped = [option["column"] for options in body["sort_options_grouped"].values()
+               for option in options]
+    return flat, grouped
+
+
+def test_metric_is_advertised_and_allowed(populated_qrealign, anonymous_client):
     response = anonymous_client.get("/api/config")
     assert response.status_code == 200
     body = response.json()
     assert [COLUMN, LABEL] in body["sort_options"]
-    assert any(option["column"] == COLUMN
-               for options in body["sort_options_grouped"].values() for option in options)
+    assert COLUMN in _advertised(body)[1]
     assert COLUMN in VALID_SORT_COLS
+
+
+def test_sort_hidden_while_no_photo_has_a_score(anonymous_client):
+    reset_data_gate_cache()
+    with get_db() as conn:
+        scored = conn.execute(
+            "SELECT path, qrealign_score FROM photos WHERE qrealign_score IS NOT NULL").fetchall()
+        conn.execute("UPDATE photos SET qrealign_score = NULL")
+        conn.commit()
+    try:
+        response = anonymous_client.get("/api/config")
+        assert response.status_code == 200
+        flat, grouped = _advertised(response.json())
+        assert COLUMN not in flat and COLUMN not in grouped
+        assert COLUMN in VALID_SORT_COLS
+    finally:
+        with get_db() as conn:
+            conn.executemany("UPDATE photos SET qrealign_score = ? WHERE path = ?",
+                             [(row['qrealign_score'], row['path']) for row in scored])
+            conn.commit()
+        reset_data_gate_cache()
 
 
 @pytest.mark.parametrize("lang", ["en", "fr", "de", "it", "es", "pt", "zh"])
 def test_metric_label_is_translated(lang, anonymous_client):
     response = anonymous_client.get(f"/api/i18n/{lang}")
     assert response.status_code == 200
-    assert response.json()["sort_options"][COLUMN].strip()
-    keys = Path(__file__).resolve().parents[1] / "client/src/app/core/i18n/keys.ts"
-    assert f'sort_options.{COLUMN}' in keys.read_text()
+    labels = response.json()["sort_options"]
+    label = labels[COLUMN].strip()
+    assert label.startswith("Q-ReAlign")
+    if lang == "zh":
+        assert label != labels["aesthetic"] and labels["aesthetic"] in label
+    assert COLUMN in KEYS_TS
 
 
 @pytest.mark.parametrize("direction,expected", [
@@ -76,7 +119,9 @@ def test_all_unscored_rows_remain_visible(direction, seed_photos_prefix, anonymo
 @pytest.mark.parametrize("mode,allow_unclear", [
     ("default", False), ("commercial", False), ("commercial", True),
 ])
-def test_sort_visibility_follows_existing_loader_license(mode, allow_unclear, anonymous_client):
+def test_sort_visibility_follows_existing_loader_license(
+    mode, allow_unclear, populated_qrealign, anonymous_client,
+):
     licensing.set_policy(mode, allow_unclear=allow_unclear)
     allowed = licensing.loader_allowed(LOADER)
     response = anonymous_client.get("/api/config")

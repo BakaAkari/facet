@@ -5,6 +5,7 @@ Sort/type/filter definitions for the API server.
 
 import logging
 import sqlite3
+import threading
 import time
 
 from api.config import VIEWER_CONFIG, _photo_types_cache, _photo_types_lock, server_scoring_config
@@ -67,9 +68,82 @@ def unavailable_columns():
     return sorted(_METRIC_COLUMNS.get(m, m) for m in licensing.unavailable_metrics())
 
 
-def available_sort_options():
-    """``(SORT_OPTIONS, SORT_OPTIONS_GROUPED)`` minus unavailable-metric sorts."""
-    hidden = set(unavailable_columns())
+# Sorts whose column stays all-NULL on installs that never compute it (the model is
+# off, the library predates it, a CPU-only scanner): config cannot tell, because
+# "auto" resolves from the SCANNER's GPU and the viewer may run elsewhere. The
+# option is listed only once some photo carries a value. Adding a sibling metric
+# (deqa_score, aesthetic_v25) is one entry here. VALID_SORT_COLS is untouched, so
+# an explicit ``sort=<column>`` request keeps working.
+DATA_GATED_SORT_COLS = ('qrealign_score',)
+DATA_GATE_TTL_SECONDS = 60
+_data_gate_cache = {'cols': frozenset(), 'expires': 0.0}
+_data_gate_lock = threading.Lock()
+
+
+def reset_data_gate_cache():
+    """Forget the cached populated-column set (tests, and after a bulk write)."""
+    with _data_gate_lock:
+        _data_gate_cache['expires'] = 0.0
+
+
+def _cached_populated_cols():
+    with _data_gate_lock:
+        if time.monotonic() < _data_gate_cache['expires']:
+            return _data_gate_cache['cols']
+    return None
+
+
+def _store_populated_cols(cols):
+    with _data_gate_lock:
+        _data_gate_cache['cols'] = cols
+        _data_gate_cache['expires'] = time.monotonic() + DATA_GATE_TTL_SECONDS
+
+
+def populated_gated_cols(conn):
+    """Data-gated sort columns with at least one non-NULL value (sync connection)."""
+    cached = _cached_populated_cols()
+    if cached is not None:
+        return cached
+    cols = set()
+    for col in DATA_GATED_SORT_COLS:
+        try:
+            if conn.execute(f'SELECT 1 FROM photos WHERE {col} IS NOT NULL LIMIT 1').fetchone():
+                cols.add(col)
+        except sqlite3.OperationalError:
+            logger.debug("Data-gated sort column %s is absent from photos", col)
+    cols = frozenset(cols)
+    _store_populated_cols(cols)
+    return cols
+
+
+async def populated_gated_cols_async(conn):
+    """``populated_gated_cols`` for an ``aiosqlite`` connection (never blocks the loop)."""
+    cached = _cached_populated_cols()
+    if cached is not None:
+        return cached
+    cols = set()
+    for col in DATA_GATED_SORT_COLS:
+        try:
+            cur = await conn.execute(f'SELECT 1 FROM photos WHERE {col} IS NOT NULL LIMIT 1')
+            row = await cur.fetchone()
+            await cur.close()
+        except sqlite3.OperationalError:
+            logger.debug("Data-gated sort column %s is absent from photos", col)
+            continue
+        if row:
+            cols.add(col)
+    cols = frozenset(cols)
+    _store_populated_cols(cols)
+    return cols
+
+
+def available_sort_options(populated_cols):
+    """``(SORT_OPTIONS, SORT_OPTIONS_GROUPED)`` minus unavailable-metric and empty-data sorts.
+
+    ``populated_cols`` is the result of ``populated_gated_cols`` /
+    ``populated_gated_cols_async`` for the caller's own connection.
+    """
+    hidden = set(unavailable_columns()) | (set(DATA_GATED_SORT_COLS) - set(populated_cols))
     if not hidden:
         return SORT_OPTIONS, SORT_OPTIONS_GROUPED
     flat = [opt for opt in SORT_OPTIONS if opt[0] not in hidden]
@@ -81,6 +155,8 @@ def available_sort_options():
         }
         grouped = {cat: opts for cat, opts in grouped.items() if opts}
     return flat, grouped
+
+
 # 'top_picks_score' and 'learned_score' are computed/joined sort columns, not
 # stored photos columns: top_picks_score is an on-the-fly weighted expression and
 # learned_score comes from the personal-ranker learned_scores table (opt-in

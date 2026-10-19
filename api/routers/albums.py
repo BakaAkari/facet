@@ -27,7 +27,10 @@ from api.db_helpers import (
 from api.models.albums import AlbumPhotosResponse, SharedAlbumResponse
 from api.top_picks import get_top_picks_score_sql, with_top_picks_alias
 from db.stats_cache import cache_stats_best_effort
-from api.types import VALID_SORT_COLS, available_sort_options, normalize_params, order_by_clause
+from api.types import (
+    VALID_SORT_COLS, available_sort_options, normalize_params, order_by_clause,
+    populated_gated_cols_async,
+)
 
 router = APIRouter(tags=["albums"])
 logger = logging.getLogger(__name__)
@@ -1216,7 +1219,7 @@ async def get_shared_album(
         result['proofing_enabled'] = (
             bool(VIEWER_CONFIG.get('features', {}).get('show_proofing', False)) and is_manual
         )
-        _, sort_options_grouped = available_sort_options()
+        _, sort_options_grouped = available_sort_options(await populated_gated_cols_async(conn))
         if sort_options_grouped:
             result['sort_options_grouped'] = sort_options_grouped
 
