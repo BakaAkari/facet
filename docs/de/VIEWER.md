@@ -123,6 +123,13 @@ python database.py --migrate-user-preferences --user alice
 
 ## Filteroptionen
 
+Die Textsuche der Galerie behält Unicode-Wörter bei und behandelt Satzzeichen in
+Dateinamen als Wortgrenzen. So sucht `IMG_0042.JPG` gemeinsam nach den Präfixen
+`IMG`, `0042` und `JPG`. Kyrillische und CJK-Begriffe sind durchsuchbar;
+FTS-Operatoren wie `OR` werden als wörtliche Begriffe behandelt. Der Abgleich folgt
+den bestehenden Tokenizer-Regeln von SQLite, einschließlich ihrer Grenzen bei der
+Unicode-Normalisierung.
+
 <details><summary>Filter-Seitenleiste — alle Abschnitte aufgeklappt (zum Anzeigen klicken)</summary>
 <p align="center"><img src="screenshots/filter-sidebar-full.jpg" alt="Filter-Seitenleiste mit allen aufgeklappten Abschnitten" width="360"></p>
 </details>
@@ -167,6 +174,13 @@ Nach von SAMP-Net erkannten Mustern filtern (das Modell liefert genau diese 8, a
 - surround, quarter, cross, rule_of_thirds
 
 ## Sortierung
+
+Verschlusszeiten werden nach Belichtungsdauer in Sekunden sortiert, einschließlich
+dezimaler und rationaler EXIF-Werte: `1/250` und `0.004` sind gleich. Fehlende,
+fehlerhafte, null, negative und nicht endliche Werte erscheinen in beiden
+Richtungen zuletzt. Gleiche Werte behalten die Pfad-Reihenfolge als Tie-Break. Das
+gilt auch für die Album-Sortierung und die Cover intelligenter Alben; der
+gespeicherte EXIF-Text bleibt unverändert.
 
 Sortierbare Spalten nach Kategorie gruppiert (aus `viewer.sort_options`):
 

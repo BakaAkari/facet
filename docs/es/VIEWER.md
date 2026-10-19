@@ -123,6 +123,13 @@ python database.py --migrate-user-preferences --user alice
 
 ## Opciones de filtrado
 
+La búsqueda de texto de la galería conserva las palabras Unicode y trata la
+puntuación de los nombres de archivo como separadores de palabras. Por ejemplo,
+`IMG_0042.JPG` busca a la vez los prefijos `IMG`, `0042` y `JPG`. Los términos en
+cirílico y CJK se pueden buscar; los operadores FTS como `OR` se tratan como
+palabras literales. La coincidencia sigue las reglas del tokenizador de SQLite
+existente, incluidas sus limitaciones de normalización Unicode.
+
 <details><summary>Barra lateral de filtros completa: todas las secciones expandidas (haz clic para ver)</summary>
 <p align="center"><img src="screenshots/filter-sidebar-full.jpg" alt="Filter sidebar with every section expanded" width="360"></p>
 </details>
@@ -167,6 +174,13 @@ Filtra por los patrones detectados por SAMP-Net (el modelo emite exactamente est
 - surround, quarter, cross, rule_of_thirds
 
 ## Ordenación
+
+Las velocidades de obturación se ordenan por duración de la exposición en
+segundos, incluidos los valores EXIF decimales y racionales: `1/250` y `0.004` son
+iguales. Los valores ausentes, mal formados, cero, negativos y no finitos aparecen
+al final en ambas direcciones. Los valores iguales mantienen el desempate por ruta.
+También se aplica a la ordenación de álbumes y a las portadas de los álbumes
+inteligentes; el texto EXIF almacenado no cambia.
 
 Columnas ordenables agrupadas por categoría (desde `viewer.sort_options`):
 

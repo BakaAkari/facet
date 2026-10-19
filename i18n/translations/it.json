@@ -408,6 +408,7 @@
   "sort_options": {
     "aggregate": "Punteggio aggregato",
     "aesthetic": "Estetica",
+    "qrealign_score": "Q-ReAlign (estetica)",
     "date_taken": "Data di scatto",
     "star_rating": "Valutazione stelle",
     "face_quality": "Qualita volto",
@@ -432,6 +433,7 @@
     "focal_length": "Lunghezza focale",
     "shutter_speed": "Tempo di esposizione",
     "quality_score": "Punteggio qualita",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "Estetica (IAA)",
     "aesthetic_v25": "Estetica v2.5",
     "liqe_score": "Punteggio LIQE",

@@ -408,6 +408,7 @@
   "sort_options": {
     "aggregate": "综合评分",
     "aesthetic": "美观度",
+    "qrealign_score": "Q-ReAlign（美观度）",
     "date_taken": "拍摄日期",
     "star_rating": "星级评分",
     "face_quality": "人脸画质",
@@ -433,6 +434,7 @@
     "shutter_speed": "快门速度",
     "topiq_score": "TOPIQ 评分",
     "quality_score": "画质评分",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "美学评分（IAA）",
     "aesthetic_v25": "美学 v2.5",
     "liqe_score": "LIQE 评分",

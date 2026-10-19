@@ -3451,8 +3451,16 @@
           "label": "Aesthetic"
         },
         {
+          "column": "qrealign_score",
+          "label": "Q-ReAlign (Aesthetic)"
+        },
+        {
           "column": "quality_score",
           "label": "Quality Score"
+        },
+        {
+          "column": "deqa_score",
+          "label": "DeQA"
         },
         {
           "column": "date_taken",

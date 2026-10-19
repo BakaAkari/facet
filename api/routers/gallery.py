@@ -874,8 +874,9 @@ def _prepare_gallery_params(qp: dict):
 def _resolve_order_by(params: dict) -> str:
     """Build the ORDER BY clause matching the gallery's sort semantics.
 
-    The nullable columns (``api.types.NULLABLE_SORT_COLS``) always sink; the
-    guard itself lives in ``api.types.order_by_clause``, shared with the albums.
+    The nullable columns (``api.types.NULLABLE_SORT_COLS``) and the missing or
+    invalid ``shutter_speed`` values always sink; the clause itself lives in
+    ``api.types.order_by_clause``, shared with the albums.
     """
     sort_col = params['sort'] if params['sort'] in VALID_SORT_COLS else 'aggregate'
     sort_dir = 'ASC' if params['dir'] == 'ASC' else 'DESC'
@@ -1727,11 +1728,11 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
     from api.auth import is_edition_enabled, is_edition_authenticated
     from api.raw_processing import get_cull_styles
     from api.routers.search import search_threshold_default
-    from api.types import QUALITY_LEVELS, TYPE_LABELS, available_sort_options, unavailable_columns
+    from api.types import QUALITY_LEVELS, TYPE_LABELS, available_sort_options, populated_gated_cols, unavailable_columns
 
-    sort_options, sort_options_grouped = available_sort_options()
     features = dict(VIEWER_CONFIG.get('features', {}))
     with get_db() as conn:
+        sort_options, sort_options_grouped = available_sort_options(populated_gated_cols(conn))
         has_embeddings = conn.execute(
             "SELECT 1 FROM photos WHERE clip_embedding IS NOT NULL LIMIT 1"
         ).fetchone() is not None

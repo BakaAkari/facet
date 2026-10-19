@@ -422,6 +422,7 @@ export const I18N = {
   sort_options: {
     aggregate: "sort_options.aggregate",
     aesthetic: "sort_options.aesthetic",
+    qrealign_score: "sort_options.qrealign_score",
     date_taken: "sort_options.date_taken",
     star_rating: "sort_options.star_rating",
     face_quality: "sort_options.face_quality",
@@ -447,6 +448,7 @@ export const I18N = {
     shutter_speed: "sort_options.shutter_speed",
     topiq_score: "sort_options.topiq_score",
     quality_score: "sort_options.quality_score",
+    deqa_score: "sort_options.deqa_score",
     aesthetic_iaa: "sort_options.aesthetic_iaa",
     aesthetic_v25: "sort_options.aesthetic_v25",
     liqe_score: "sort_options.liqe_score",

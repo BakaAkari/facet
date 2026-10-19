@@ -5,11 +5,13 @@ Sort/type/filter definitions for the API server.
 
 import logging
 import sqlite3
+import threading
 import time
 
 from api.config import VIEWER_CONFIG, _photo_types_cache, _photo_types_lock, server_scoring_config
 from api.top_picks import get_top_picks_score_sql
 from api.db_helpers import build_hide_clauses
+from api.exposure import exposure_seconds_sql
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +51,13 @@ def _build_sort_options():
 SORT_OPTIONS, SORT_OPTIONS_GROUPED = _build_sort_options()
 
 # licensing.unavailable_metrics() speaks in weight keys; the viewer sorts and
-# filters by photos columns. The two differ only for LIQE ('liqe' -> 'liqe_score').
+# filters by photos columns. The two differ for LIQE ('liqe' -> 'liqe_score') and
+# DeQA ('deqa' -> 'deqa_score').
 _METRIC_COLUMNS = {
     'liqe': 'liqe_score',
     'aesthetic_iaa': 'aesthetic_iaa',
     'face_quality_iqa': 'face_quality_iqa',
+    'deqa': 'deqa_score',
 }
 
 
@@ -70,9 +74,82 @@ def unavailable_columns():
     return sorted(_METRIC_COLUMNS.get(m, m) for m in hidden)
 
 
-def available_sort_options():
-    """``(SORT_OPTIONS, SORT_OPTIONS_GROUPED)`` minus unavailable-metric sorts."""
-    hidden = set(unavailable_columns())
+# Sorts whose column stays all-NULL on installs that never compute it (the model is
+# off, the library predates it, a CPU-only scanner): config cannot tell, because
+# "auto" resolves from the SCANNER's GPU and the viewer may run elsewhere. The
+# option is listed only once some photo carries a value. Adding a sibling metric
+# is one entry here. VALID_SORT_COLS is untouched, so an explicit ``sort=<column>``
+# request keeps working.
+DATA_GATED_SORT_COLS = ('qrealign_score', 'deqa_score')
+DATA_GATE_TTL_SECONDS = 60
+_data_gate_cache = {'cols': frozenset(), 'expires': 0.0}
+_data_gate_lock = threading.Lock()
+
+
+def reset_data_gate_cache():
+    """Forget the cached populated-column set (tests, and after a bulk write)."""
+    with _data_gate_lock:
+        _data_gate_cache['expires'] = 0.0
+
+
+def _cached_populated_cols():
+    with _data_gate_lock:
+        if time.monotonic() < _data_gate_cache['expires']:
+            return _data_gate_cache['cols']
+    return None
+
+
+def _store_populated_cols(cols):
+    with _data_gate_lock:
+        _data_gate_cache['cols'] = cols
+        _data_gate_cache['expires'] = time.monotonic() + DATA_GATE_TTL_SECONDS
+
+
+def populated_gated_cols(conn):
+    """Data-gated sort columns with at least one non-NULL value (sync connection)."""
+    cached = _cached_populated_cols()
+    if cached is not None:
+        return cached
+    cols = set()
+    for col in DATA_GATED_SORT_COLS:
+        try:
+            if conn.execute(f'SELECT 1 FROM photos WHERE {col} IS NOT NULL LIMIT 1').fetchone():
+                cols.add(col)
+        except sqlite3.OperationalError:
+            logger.debug("Data-gated sort column %s is absent from photos", col)
+    cols = frozenset(cols)
+    _store_populated_cols(cols)
+    return cols
+
+
+async def populated_gated_cols_async(conn):
+    """``populated_gated_cols`` for an ``aiosqlite`` connection (never blocks the loop)."""
+    cached = _cached_populated_cols()
+    if cached is not None:
+        return cached
+    cols = set()
+    for col in DATA_GATED_SORT_COLS:
+        try:
+            cur = await conn.execute(f'SELECT 1 FROM photos WHERE {col} IS NOT NULL LIMIT 1')
+            row = await cur.fetchone()
+            await cur.close()
+        except sqlite3.OperationalError:
+            logger.debug("Data-gated sort column %s is absent from photos", col)
+            continue
+        if row:
+            cols.add(col)
+    cols = frozenset(cols)
+    _store_populated_cols(cols)
+    return cols
+
+
+def available_sort_options(populated_cols):
+    """``(SORT_OPTIONS, SORT_OPTIONS_GROUPED)`` minus unavailable-metric and empty-data sorts.
+
+    ``populated_cols`` is the result of ``populated_gated_cols`` /
+    ``populated_gated_cols_async`` for the caller's own connection.
+    """
+    hidden = set(unavailable_columns()) | (set(DATA_GATED_SORT_COLS) - set(populated_cols))
     if not hidden:
         return SORT_OPTIONS, SORT_OPTIONS_GROUPED
     flat = [opt for opt in SORT_OPTIONS if opt[0] not in hidden]
@@ -84,6 +161,8 @@ def available_sort_options():
         }
         grouped = {cat: opts for cat, opts in grouped.items() if opts}
     return flat, grouped
+
+
 # 'top_picks_score' and 'learned_score' are computed/joined sort columns, not
 # stored photos columns: top_picks_score is an on-the-fly weighted expression and
 # learned_score comes from the personal-ranker learned_scores table (opt-in
@@ -92,9 +171,12 @@ VALID_SORT_COLS = [opt[0] for opt in SORT_OPTIONS] + ['top_picks_score', 'learne
 
 # Sort columns that can be NULL: learned_score / narrative_moment_confidence when
 # untrained / unlabelled, and the supplementary IQA scores, where a photo the model
-# could not score stores NULL, never 5.0.
+# could not score stores NULL, never 5.0. ``shutter_speed`` is not listed: it sorts
+# through its own seconds expression (see ``order_by_clause``) and always sinks its
+# missing and invalid values.
 NULLABLE_SORT_COLS = ('learned_score', 'narrative_moment_confidence', 'aesthetic_iaa',
-                      'liqe_score', 'face_quality_iqa', 'aesthetic_v25')
+                      'liqe_score', 'face_quality_iqa', 'aesthetic_v25', 'qrealign_score',
+                      'deqa_score')
 
 
 def order_by_clause(sort_col: str, sort_dir: str, tiebreak: str = '') -> str:
@@ -108,8 +190,15 @@ def order_by_clause(sort_col: str, sort_dir: str, tiebreak: str = '') -> str:
     temp B-tree (the default, common direction). In ASC the explicit guard stays,
     since NULLs would otherwise sort first. A column outside ``NULLABLE_SORT_COLS``
     (including a computed expression such as the top-picks score) is never guarded.
+    ``shutter_speed`` is the exception: it sorts on ``exposure_seconds_sql()`` (text
+    projected to positive seconds, NULL when missing or invalid), evaluated once per
+    row, and sinks NULLs in both directions (``NULLS LAST`` in ASC, which needs
+    SQLite 3.30+; the project floor is 3.31.1). Stored EXIF text is never changed.
     """
     tail = f", {tiebreak}" if tiebreak else ""
+    if sort_col == 'shutter_speed':
+        nulls = ' NULLS LAST' if sort_dir == 'ASC' else ''
+        return f"{exposure_seconds_sql()} {sort_dir}{nulls}{tail}"
     if sort_col in NULLABLE_SORT_COLS and sort_dir == 'ASC':
         return f"({sort_col} IS NULL) ASC, {sort_col} ASC{tail}"
     return f"{sort_col} {sort_dir}{tail}"

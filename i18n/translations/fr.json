@@ -408,6 +408,7 @@
   "sort_options": {
     "aggregate": "Score agrégé",
     "aesthetic": "Esthétique",
+    "qrealign_score": "Q-ReAlign (esthétique)",
     "date_taken": "Date de prise",
     "star_rating": "Étoiles",
     "face_quality": "Qualité visage",
@@ -433,6 +434,7 @@
     "shutter_speed": "Vitesse d'obturation",
     "topiq_score": "Score TOPIQ",
     "quality_score": "Score qualité",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "Esthétique (IAA)",
     "aesthetic_v25": "Esthétique v2.5",
     "liqe_score": "Score LIQE",
