@@ -40,13 +40,16 @@ VARIANTS = {
 # of a flat constant: (a + q) * aes replaces a * aes + q, so each moves by q * (aes - 1)
 # with aes = 6.3 here: default +0.318 (q = 0.06), landscape and night +0.159 (q = 0.03).
 # Every category with no quality weight keeps its pre-W4 value to the last digit.
+# Numeric-domain correction: night ISO 3200 reaches the existing
+# +0.5*log2(3200/800) = +1 sharpness at weight .07, adding .07.
+# The scoring formula, category and every other strict golden are unchanged.
 GOLDENS = {
     'plain': (6.345999999999998, 'default'),
     'portrait': (6.748999999999999, 'portrait'),
     'group': (6.673999999999999, 'group_portrait'),
     'blink': (3.5839999999999996, 'portrait'),
     'landscape': (6.036, 'landscape'),
-    'night': (4.846, 'night'),
+    'night': (4.916, 'night'),
     'mono': (7.393, 'urban'),
     'clip': (3.799999999999999, 'default'),
 }
@@ -75,7 +78,7 @@ def commercial_mode(monkeypatch):
 
 
 @pytest.mark.parametrize('name', sorted(GOLDENS))
-def test_default_mode_aggregate_is_exactly_the_pre_w4_value(default_mode, name):
+def test_default_mode_aggregate_matches_goldens(default_mode, name):
     assert _facet().calculate_aggregate_logic(_photo(name)) == GOLDENS[name]
 
 
