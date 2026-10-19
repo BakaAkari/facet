@@ -18,6 +18,7 @@ from functools import partial
 
 from db import DEFAULT_DB_PATH, apply_pragmas
 from api.config import VIEWER_CONFIG
+from api.exposure import SQL_FUNCTION, exposure_seconds
 
 
 _viewer_perf = VIEWER_CONFIG.get('performance', {})
@@ -35,6 +36,7 @@ def get_db_connection():
         mmap_size_mb=_viewer_perf.get('mmap_size_mb'),
         cache_size_mb=_viewer_perf.get('cache_size_mb'))
     conn.row_factory = sqlite3.Row
+    conn.create_function(SQL_FUNCTION, 1, exposure_seconds, deterministic=True)
     return conn
 
 
@@ -67,6 +69,7 @@ async def get_async_db():
 
     conn = await aiosqlite.connect(DEFAULT_DB_PATH)
     try:
+        await conn.create_function(SQL_FUNCTION, 1, exposure_seconds, deterministic=True)
         # Mirror the full sync pragma set (db/connection.py:apply_pragmas) over
         # the aiosqlite worker thread. We can't call apply_pragmas directly
         # because aiosqlite owns the underlying sqlite3.Connection on its own

@@ -10,6 +10,7 @@ import time
 from api.config import VIEWER_CONFIG, _photo_types_cache, _photo_types_lock, server_scoring_config
 from api.top_picks import get_top_picks_score_sql
 from api.db_helpers import build_hide_clauses
+from api.exposure import SQL_FUNCTION
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +106,13 @@ def order_by_clause(sort_col: str, sort_dir: str, tiebreak: str = '') -> str:
     temp B-tree (the default, common direction). In ASC the explicit guard stays,
     since NULLs would otherwise sort first. A column outside ``NULLABLE_SORT_COLS``
     (including a computed expression such as the top-picks score) is never guarded.
+    Shutter speed is projected from decimal/rational EXIF text to positive seconds;
+    invalid exposures sink with missing values without changing stored EXIF.
     """
     tail = f", {tiebreak}" if tiebreak else ""
+    if sort_col == 'shutter_speed':
+        seconds = f'{SQL_FUNCTION}(shutter_speed)'
+        return f"({seconds} IS NULL) ASC, {seconds} {sort_dir}{tail}"
     if sort_col in NULLABLE_SORT_COLS and sort_dir == 'ASC':
         return f"({sort_col} IS NULL) ASC, {sort_col} ASC{tail}"
     return f"{sort_col} {sort_dir}{tail}"
