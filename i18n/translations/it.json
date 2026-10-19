@@ -1735,7 +1735,7 @@
       "color_score": "Colore",
       "contrast_score": "Contrasto",
       "isolation_bonus": "Isolamento del soggetto",
-      "noise_sigma": "Livello di rumore",
+      "noise_sigma": "Qualità del rumore",
       "dynamic_range_stops": "Gamma dinamica",
       "leading_lines_score": "Linee guida",
       "power_point_score": "Punti di forza compositivi",
@@ -1752,7 +1752,10 @@
       "form_balance": "Equilibrio visivo",
       "form_edge_entropy": "Entropia dei bordi",
       "form_fractal": "Complessita frattale",
-      "color_harmony": "Armonia dei colori"
+      "color_harmony": "Armonia dei colori",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "Cerca un impatto visivo piu forte con illuminazione o soggetto migliori",
@@ -1840,7 +1843,8 @@
         "f_stop_min": "diaframma {actual} < {required}",
         "f_stop_max": "diaframma {actual} > {required}",
         "no_value": "dato non disponibile"
-      }
+      },
+      "override": "Categoria forzata: {category}"
     },
     "penalty": {
       "blink": "Battito di ciglia rilevato",
@@ -1848,7 +1852,16 @@
       "highlight_clipping": "Taglio alte luci: {value}",
       "shadow_clipping": "Taglio ombre: {value}",
       "skin_tone": "Incarnato: dominante {cast} (ΔE {delta})"
-    }
+    },
+    "current_formula": "Calcolo attuale",
+    "stored_score": "Punteggio salvato",
+    "calculation_note": "Le impostazioni attuali e la normalizzazione salvata determinano questi valori di qualità. Un valore maggiore è migliore; i valori mancanti usano quelli predefiniti del calcolo.",
+    "adjustments": "Adeguamenti netti e arrotondamento",
+    "different_score": "Il punteggio salvato differisce da questo calcolo.",
+    "calculation_unavailable": "Il contesto completo del calcolo non è disponibile. Il punteggio salvato rimane visibile.",
+    "advisories": "Condizioni rilevate",
+    "cached_commentary": "Il commento salvato non ha un contesto di valutazione verificato.",
+    "stored_unavailable": "Nessun punteggio salvato valido"
   },
   "culling": {
     "compare": {

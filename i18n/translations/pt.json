@@ -1735,7 +1735,7 @@
       "color_score": "Cor",
       "contrast_score": "Contraste",
       "isolation_bonus": "Isolamento do tema",
-      "noise_sigma": "Nível de ruído",
+      "noise_sigma": "Qualidade do ruído",
       "dynamic_range_stops": "Faixa dinâmica",
       "leading_lines_score": "Linhas-guia",
       "power_point_score": "Pontos de força",
@@ -1752,7 +1752,10 @@
       "form_balance": "Equilíbrio visual",
       "form_edge_entropy": "Entropia de bordas",
       "form_fractal": "Complexidade fractal",
-      "color_harmony": "Harmonia de cores"
+      "color_harmony": "Harmonia de cores",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "Considere um impacto visual mais forte com melhor iluminação ou escolha de tema",
@@ -1840,7 +1843,8 @@
         "f_stop_min": "abertura {actual} < {required}",
         "f_stop_max": "abertura {actual} > {required}",
         "no_value": "dados não disponíveis"
-      }
+      },
+      "override": "Categoria definida: {category}"
     },
     "penalty": {
       "blink": "Piscada detectada",
@@ -1848,7 +1852,16 @@
       "highlight_clipping": "Estouro de altas-luzes: {value}",
       "shadow_clipping": "Corte de sombras: {value}",
       "skin_tone": "Tom de pele: dominante {cast} (ΔE {delta})"
-    }
+    },
+    "current_formula": "Cálculo atual",
+    "stored_score": "Pontuação guardada",
+    "calculation_note": "As definições atuais e a normalização guardada determinam estes valores de qualidade. Mais alto é melhor; os valores em falta usam os valores predefinidos do cálculo.",
+    "adjustments": "Ajustes líquidos e arredondamento",
+    "different_score": "A pontuação guardada difere deste cálculo.",
+    "calculation_unavailable": "O contexto completo do cálculo não está disponível. A pontuação guardada continua visível.",
+    "advisories": "Condições detetadas",
+    "cached_commentary": "O comentário guardado não tem um contexto de pontuação verificado.",
+    "stored_unavailable": "Nenhuma pontuação guardada válida"
   },
   "culling": {
     "compare": {

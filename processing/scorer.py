@@ -627,6 +627,11 @@ def fold_quality_weight(w):
     return {**w, 'aesthetic': w.get('aesthetic', 0.0) + w.get('quality', 0.0), 'quality': 0.0}
 
 
+def weighted_metric_contribution(value, weight):
+    """Native weighted-sum term shared by scoring and score explanations."""
+    return max(0.0, min(10.0, value)) * weight
+
+
 # The photo columns the scorer reads to recompute an aggregate and a category from
 # a stored row (--recompute-average), without the clip_embedding BLOB. Shared with
 # the weight optimizer, which re-serves a category's rows to measure what an apply
@@ -1390,7 +1395,7 @@ class Facet:
         for metric_name, metric_value in metric_values.items():
             weight = w.get(metric_name, 0.0)
             if weight > 0:
-                score += max(0.0, min(10.0, metric_value)) * weight
+                score += weighted_metric_contribution(metric_value, weight)
 
         # Apply blink penalty (multiplier on the whole score)
         if apply_blink_penalty and m.get('is_blink'):

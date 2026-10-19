@@ -103,6 +103,14 @@ class MediaCritiqueResponse(BaseModel):
     category: str
     category_reason: MediaCritiqueCategoryReason
     aggregate: Optional[float] = None
+    score_basis: Optional[str] = None
+    current_formula_score: Optional[float] = None
+    native_adjustment: Optional[float] = None
+    stored_score_matches_current_formula: Optional[bool] = None
+    normalization_basis: Optional[str] = None
+    explanation_unavailable_reason: Optional[str] = None
+    generation_state: Optional[str] = None
+    stored_score_state: Optional[str] = None
     breakdown: list[MediaCritiqueBreakdownItem] = []
     strengths: list[MediaCritiqueMetricRef] = []
     weaknesses: list[MediaCritiqueMetricRef] = []

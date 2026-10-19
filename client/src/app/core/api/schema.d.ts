@@ -5718,11 +5718,21 @@ export interface components {
             /** Category */
             category: string;
             category_reason: components["schemas"]["MediaCritiqueCategoryReason"];
+            /** Current Formula Score */
+            current_formula_score?: number | null;
             /**
              * Distortions
              * @default []
              */
             distortions?: string[];
+            /** Explanation Unavailable Reason */
+            explanation_unavailable_reason?: string | null;
+            /** Generation State */
+            generation_state?: string | null;
+            /** Native Adjustment */
+            native_adjustment?: number | null;
+            /** Normalization Basis */
+            normalization_basis?: string | null;
             /**
              * Penalties
              * @default {}
@@ -5730,6 +5740,12 @@ export interface components {
             penalties?: {
                 [key: string]: unknown;
             };
+            /** Score Basis */
+            score_basis?: string | null;
+            /** Stored Score Matches Current Formula */
+            stored_score_matches_current_formula?: boolean | null;
+            /** Stored Score State */
+            stored_score_state?: string | null;
             /**
              * Strengths
              * @default []

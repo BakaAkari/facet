@@ -66,7 +66,12 @@ interface SkinTonePenalty {
 interface CritiqueResponse {
   category: string;
   category_reason: CategoryReason;
-  aggregate: number;
+  aggregate: number | null;
+  score_basis?: 'current_formula';
+  current_formula_score?: number | null;
+  native_adjustment?: number | null;
+  stored_score_matches_current_formula?: boolean | null;
+  explanation_unavailable_reason?: string;
   breakdown: CritiqueBreakdown[];
   strengths: CritiqueMetricRef[];
   weaknesses: CritiqueMetricRef[];
@@ -94,6 +99,12 @@ export class CategoryReasonPipe implements PipeTransform {
   private i18n = inject(I18nService);
 
   transform(reason: CategoryReason): string {
+    if (reason.reason_key === 'unavailable') {
+      return this.i18n.t(I18N.critique.calculation_unavailable);
+    }
+    if (reason.reason_key === 'override') {
+      return this.i18n.t(I18N.critique.reason.override, { category: reason.category });
+    }
     if (reason.reason_key === 'default') {
       return this.i18n.t(I18N.critique.reason.default);
     }
@@ -238,6 +249,23 @@ export class DistortionLabelPipe implements PipeTransform {
           }
         </div>
 
+        @if (c.score_basis) {
+          <div class="text-sm mb-3" data-testid="score-calculation-context">
+            <div>{{ I18N.critique.stored_score | translate }}:
+              @if (c.aggregate !== null && c.aggregate !== undefined) { {{ c.aggregate | number:'1.2-2' }} }
+              @else { {{ I18N.critique.stored_unavailable | translate }} }
+            </div>
+            @if (c.current_formula_score !== null && c.current_formula_score !== undefined) {
+              <p class="text-xs opacity-60">{{ I18N.critique.calculation_note | translate }}</p>
+              @if (c.stored_score_matches_current_formula === false) {
+                <p class="text-xs text-amber-400">{{ I18N.critique.different_score | translate }}</p>
+              }
+            } @else {
+              <p class="text-xs opacity-60">{{ I18N.critique.calculation_unavailable | translate }}</p>
+            }
+          </div>
+        }
+
         <!-- Score breakdown table -->
         <div class="text-xs uppercase tracking-wider opacity-50 mb-2">{{ I18N.critique.breakdown | translate }}</div>
         <table class="w-full text-sm mb-4">
@@ -251,6 +279,14 @@ export class DistortionLabelPipe implements PipeTransform {
               </tr>
             }
           </tbody>
+          @if (c.score_basis && c.current_formula_score !== null && c.current_formula_score !== undefined) {
+            <tfoot data-testid="score-calculation-total">
+              <tr><td colspan="3">{{ I18N.critique.adjustments | translate }}</td>
+                <td class="text-right">{{ c.native_adjustment | number:'1.2-2' }}</td></tr>
+              <tr class="font-medium"><td colspan="3">{{ I18N.critique.current_formula | translate }}</td>
+                <td class="text-right">{{ c.current_formula_score | number:'1.2-2' }}</td></tr>
+            </tfoot>
+          }
         </table>
 
         <!-- Strengths & Weaknesses side by side -->
@@ -317,6 +353,9 @@ export class DistortionLabelPipe implements PipeTransform {
 
         <!-- VLM Critique -->
         @if (c.vlm_critique) {
+          @if (c.vlm_source === 'cached') {
+            <p class="text-xs opacity-60">{{ I18N.critique.cached_commentary | translate }}</p>
+          }
           <div class="mt-4 p-3 rounded-lg bg-[var(--mat-sys-surface-container)]">
             <div class="flex items-center mb-1">
               <div class="flex-1 text-xs uppercase tracking-wider opacity-50">{{ I18N.critique.vlm_title | translate }}</div>
@@ -338,7 +377,7 @@ export class DistortionLabelPipe implements PipeTransform {
         <!-- Penalties -->
         @if (hasPenalties()) {
           <div class="mt-3 text-xs opacity-60">
-            <span class="uppercase tracking-wider">{{ I18N.critique.penalties | translate }}:</span>
+            <span class="uppercase tracking-wider">{{ (c.score_basis ? I18N.critique.advisories : I18N.critique.penalties) | translate }}:</span>
             @if (c.penalties['blink']) { <span class="ml-2 text-red-400">{{ I18N.critique.penalty.blink | translate }}</span> }
             @if (c.penalties['noise']) { <span class="ml-2">{{ I18N.critique.penalty.noise | translate:{ value: '' + c.penalties['noise'] } }}</span> }
             @if (c.penalties['highlight_clipping']) { <span class="ml-2">{{ I18N.critique.penalty.highlight_clipping | translate:{ value: '' + c.penalties['highlight_clipping'] } }}</span> }

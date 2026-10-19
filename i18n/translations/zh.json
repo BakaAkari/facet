@@ -1735,7 +1735,7 @@
       "color_score": "色彩",
       "contrast_score": "对比度",
       "isolation_bonus": "主体分离度",
-      "noise_sigma": "噪点水平",
+      "noise_sigma": "噪声质量",
       "dynamic_range_stops": "动态范围",
       "leading_lines_score": "引导线",
       "power_point_score": "构图交点",
@@ -1752,7 +1752,10 @@
       "form_balance": "视觉平衡",
       "form_edge_entropy": "边缘信息熵",
       "form_fractal": "分形复杂度",
-      "color_harmony": "色彩和谐度"
+      "color_harmony": "色彩和谐度",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "可尝试改善光线或选择更有表现力的主体，增强视觉冲击力",
@@ -1840,7 +1843,8 @@
         "f_stop_min": "光圈值 {actual} < {required}",
         "f_stop_max": "光圈值 {actual} > {required}",
         "no_value": "数据不可用"
-      }
+      },
+      "override": "手动指定类别：{category}"
     },
     "penalty": {
       "blink": "检测到闭眼",
@@ -1848,7 +1852,16 @@
       "highlight_clipping": "高光溢出：{value}",
       "shadow_clipping": "阴影溢出：{value}",
       "skin_tone": "肤色偏色：{cast}（ΔE {delta}）"
-    }
+    },
+    "current_formula": "当前计算",
+    "stored_score": "已保存评分",
+    "calculation_note": "这些质量输入由当前设置和已保存的归一化数据确定。数值越高越好；缺失值使用评分公式的默认值。",
+    "adjustments": "净调整与舍入",
+    "different_score": "已保存评分与当前计算不同。",
+    "calculation_unavailable": "完整的评分上下文不可用，仍显示已保存评分。",
+    "advisories": "检测到的情况",
+    "cached_commentary": "缓存评论没有经过验证的评分上下文。",
+    "stored_unavailable": "没有有效的已保存评分"
   },
   "culling": {
     "compare": {

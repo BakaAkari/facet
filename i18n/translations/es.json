@@ -1735,7 +1735,7 @@
       "color_score": "Color",
       "contrast_score": "Contraste",
       "isolation_bonus": "Aislamiento del sujeto",
-      "noise_sigma": "Nivel de ruido",
+      "noise_sigma": "Calidad de ruido",
       "dynamic_range_stops": "Rango dinamico",
       "leading_lines_score": "Lineas directrices",
       "power_point_score": "Puntos de fuerza",
@@ -1752,7 +1752,10 @@
       "form_balance": "Equilibrio visual",
       "form_edge_entropy": "Entropia de bordes",
       "form_fractal": "Complejidad fractal",
-      "color_harmony": "Armonia de color"
+      "color_harmony": "Armonia de color",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "Busca un mayor impacto visual con mejor iluminacion o eleccion de sujeto",
@@ -1840,7 +1843,8 @@
         "f_stop_min": "apertura {actual} < {required}",
         "f_stop_max": "apertura {actual} > {required}",
         "no_value": "dato no disponible"
-      }
+      },
+      "override": "Categoría forzada: {category}"
     },
     "penalty": {
       "blink": "Parpadeo detectado",
@@ -1848,7 +1852,16 @@
       "highlight_clipping": "Recorte de altas luces: {value}",
       "shadow_clipping": "Recorte de sombras: {value}",
       "skin_tone": "Tono de piel: dominante {cast} (ΔE {delta})"
-    }
+    },
+    "current_formula": "Cálculo actual",
+    "stored_score": "Puntuación guardada",
+    "calculation_note": "Los ajustes actuales y la normalización guardada determinan estos valores de calidad. Más alto es mejor; los valores ausentes usan los valores predeterminados del cálculo.",
+    "adjustments": "Ajustes netos y redondeo",
+    "different_score": "La puntuación guardada difiere de este cálculo.",
+    "calculation_unavailable": "No está disponible el contexto completo del cálculo. Se sigue mostrando la puntuación guardada.",
+    "advisories": "Condiciones detectadas",
+    "cached_commentary": "El comentario guardado no tiene un contexto de puntuación verificado.",
+    "stored_unavailable": "No hay una puntuación guardada válida"
   },
   "culling": {
     "compare": {
