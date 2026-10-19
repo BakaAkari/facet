@@ -123,6 +123,13 @@ python database.py --migrate-user-preferences --user alice
 
 ## Filteroptionen
 
+Die Textsuche der Galerie behält Unicode-Wörter bei und behandelt Satzzeichen in
+Dateinamen als Wortgrenzen. So sucht `IMG_0042.JPG` gemeinsam nach den Präfixen
+`IMG`, `0042` und `JPG`. Kyrillische und CJK-Begriffe sind durchsuchbar;
+FTS-Operatoren wie `OR` werden als wörtliche Begriffe behandelt. Der Abgleich folgt
+den bestehenden Tokenizer-Regeln von SQLite, einschließlich ihrer Grenzen bei der
+Unicode-Normalisierung.
+
 <details><summary>Filter-Seitenleiste — alle Abschnitte aufgeklappt (zum Anzeigen klicken)</summary>
 <p align="center"><img src="screenshots/filter-sidebar-full.jpg" alt="Filter-Seitenleiste mit allen aufgeklappten Abschnitten" width="360"></p>
 </details>

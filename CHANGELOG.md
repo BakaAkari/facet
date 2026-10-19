@@ -11,6 +11,7 @@ All notable changes to Facet are documented in this file.
 ### Fixed
 
 - **The Docker image keeps the groups compose `group_add` gives it** (issue #208). The entrypoint dropped root to the `facet` user with `gosu`, which resets the supplementary groups from the image's `/etc/group`, so a photo share readable only through a NAS group was unreadable to the scanner. It now drops with `setpriv`, keeping `facet`'s own gid plus every gid the container was started with (except 0 and 65534), and the config-readability probe runs with the same groups. Unlike `gosu`, `setpriv` does not reset `HOME`, so a `HOME` set in compose is now honoured instead of being replaced by `/home/facet` (the image default is unchanged). `gosu` stays installed. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+- **Gallery search finds full filenames and non-Latin words** (PR #210, thanks @bepcyc). The search box stripped every character outside ASCII letters, digits and `_`, so `IMG_0042.JPG` became the single token `IMG_0042JPG`, which never matched the indexed filename, and a Cyrillic- or CJK-only query searched for nothing. Unicode letters and digits are now kept and punctuation splits the input into separate prefix terms that must all match; FTS operators such as `OR` are still searched as literal words. No index rebuild is needed. See [docs/VIEWER.md](docs/VIEWER.md#filtering-options).
 
 ## [1.21.0] "Rafale" — 2026-10-16
 

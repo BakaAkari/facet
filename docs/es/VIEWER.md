@@ -123,6 +123,13 @@ python database.py --migrate-user-preferences --user alice
 
 ## Opciones de filtrado
 
+La búsqueda de texto de la galería conserva las palabras Unicode y trata la
+puntuación de los nombres de archivo como separadores de palabras. Por ejemplo,
+`IMG_0042.JPG` busca a la vez los prefijos `IMG`, `0042` y `JPG`. Los términos en
+cirílico y CJK se pueden buscar; los operadores FTS como `OR` se tratan como
+palabras literales. La coincidencia sigue las reglas del tokenizador de SQLite
+existente, incluidas sus limitaciones de normalización Unicode.
+
 <details><summary>Barra lateral de filtros completa: todas las secciones expandidas (haz clic para ver)</summary>
 <p align="center"><img src="screenshots/filter-sidebar-full.jpg" alt="Filter sidebar with every section expanded" width="360"></p>
 </details>
