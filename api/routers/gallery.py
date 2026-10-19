@@ -874,8 +874,9 @@ def _prepare_gallery_params(qp: dict):
 def _resolve_order_by(params: dict) -> str:
     """Build the ORDER BY clause matching the gallery's sort semantics.
 
-    The nullable columns (``api.types.NULLABLE_SORT_COLS``) always sink; the
-    guard itself lives in ``api.types.order_by_clause``, shared with the albums.
+    The nullable columns (``api.types.NULLABLE_SORT_COLS``) and the missing or
+    invalid ``shutter_speed`` values always sink; the clause itself lives in
+    ``api.types.order_by_clause``, shared with the albums.
     """
     sort_col = params['sort'] if params['sort'] in VALID_SORT_COLS else 'aggregate'
     sort_dir = 'ASC' if params['dir'] == 'ASC' else 'DESC'
