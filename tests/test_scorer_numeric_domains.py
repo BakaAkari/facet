@@ -133,8 +133,35 @@ def test_saturation_luminance_and_aperture_boundaries():
 
 
 def test_existing_fractional_exif_category_parsing_preserved():
-    cfg=Config()
-    scorer.Facet._determine_photo_category({'iso':'3200/1','f_stop':'28/10','focal_length':'200/1'},cfg)
-    values,_=cfg.received
-    assert values['iso']==3200 and values['f_stop']==2.8 and values['focal_length']==200
-    assert scorer.build_metric_vector({'tech_sharpness':5,'iso':'3200/1'},Config(),'default')['tech_sharpness']==6
+    cfg = Config()
+    scorer.Facet._determine_photo_category({'iso': '3200/1', 'f_stop': '28/10', 'focal_length': '200/1'}, cfg)
+    values, _ = cfg.received
+    assert values['iso'] == 3200
+    assert values['f_stop'] == 2.8
+    assert values['focal_length'] == 200
+    assert scorer.build_metric_vector({'tech_sharpness': 5, 'iso': '3200/1'}, Config(), 'default')['tech_sharpness'] == 6
+
+
+@pytest.mark.parametrize('field', ['iso', 'f_stop', 'focal_length'])
+@pytest.mark.parametrize('bad', [0, -1, math.nan, math.inf, 'nan', '1/0'])
+def test_nonpositive_or_nonfinite_exif_stored_as_none_in_category_data(field, bad):
+    cfg = Config()
+    scorer.Facet._determine_photo_category({field: bad}, cfg)
+    assert cfg.received[0][field] is None
+
+
+@pytest.mark.parametrize('bad', [0, -3200, math.nan])
+def test_invalid_iso_gives_no_sharpness_compensation(bad):
+    vector = scorer.build_metric_vector({'tech_sharpness': 5, 'iso': bad}, Config(), 'default')
+    assert vector['tech_sharpness'] == 5
+
+
+def test_negative_raw_measurements_fall_back_to_supplied_default():
+    vector = scorer.build_metric_vector(
+        {'face_sharpness': -1, 'noise_sigma': -1, 'histogram_spread': -1, 'isolation_bonus': 0.5}, Config(), 'default')
+    assert vector['face_sharpness'] == 5.0
+    assert vector['noise'] == scorer.build_metric_vector({'noise_sigma': 0}, Config(), 'default')['noise']
+    assert vector['dynamic_range'] == 0
+    assert vector['isolation'] == 0
+    assert scorer._calculate_scoring_penalties({'noise_sigma': -1}, Config())['noise_penalty'] == \
+        scorer._calculate_scoring_penalties({'noise_sigma': 0}, Config())['noise_penalty']

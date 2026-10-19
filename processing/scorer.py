@@ -113,7 +113,7 @@ logging.getLogger('exifread').setLevel(logging.ERROR)
 
 # Import config module (lightweight, no cv2/torch dependency)
 from config import ScoringConfig
-from config.category_filter import with_face_defaults
+from config.category_filter import _to_float, with_face_defaults
 
 logger = logging.getLogger("facet.scorer")
 
@@ -420,6 +420,10 @@ def fix_thumbnail_rotation(db_path):
 # HELPER FUNCTIONS
 # ============================================
 
+# Population std-dev of 0-255 luminance cannot exceed 127.5 (half the range, all mass at both ends).
+MAX_HISTOGRAM_SPREAD = 127.5
+
+
 def _safe_float(val, default=5.0, *, min_value=-100.0, max_value=100.0):
     """Parse a finite number with caller-specific inclusive bounds.
 
@@ -444,13 +448,9 @@ def _safe_float(val, default=5.0, *, min_value=-100.0, max_value=100.0):
 
 def _positive_float(val):
     """A positive finite EXIF value; zero means missing, not a valid exposure."""
-    if isinstance(val, str) and '/' in val:
-        try:
-            num, denom = val.split('/')
-            val = float(num) / float(denom)
-        except (ValueError, ZeroDivisionError, OverflowError):
-            return None
-    number = _safe_float(val, None, min_value=0, max_value=None)
+    if not isinstance(val, (int, float, str)):
+        return None
+    number = _to_float(val)
     return number if number is not None and number > 0 else None
 
 
@@ -540,7 +540,7 @@ def build_metric_vector(m, cfg, category, penalties=None, unavailable=()):
             effective_isolation = min(3.0, effective_isolation * multiplier)
     isolation_score = min(10.0, (effective_isolation - 1.0) * 5.0)
 
-    dynamic_range_score = min(10.0, safe_float(m.get('histogram_spread'), 0, min_value=0, max_value=127.5) / 6.0)
+    dynamic_range_score = min(10.0, safe_float(m.get('histogram_spread'), 0, min_value=0, max_value=MAX_HISTOGRAM_SPREAD) / 6.0)
 
     if penalties is None:
         penalties = _calculate_scoring_penalties(m, cfg)
