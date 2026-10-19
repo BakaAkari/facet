@@ -422,6 +422,7 @@ export const I18N = {
   sort_options: {
     aggregate: "sort_options.aggregate",
     aesthetic: "sort_options.aesthetic",
+    qrealign_score: "sort_options.qrealign_score",
     date_taken: "sort_options.date_taken",
     star_rating: "sort_options.star_rating",
     face_quality: "sort_options.face_quality",

@@ -398,7 +398,6 @@ INDEXES = [
     ('idx_aesthetic_iaa', 'photos', 'aesthetic_iaa'),
     ('idx_face_quality_iqa', 'photos', 'face_quality_iqa'),
     ('idx_liqe_score', 'photos', 'liqe_score'),
-    ('idx_qrealign_score', 'photos', 'qrealign_score'),
     ('idx_aesthetic_v25', 'photos', 'aesthetic_v25'),
     ('idx_deqa_score', 'photos', 'deqa_score'),
     ('idx_eye_sharpness', 'photos', 'eye_sharpness'),
@@ -441,6 +440,13 @@ INDEXES = [
     # correlated subquery into learned_scores (~0.5s/page). Standalone (X DESC,
     # path) for the same MULTI-INDEX-OR reason as idx_moment_confidence above.
     ('idx_learned_score', 'photos', 'learned_score DESC, path'),
+    # Q-ReAlign sort + min/max_qrealign range filter (the leading column serves both).
+    # Same (X DESC, path) shape as idx_learned_score so the DESC order_by needs no
+    # temp B-tree; analyzed on build (ANALYZE_ON_BUILD_INDEXES) so the planner uses it
+    # on libraries whose gallery indexes are already analyzed. Replaces the bare
+    # idx_qrealign_score (dropped on upgrade): CREATE INDEX IF NOT EXISTS cannot
+    # reshape an index, hence the new name.
+    ('idx_qrealign_sort', 'photos', 'qrealign_score DESC, path'),
     # Covering index for _shoot_type_evidence's GROUP BY (category,
     # narrative_moment): leading columns match the GROUP BY exactly, with
     # face_count and date_taken (read by the conditional SUMs) appended so the
@@ -1333,8 +1339,9 @@ def init_database(db_path='photo_scores_pro.db', build_photo_indexes=True):
         # leading `date_taken ASC, path`, plus the columns the post-scan reads need),
         # so a library the first gallery-index release already upgraded drops its
         # narrow copy instead of maintaining two near-identical B-trees.
+        # idx_qrealign_score is superseded by idx_qrealign_sort (qrealign_score DESC, path).
         for stale_idx in ('idx_burst_moment', 'idx_burst_learned', 'idx_qalign_score',
-                          'idx_render_version', 'idx_gallery_date_asc'):
+                          'idx_render_version', 'idx_gallery_date_asc', 'idx_qrealign_score'):
             conn.execute(f'DROP INDEX IF EXISTS {stale_idx}')
 
         # Create every remaining index group (photo_tags, comparisons,
@@ -1408,7 +1415,7 @@ ANALYZE_KEY_INDEXES = ('idx_moment_confidence', 'idx_gallery_aggregate')
 # without a sqlite_stat1 row for the new index the planner ignores it next to
 # stale partial stats. A one-index ANALYZE scans the small covering index, not the
 # 16 GB table, so it costs seconds where ``ANALYZE photos`` costs the whole file.
-ANALYZE_ON_BUILD_INDEXES = ('idx_post_scan', 'idx_date_asc_cover')
+ANALYZE_ON_BUILD_INDEXES = ('idx_post_scan', 'idx_date_asc_cover', 'idx_qrealign_sort')
 
 
 def missing_photo_indexes(conn):

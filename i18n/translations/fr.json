@@ -408,6 +408,7 @@
   "sort_options": {
     "aggregate": "Score agrégé",
     "aesthetic": "Esthétique",
+    "qrealign_score": "Q-ReAlign (esthétique)",
     "date_taken": "Date de prise",
     "star_rating": "Étoiles",
     "face_quality": "Qualité visage",
