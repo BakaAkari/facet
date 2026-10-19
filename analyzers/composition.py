@@ -12,6 +12,17 @@ class CompositionAnalyzer:
     """Evaluates the mathematical placement of subjects within the frame."""
 
     @staticmethod
+    def _is_valid_saliency_map(saliency_map, shape):
+        """True when saliency_map is a finite real array of `shape` within [0, 1]."""
+        return (isinstance(saliency_map, np.ndarray)
+                and saliency_map.shape == shape
+                and np.issubdtype(saliency_map.dtype, np.number)
+                and not np.issubdtype(saliency_map.dtype, np.complexfloating)
+                and bool(np.isfinite(saliency_map).all())
+                and not (saliency_map < 0).any()
+                and not (saliency_map > 1).any())
+
+    @staticmethod
     def detect_subject_region(img_cv, *, strict_errors=False):
         """Detect the main subject region using multiple strategies.
 
@@ -25,6 +36,10 @@ class CompositionAnalyzer:
 
         Returns:
             Bounding box [x1, y1, x2, y2] of detected subject, or None if none found.
+
+        Raises:
+            RuntimeError: Only when strict_errors=True and spectral residual
+                saliency is unavailable, fails, or returns an invalid map.
         """
         if img_cv is None:
             return None
@@ -82,16 +97,10 @@ class CompositionAnalyzer:
             saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
             success, saliency_map = saliency.computeSaliency(img_cv)
             if not success and strict_errors:
-                raise RuntimeError('Spectral residual computeSaliency failed')
+                raise RuntimeError("Spectral residual computeSaliency failed")
             if success:
-                if strict_errors and (not isinstance(saliency_map, np.ndarray)
-                        or saliency_map.shape != gray.shape
-                        or not np.issubdtype(saliency_map.dtype, np.number)
-                        or np.issubdtype(saliency_map.dtype, np.complexfloating)
-                        or not np.isfinite(saliency_map).all()
-                        or (saliency_map < 0).any()
-                        or (saliency_map > 1).any()):
-                    raise RuntimeError('Invalid spectral residual saliency map')
+                if strict_errors and not CompositionAnalyzer._is_valid_saliency_map(saliency_map, gray.shape):
+                    raise RuntimeError("Invalid spectral residual saliency map")
                 saliency_map = (saliency_map * 255).astype(np.uint8)
                 _, thresh = cv2.threshold(saliency_map, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                 sal_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -102,8 +111,7 @@ class CompositionAnalyzer:
         except (cv2.error, AttributeError) as error:
             # Saliency module may not be available in all OpenCV builds.
             if strict_errors:
-                raise RuntimeError('Spectral residual capability or execution unavailable') from error
-            pass
+                raise RuntimeError("Spectral residual capability or execution unavailable") from error
 
         return None
 

@@ -50,6 +50,16 @@ def test_opencv_error_preserves_default_and_strict_preserves_cause(monkeypatch, 
     assert isinstance(error.value.__cause__, cv2.error)
 
 
+# Current default-mode result per invalid map. string/none are not tolerated by
+# the legacy path: it raises TypeError, which strict mode now reports as RuntimeError.
+NONSTRICT = {
+    "nan": None, "inf": None, "shape": None, "complex": None, "overflow": None,
+    "negative": [20, 10, 40, 20],
+    "string": TypeError, "none": TypeError,
+}
+EXPECTED_BLOCK = [24, 14, 55, 45]
+
+
 @pytest.mark.parametrize("kind", ["nan", "inf", "shape", "string", "complex", "none", "negative", "overflow"])
 def test_strict_rejects_invalid_successful_maps(monkeypatch, image, kind):
     value = np.zeros(image.shape[:2], dtype=np.float32)
@@ -70,6 +80,12 @@ def test_strict_rejects_invalid_successful_maps(monkeypatch, image, kind):
     else:
         value = None
     install_saliency(monkeypatch, lambda _: (True, value))
+    expected = NONSTRICT[kind]
+    if expected is TypeError:
+        with pytest.raises(TypeError):
+            CompositionAnalyzer.detect_subject_region(image)
+    else:
+        assert CompositionAnalyzer.detect_subject_region(image) == expected
     with pytest.raises(RuntimeError, match="Invalid spectral"):
         CompositionAnalyzer.detect_subject_region(image, strict_errors=True)
 
@@ -89,10 +105,5 @@ def test_canny_success_does_not_require_saliency(monkeypatch, image):
     monkeypatch.delattr(cv2, "saliency", raising=False)
     image[15:45, 25:55] = 255
     ordinary = CompositionAnalyzer.detect_subject_region(image)
-    assert ordinary is not None
     assert CompositionAnalyzer.detect_subject_region(image, strict_errors=True) == ordinary
-    assert CompositionAnalyzer.get_placement_data(ordinary, 96, 64) == (
-        CompositionAnalyzer.get_placement_data(
-            CompositionAnalyzer.detect_subject_region(image, strict_errors=True), 96, 64
-        )
-    )
+    assert ordinary == EXPECTED_BLOCK
