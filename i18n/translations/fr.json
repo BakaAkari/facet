@@ -434,6 +434,7 @@
     "shutter_speed": "Vitesse d'obturation",
     "topiq_score": "Score TOPIQ",
     "quality_score": "Score qualité",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "Esthétique (IAA)",
     "liqe_score": "Score LIQE",
     "face_quality_iqa": "Qualité visage (IQA)",

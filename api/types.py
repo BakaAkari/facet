@@ -51,11 +51,13 @@ def _build_sort_options():
 SORT_OPTIONS, SORT_OPTIONS_GROUPED = _build_sort_options()
 
 # licensing.unavailable_metrics() speaks in weight keys; the viewer sorts and
-# filters by photos columns. The two differ only for LIQE ('liqe' -> 'liqe_score').
+# filters by photos columns. The two differ for LIQE ('liqe' -> 'liqe_score') and
+# DeQA ('deqa' -> 'deqa_score').
 _METRIC_COLUMNS = {
     'liqe': 'liqe_score',
     'aesthetic_iaa': 'aesthetic_iaa',
     'face_quality_iqa': 'face_quality_iqa',
+    'deqa': 'deqa_score',
 }
 
 
@@ -73,9 +75,9 @@ def unavailable_columns():
 # off, the library predates it, a CPU-only scanner): config cannot tell, because
 # "auto" resolves from the SCANNER's GPU and the viewer may run elsewhere. The
 # option is listed only once some photo carries a value. Adding a sibling metric
-# (deqa_score, aesthetic_v25) is one entry here. VALID_SORT_COLS is untouched, so
-# an explicit ``sort=<column>`` request keeps working.
-DATA_GATED_SORT_COLS = ('qrealign_score',)
+# is one entry here. VALID_SORT_COLS is untouched, so an explicit ``sort=<column>``
+# request keeps working.
+DATA_GATED_SORT_COLS = ('qrealign_score', 'deqa_score')
 DATA_GATE_TTL_SECONDS = 60
 _data_gate_cache = {'cols': frozenset(), 'expires': 0.0}
 _data_gate_lock = threading.Lock()
@@ -170,7 +172,8 @@ VALID_SORT_COLS = [opt[0] for opt in SORT_OPTIONS] + ['top_picks_score', 'learne
 # through its own seconds expression (see ``order_by_clause``) and always sinks its
 # missing and invalid values.
 NULLABLE_SORT_COLS = ('learned_score', 'narrative_moment_confidence', 'aesthetic_iaa',
-                      'liqe_score', 'face_quality_iqa', 'aesthetic_v25', 'qrealign_score')
+                      'liqe_score', 'face_quality_iqa', 'aesthetic_v25', 'qrealign_score',
+                      'deqa_score')
 
 
 def order_by_clause(sort_col: str, sort_dir: str, tiebreak: str = '') -> str:

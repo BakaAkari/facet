@@ -434,6 +434,7 @@
     "shutter_speed": "快门速度",
     "topiq_score": "TOPIQ 评分",
     "quality_score": "画质评分",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "美学评分（IAA）",
     "liqe_score": "LIQE 评分",
     "face_quality_iqa": "人脸画质（IQA）",

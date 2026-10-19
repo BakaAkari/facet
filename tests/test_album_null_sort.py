@@ -23,7 +23,8 @@ from tests.conftest import _TEST_DB_FILE
 PREFIX = "/album-null-sort/"
 OWNER = "test"  # the user_id the edition_client fixture authenticates as
 TOKEN = "null-sort-share-token"
-NULLABLE_SORT_COLUMNS = ("aesthetic_iaa", "liqe_score", "face_quality_iqa", "qrealign_score")
+NULLABLE_SORT_COLUMNS = ("aesthetic_iaa", "liqe_score", "face_quality_iqa", "qrealign_score",
+                         "deqa_score")
 
 
 def _rows(column):

@@ -6,6 +6,8 @@ describe('unavailable-metrics', () => {
     expect(metricColumn('max_liqe')).toBe('liqe_score');
     expect(metricColumn('liqe_percent')).toBe('liqe_score');
     expect(metricColumn('liqe_score')).toBe('liqe_score');
+    expect(metricColumn('deqa_percent')).toBe('deqa_score');
+    expect(metricColumn('min_deqa')).toBe('deqa_score');
     expect(metricColumn('min_aesthetic_iaa')).toBe('aesthetic_iaa');
     expect(metricColumn('face_quality_iqa_percent')).toBe('face_quality_iqa');
   });
