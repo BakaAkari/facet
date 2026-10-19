@@ -632,11 +632,13 @@ def compute_metric_ranges(conn):
 def _compute_metric_ranges():
     """Serve the metric ranges from ``stats_cache``, recomputing when stale.
 
-    The persisted row backs the in-process cache so a restart does not re-walk
-    every metric index; ``database.py --refresh-stats`` writes the same row
-    offline.
+    Cache reads, bounds and buckets share one SQLite snapshot. Writeback must
+    use that same transaction: if an external writer updated scores and evicted
+    the row meanwhile, SQLite rejects the stale read-to-write upgrade and the
+    best-effort cache writer rolls back without repopulating the old value.
     """
-    with get_db() as conn:
+    with get_db() as conn, conn:
+        conn.execute("BEGIN")
         cached = conn.execute(
             "SELECT value, updated_at FROM stats_cache WHERE key = ?",
             (METRIC_RANGES_KEY,),
@@ -658,5 +660,7 @@ def _compute_metric_ranges():
 @router.get("/metric_ranges")
 def metric_ranges(user: CurrentUser = Depends(require_authenticated)):
     """Per-metric observed range and distribution for slider clamping + histograms."""
-    from api.config import _get_stats_cached
-    return {'ranges': _get_stats_cached(METRIC_RANGES_KEY, _compute_metric_ranges)}
+    from api.config import _sanitize_stats
+    # External score publishers invalidate the persisted row transactionally.
+    # A process-local TTL would hide that eviction until its own expiry.
+    return {'ranges': _sanitize_stats(_compute_metric_ranges())}
