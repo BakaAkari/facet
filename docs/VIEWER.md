@@ -164,7 +164,7 @@ tokenizer rules, including its Unicode normalization limitations.
 | **Content** | Tags, monochrome toggle |
 | **Moments** | Narrative moment confidence (0–1 range slider: `min_moment_confidence` / `max_moment_confidence`) |
 
-Range filters on Aesthetic IAA, Face Quality IQA, LIQE, Aesthetic V2.5, Q-ReAlign and DeQA match only photos that have a score. A photo a model could not score is stored as NULL (it used to carry a neutral 5.0), so even a filter that starts at 0 excludes it, and an ascending sort on Aesthetic (IAA), Face Quality (IQA), LIQE, Q-ReAlign or DeQA lists it last, in the gallery and in albums (smart and shared included). See [Supplementary IQA Dimensions](SCORING.md#supplementary-iqa-dimensions).
+Range filters on Aesthetic IAA, Face Quality IQA, LIQE, Aesthetic V2.5, Q-ReAlign and DeQA match only photos that have a score. A photo a model could not score is stored as NULL (it used to carry a neutral 5.0), so even a filter that starts at 0 excludes it, and an ascending sort on Aesthetic (IAA), Face Quality (IQA), LIQE, Aesthetic V2.5, Q-ReAlign or DeQA lists it last, in the gallery and in albums (smart and shared included). See [Supplementary IQA Dimensions](SCORING.md#supplementary-iqa-dimensions).
 
 Range filters on Subject Sharpness, Subject Placement, Background Separation and Power Points likewise match only photos with a measurement: a photo with no detectable subject stores NULL in those columns (it used to carry a neutral 5.0), so even a filter that starts at 0 excludes it, and the detail panel and tooltip omit the row. Subject Prominence is 0.0 for such a photo. See [SCORING.md](SCORING.md).
 
@@ -204,7 +204,7 @@ Controlled by `viewer.features.show_my_taste` (default: `true`). Ranker status i
 
 ### Metrics hidden in commercial mode
 
-With `licensing.mode` set to `commercial`, the viewer hides the metrics whose models cannot be used commercially: the LIQE, Aesthetic IAA and (unless OFIQ is installed) Face Quality IQA range filters, their filter chips and their sort options. `/api/config` lists them in `unavailable_metrics`. On the Weight Tuning page their sliders stay visible but disabled, with a tooltip; the weights are kept, because scoring drops and renormalises them. Restart the viewer after changing the licensing mode.
+With `licensing.mode` set to `commercial`, the viewer hides the metrics whose models cannot be used commercially — LIQE, Aesthetic IAA, Face Quality IQA (unless OFIQ is installed), DeQA (unless `licensing.allow_unclear` is set) and Aesthetic V2.5: their range filters, filter chips and sort options. `/api/config` lists them in `unavailable_metrics`. On the Weight Tuning page their sliders stay visible but disabled, with a tooltip; the weights are kept, because scoring drops and renormalises them. Restart the viewer after changing the licensing mode.
 
 ## Gallery Features
 

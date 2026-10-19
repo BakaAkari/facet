@@ -355,6 +355,8 @@ def unavailable_metrics(policy_: Optional[Policy] = None) -> set[str]:
         out.add('face_quality_iqa')
     if not allowed('deqa', pol):
         out.add('deqa')
+    if not allowed('aesthetic_v25', pol):
+        out.add('aesthetic_v25')
     return out
 
 

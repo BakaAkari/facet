@@ -47,7 +47,7 @@ def test_desc_sort_unchanged_and_null_last(column, seed_photos_prefix, anonymous
     assert paths == ["c_high.jpg", "b_low.jpg", "a_null.jpg"]
 
 
-@pytest.mark.parametrize("column", (*NULLABLE_SORT_COLUMNS, "aesthetic_v25"))
+@pytest.mark.parametrize("column", NULLABLE_SORT_COLUMNS)
 def test_order_by_clause_guards_asc_only(column):
     asc = _resolve_order_by({"sort": column, "dir": "ASC"})
     desc = _resolve_order_by({"sort": column, "dir": "DESC"})
