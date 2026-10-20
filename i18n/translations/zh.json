@@ -84,6 +84,7 @@
     "end_of_results": "已显示全部结果"
   },
   "tooltip": {
+    "not_computed": "未计算",
     "category": "类别",
     "aggregate": "综合评分",
     "quality_section": "画质",

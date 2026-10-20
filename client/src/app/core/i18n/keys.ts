@@ -98,6 +98,7 @@ export const I18N = {
     end_of_results: "pagination.end_of_results",
   },
   tooltip: {
+    not_computed: "tooltip.not_computed",
     category: "tooltip.category",
     aggregate: "tooltip.aggregate",
     quality_section: "tooltip.quality_section",
