@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import sqlite3
+import math
 
 # Ensure the script's directory is in Python path for local imports
 # This allows running the script from any directory
@@ -112,7 +113,7 @@ logging.getLogger('exifread').setLevel(logging.ERROR)
 
 # Import config module (lightweight, no cv2/torch dependency)
 from config import ScoringConfig
-from config.category_filter import with_face_defaults
+from config.category_filter import _to_float, with_face_defaults
 
 logger = logging.getLogger("facet.scorer")
 
@@ -419,22 +420,38 @@ def fix_thumbnail_rotation(db_path):
 # HELPER FUNCTIONS
 # ============================================
 
-def _safe_float(val, default=5.0):
-    """Safely convert a value to float, handling BLOBs and invalid types."""
-    if val is None:
+# Population std-dev of 0-255 luminance cannot exceed 127.5 (half the range, all mass at both ends).
+MAX_HISTOGRAM_SPREAD = 127.5
+
+
+def _safe_float(val, default=5.0, *, min_value=-100.0, max_value=100.0):
+    """Parse a finite number with caller-specific inclusive bounds.
+
+    The legacy default score policy is retained. None disables only that bound;
+    raw measurements and EXIF must declare their physical domain explicitly.
+    Unsupported/invalid values return the supplied default, never a new clamp.
+    """
+    if not isinstance(val, (int, float, str)):
         return default
-    if isinstance(val, bytes):
+    try:
+        number = float(val)
+    except (ValueError, OverflowError):
         return default
-    if isinstance(val, str):
-        try:
-            val = float(val)
-        except ValueError:
-            return default
-    if isinstance(val, (int, float)):
-        if val < -100 or val > 100:
-            return default
-        return float(val)
-    return default
+    if not math.isfinite(number):
+        return default
+    if min_value is not None and number < min_value:
+        return default
+    if max_value is not None and number > max_value:
+        return default
+    return number
+
+
+def _positive_float(val):
+    """A positive finite EXIF value; zero means missing, not a valid exposure."""
+    if not isinstance(val, (int, float, str)):
+        return None
+    number = _to_float(val)
+    return number if number is not None and number > 0 else None
 
 
 def _calculate_scoring_penalties(metrics, config):
@@ -449,7 +466,7 @@ def _calculate_scoring_penalties(metrics, config):
     """
     penalty_settings = config.get_penalty_settings() if config else {}
 
-    noise_sigma = _safe_float(metrics.get('noise_sigma'), 0)
+    noise_sigma = _safe_float(metrics.get('noise_sigma'), 0, min_value=0, max_value=None)
     noise_threshold = penalty_settings.get('noise_sigma_threshold', 4.0)
     noise_penalty_max = penalty_settings.get('noise_max_penalty_points', 1.5)
     noise_penalty_rate = penalty_settings.get('noise_penalty_per_sigma', 0.3)
@@ -457,7 +474,7 @@ def _calculate_scoring_penalties(metrics, config):
     if noise_sigma > noise_threshold:
         noise_penalty = min(noise_penalty_max, (noise_sigma - noise_threshold) * noise_penalty_rate)
 
-    mean_saturation = _safe_float(metrics.get('mean_saturation'), 0)
+    mean_saturation = _safe_float(metrics.get('mean_saturation'), 0, min_value=0, max_value=1)
     oversat_threshold = penalty_settings.get('oversaturation_threshold', 0.9)
     oversat_penalty_amount = penalty_settings.get('oversaturation_penalty_points', 0.5)
     oversaturation_penalty = oversat_penalty_amount if mean_saturation > oversat_threshold else 0
@@ -510,20 +527,20 @@ def build_metric_vector(m, cfg, category, penalties=None, unavailable=()):
     # ISO-aware sharpness compensation
     adjusted_sharpness = safe_float(m.get('tech_sharpness'), 5.0)
     if exif_settings.get('iso_sharpness_compensation', True):
-        iso = safe_float(m.get('iso'), None)
+        iso = _positive_float(m.get('iso'))
         if iso and iso > 800:
             adjusted_sharpness = min(10.0, adjusted_sharpness + 0.5 * np.log2(iso / 800))
 
     # Aperture-based isolation boost, normalized to 0-10
-    effective_isolation = safe_float(m.get('isolation_bonus'), 1.0)
+    effective_isolation = safe_float(m.get('isolation_bonus'), 1.0, min_value=1, max_value=None)
     if exif_settings.get('aperture_isolation_boost', True):
-        f_stop = safe_float(m.get('f_stop'), None)
+        f_stop = _positive_float(m.get('f_stop'))
         if f_stop and f_stop <= 2.8:
             multiplier = 1.5 if f_stop <= 2.0 else 1.3
             effective_isolation = min(3.0, effective_isolation * multiplier)
     isolation_score = min(10.0, (effective_isolation - 1.0) * 5.0)
 
-    dynamic_range_score = min(10.0, safe_float(m.get('histogram_spread'), 0) / 6.0)
+    dynamic_range_score = min(10.0, safe_float(m.get('histogram_spread'), 0, min_value=0, max_value=MAX_HISTOGRAM_SPREAD) / 6.0)
 
     if penalties is None:
         penalties = _calculate_scoring_penalties(m, cfg)
@@ -547,9 +564,9 @@ def build_metric_vector(m, cfg, category, penalties=None, unavailable=()):
     else:
         comp = comp_raw
 
-    face_sharp = safe_float(m.get('face_sharpness'), 5.0)
+    face_sharp = safe_float(m.get('face_sharpness'), 5.0, min_value=0, max_value=None)
     power_point = safe_float(m.get('power_point_score'), 5.0)
-    saturation = min(10.0, safe_float(m.get('mean_saturation'), 0.5) * 10.0)
+    saturation = min(10.0, safe_float(m.get('mean_saturation'), 0.5, min_value=0, max_value=1) * 10.0)
     noise_score = max(0.0, min(10.0, 10.0 - noise_sigma * 0.7))
 
     result = {
@@ -625,6 +642,11 @@ def fold_quality_weight(w):
     aesthetic metric is unavailable drops the folded weight with it. Returns a copy.
     """
     return {**w, 'aesthetic': w.get('aesthetic', 0.0) + w.get('quality', 0.0), 'quality': 0.0}
+
+
+def weighted_metric_contribution(value, weight):
+    """Native weighted-sum term shared by scoring and score explanations."""
+    return max(0.0, min(10.0, value)) * weight
 
 
 # The photo columns the scorer reads to recompute an aggregate and a category from
@@ -1249,20 +1271,8 @@ class Facet:
 
     @staticmethod
     def _parse_shutter_speed(val):
-        """Parse shutter speed string (handles fractional like '1/500')."""
-        if val is None:
-            return None
-        if isinstance(val, (int, float)):
-            return float(val)
-        if isinstance(val, str):
-            try:
-                if '/' in val:
-                    num, denom = val.split('/')
-                    return float(num) / float(denom)
-                return float(val)
-            except (ValueError, ZeroDivisionError):
-                return None
-        return None
+        """Parse a positive finite duration, including fractional strings."""
+        return _positive_float(val)
 
     @staticmethod
     def _determine_photo_category(m, cfg):
@@ -1280,12 +1290,10 @@ class Facet:
         Returns: category string (e.g., 'portrait', 'wildlife', 'default')
         """
         # Safe float extraction helper
-        def safe_float(val, default=0.0):
-            if val is None or isinstance(val, bytes):
+        def safe_float(val, default=0.0, **bounds):
+            if not isinstance(val, (int, float)):
                 return default
-            if isinstance(val, (int, float)):
-                return float(val) if -100 <= val <= 100 else default
-            return default
+            return _safe_float(val, default, **bounds)
 
         if cfg is None:
             # Fallback if no config (shouldn't happen in practice)
@@ -1301,16 +1309,16 @@ class Facet:
         # Build photo_data dict for config-driven category determination
         photo_data = with_face_defaults({
             'tags': m.get('tags', '') or '',
-            'face_count': int(safe_float(m.get('face_count'), 0)),
-            'face_ratio': safe_float(m.get('face_ratio'), 0),
+            'face_count': int(safe_float(m.get('face_count'), 0, min_value=0, max_value=None)),
+            'face_ratio': safe_float(m.get('face_ratio'), 0, min_value=0, max_value=None),
             'is_silhouette': m.get('is_silhouette', 0),
             'is_group_portrait': m.get('is_group_portrait', 0),
             'is_monochrome': m.get('is_monochrome', 0),
-            'mean_luminance': safe_float(m.get('mean_luminance'), 0.5),
-            'iso': m.get('iso'),
+            'mean_luminance': safe_float(m.get('mean_luminance'), 0.5, min_value=0, max_value=1),
+            'iso': _positive_float(m.get('iso')),
             'shutter_speed': Facet._parse_shutter_speed(m.get('shutter_speed')),
-            'focal_length': m.get('focal_length'),
-            'f_stop': m.get('f_stop'),
+            'focal_length': _positive_float(m.get('focal_length')),
+            'f_stop': _positive_float(m.get('f_stop')),
         })
         scoring_context = m.get('scoring_context')
 
@@ -1390,7 +1398,7 @@ class Facet:
         for metric_name, metric_value in metric_values.items():
             weight = w.get(metric_name, 0.0)
             if weight > 0:
-                score += max(0.0, min(10.0, metric_value)) * weight
+                score += weighted_metric_contribution(metric_value, weight)
 
         # Apply blink penalty (multiplier on the whole score)
         if apply_blink_penalty and m.get('is_blink'):

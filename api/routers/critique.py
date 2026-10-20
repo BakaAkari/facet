@@ -7,6 +7,8 @@ Provides per-photo analysis: score breakdown, strengths, weaknesses, suggestions
 import asyncio
 import json
 import logging
+import math
+import sqlite3
 
 from typing import Optional
 
@@ -15,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.auth import CurrentUser, get_optional_user, is_edition_authenticated
 from api.config import VIEWER_CONFIG, _FULL_CONFIG
-from api.database import get_async_db
+from api.database import get_async_db, get_db, run_sync
 from api.db_helpers import get_existing_columns, get_visibility_clause
 from api.models.media import MediaCritiqueResponse
 from api.model_cache import (
@@ -32,10 +34,6 @@ logger = logging.getLogger(__name__)
 # Score thresholds for strength/weakness classification
 _STRENGTH_THRESHOLD = 7.5
 _WEAKNESS_THRESHOLD = 5.0
-# Noise thresholds
-_NOISE_CLEAN_THRESHOLD = 3.0
-_NOISE_HIGH_THRESHOLD = 8.0
-_NOISE_PENALTY_THRESHOLD = 4.0
 
 # Metric labels for human-readable output
 METRIC_LABELS = {
@@ -49,7 +47,7 @@ METRIC_LABELS = {
     'color_score': 'Color',
     'contrast_score': 'Contrast',
     'isolation_bonus': 'Subject Isolation',
-    'noise_sigma': 'Noise Level',
+    'noise_sigma': 'Noise quality',
     'dynamic_range_stops': 'Dynamic Range',
     'leading_lines_score': 'Leading Lines',
     'power_point_score': 'Power Points',
@@ -67,6 +65,9 @@ METRIC_LABELS = {
     'form_edge_entropy': 'Edge Entropy',
     'form_fractal': 'Fractal Complexity',
     'color_harmony': 'Color Harmony',
+    'aesthetic_v25': 'Aesthetic v2.5',
+    'qrealign_score': 'Q-ReAlign',
+    'deqa_score': 'DeQA',
 }
 
 # Map config weight keys to DB column names
@@ -99,6 +100,9 @@ WEIGHT_TO_COLUMN = {
     'edge_entropy': 'form_edge_entropy',
     'fractal': 'form_fractal',
     'color_harmony': 'color_harmony',
+    'qrealign': 'qrealign_score',
+    'deqa': 'deqa_score',
+    'aesthetic_v25': 'aesthetic_v25',
 }
 
 # Suggestions keyed by metric name (low score triggers these)
@@ -138,7 +142,7 @@ def _build_category_trail(photo, matched_category, sc):
 
     photo = with_face_defaults(photo)
     rejected = []
-    for cat in sc.get_categories():
+    for cat in sc.get_categories(context=photo.get('scoring_context')):
         name = cat.get('name')
         if name == matched_category:
             break
@@ -168,6 +172,9 @@ def _build_category_trail(photo, matched_category, sc):
 
 def _build_category_reason(photo, category, sc):
     """Build structured category reason for i18n on the frontend."""
+    if photo.get('category_override') == category and category:
+        return {'reason_key': 'override', 'category': category,
+                'details': [], 'rejected': []}
     cat_config = sc.get_category_config(category)
     if not cat_config:
         return {'reason_key': 'default', 'category': category or 'default', 'details': [], 'rejected': []}
@@ -220,36 +227,33 @@ def _calculate_breakdown(photo, sc, category):
 
     Returns a sorted list of score contributions with metric details.
     """
-    weights = sc.get_weights(category)
-    if not weights:
-        weights = sc.get_weights('')
+    from processing.scorer import (
+        build_metric_vector, fold_quality_weight, renormalise_weights,
+        unavailable_for_config, weighted_metric_contribution,
+    )
 
+    weights = fold_quality_weight(sc.get_weights(category))
+    unavailable = unavailable_for_config(sc)
+    if unavailable:
+        weights = renormalise_weights(weights, unavailable)
+    vector = build_metric_vector(photo, sc, category, unavailable=unavailable)
     breakdown = []
-
-    for weight_key, weight_val in weights.items():
-        if weight_key in ('bonus', 'blink_penalty', 'noise_tolerance_multiplier',
-                          'noise_penalty_max', 'noise_threshold', 'score_min', 'score_max',
-                          'oversaturation_threshold', 'oversaturation_penalty',
-                          'clipping_multiplier', 'noise_penalty_rate'):
+    for metric_key, value in vector.items():
+        weight = weights.get(metric_key, 0)
+        if not weight > 0:
             continue
-
-        col = WEIGHT_TO_COLUMN.get(weight_key)
-        if not col or weight_val <= 0:
-            continue
-
-        value = photo.get(col)
-        if value is None:
-            continue
-
-        display_value = float(value)
-        contribution = display_value * weight_val
-
+        if not math.isfinite(weight):
+            raise ValueError("Finite contribution weights required")
+        col = WEIGHT_TO_COLUMN.get(metric_key, metric_key)
+        # Match the native weighted sum; these are effective quality inputs,
+        # not the raw physical measurements stored in the database.
+        effective = max(0., min(10., value))
         breakdown.append({
-            'metric': METRIC_LABELS.get(col, weight_key),
+            'metric': METRIC_LABELS.get(col, metric_key),
             'metric_key': col,
-            'value': round(display_value, 2),
-            'weight': round(weight_val, 3),
-            'contribution': round(contribution, 2),
+            'value': round(float(effective), 2),
+            'weight': round(float(weight), 3),
+            'contribution': round(float(weighted_metric_contribution(value, weight)), 2),
         })
 
     breakdown.sort(key=lambda x: x['contribution'], reverse=True)
@@ -270,15 +274,7 @@ def _identify_strengths_weaknesses(breakdown):
         val = item['value']
         metric_key = item['metric_key']
 
-        # Noise is inverted -- high noise_sigma is bad
-        if metric_key == 'noise_sigma':
-            if val < _NOISE_CLEAN_THRESHOLD:
-                strengths.append({'metric_key': metric_key, 'value': round(val, 1)})
-            elif val > _NOISE_HIGH_THRESHOLD:
-                weaknesses.append({'metric_key': metric_key, 'value': round(val, 1)})
-                if metric_key in SUGGESTIONS:
-                    suggestions.append(metric_key)
-        elif metric_key in ('mean_saturation', 'mean_luminance'):
+        if metric_key in ('mean_saturation', 'mean_luminance'):
             continue  # Not meaningful as strengths/weaknesses
         else:
             if val >= _STRENGTH_THRESHOLD:
@@ -291,10 +287,24 @@ def _identify_strengths_weaknesses(breakdown):
     return strengths, weaknesses, suggestions
 
 
-def _check_penalties(photo):
-    """Check for scoring penalties (blink, noise, clipping, skin-tone cast).
+def _finite_number(value):
+    """True for a finite int or float; a bool or a stringified SQLite value is not one."""
+    return type(value) in (int, float) and math.isfinite(value)
 
-    Returns a dict of penalty names to values. The skin-tone entry is advisory
+
+def _stored_score(photo):
+    """The stored aggregate as ``(value, state)``: the value only when it is a finite number."""
+    stored = photo.get('aggregate')
+    if _finite_number(stored):
+        return float(stored), 'present'
+    return None, 'missing' if stored is None else 'invalid'
+
+
+def _check_penalties(photo):
+    """Surface advisory flags (blink and skin-tone cast), without scoring math.
+
+    Returns advisory flags, never hand-derived numerical score deductions.
+    The native net adjustment is authoritative. The skin-tone entry is advisory
     (it never enters the aggregate) and surfaces whenever the stored worst-face
     cast is present: ``compute_photo_skin_tone`` already applied the configured
     ``cast_delta_threshold`` once at recompute time (``skin_tone_cast`` is NULL
@@ -303,16 +313,8 @@ def _check_penalties(photo):
     penalties = {}
     if photo.get('is_blink'):
         penalties['blink'] = True
-    if photo.get('noise_sigma') and photo['noise_sigma'] > _NOISE_PENALTY_THRESHOLD:
-        noise_penalty = min(1.5, max(0, (photo['noise_sigma'] - _NOISE_PENALTY_THRESHOLD) * 0.3))
-        if noise_penalty > 0:
-            penalties['noise'] = round(-noise_penalty, 2)
-    if photo.get('highlight_clipped') and photo['highlight_clipped'] > 0:
-        penalties['highlight_clipping'] = round(-photo['highlight_clipped'] * 1.0, 2)
-    if photo.get('shadow_clipped') and photo['shadow_clipped'] > 0:
-        penalties['shadow_clipping'] = round(-photo['shadow_clipped'] * 0.5, 2)
     skin_delta = photo.get('skin_tone_delta')
-    if skin_delta is not None and photo.get('skin_tone_cast'):
+    if _finite_number(skin_delta) and photo.get('skin_tone_cast'):
         penalties['skin_tone'] = {
             'cast': photo['skin_tone_cast'],
             'delta': round(float(skin_delta), 1),
@@ -333,22 +335,44 @@ def _parse_distortions(raw):
     return [e['attribute'] for e in entries if isinstance(e, dict) and e.get('attribute')]
 
 
-def _build_rule_critique(photo):
+def _build_rule_critique(photo, *, config=None, normalizer=None, overrides=None):
     """Build a rule-based critique from stored metrics."""
     from api.config import server_scoring_config
 
-    sc = server_scoring_config()
-    category = photo.get('category', '')
+    from processing.scorer import Facet
 
-    breakdown = _calculate_breakdown(photo, sc, category)
+    sc = config or server_scoring_config()
+    prepared = dict(photo)
+    if overrides:
+        prepared.update(overrides)
+    Facet.prepare_scoring_row(prepared, sc, normalizer)
+    # The normal constructor initializes the database; explanation is read-only.
+    native = Facet.__new__(Facet)
+    native.config = sc
+    current_total, category = native.calculate_aggregate_logic(prepared)
+    if not math.isfinite(current_total):
+        raise ValueError("Native calculation is not finite")
+    breakdown = _calculate_breakdown(prepared, sc, category)
     strengths, weaknesses, suggestions = _identify_strengths_weaknesses(breakdown)
+    # Advisory flags remain separate from the reconciled native adjustment.
     penalties = _check_penalties(photo)
-    category_reason = _build_category_reason(photo, category, sc)
+    category_reason = _build_category_reason(prepared, category, sc)
+    stored, stored_state = _stored_score(photo)
+    displayed_total = round(float(current_total), 2)
+    display_base_cents = sum(round(item['contribution'] * 100) for item in breakdown)
 
     return {
         'category': category or 'default',
         'category_reason': category_reason,
-        'aggregate': photo.get('aggregate'),
+        'aggregate': stored,
+        'score_basis': 'current_formula',
+        'current_formula_score': displayed_total,
+        'native_adjustment': (round(displayed_total * 100) - display_base_cents) / 100,
+        'stored_score_matches_current_formula': (
+            round(stored, 2) == displayed_total if stored is not None else None),
+        'normalization_basis': ('persisted_percentiles' if normalizer is not None
+                                else 'stored_metrics'),
+        'stored_score_state': stored_state,
         'breakdown': breakdown,
         'strengths': sorted(strengths, key=lambda x: x['value'], reverse=True)[:5],
         'weaknesses': sorted(weaknesses, key=lambda x: x['value'])[:5],
@@ -356,6 +380,105 @@ def _build_rule_critique(photo):
         'penalties': penalties,
         'distortions': _parse_distortions(photo.get('distortion_attributes')),
     }
+
+
+def _unavailable_critique(photo, reason):
+    stored, stored_state = _stored_score(photo)
+    category = photo.get('category') or 'default'
+    return {'category': category,
+            'category_reason': {'reason_key': 'unavailable', 'category': category, 'details': []},
+            'aggregate': stored,
+            'score_basis': 'current_formula', 'current_formula_score': None,
+            'native_adjustment': None, 'stored_score_matches_current_formula': None,
+            'explanation_unavailable_reason': reason,
+            'stored_score_state': stored_state,
+            'breakdown': [], 'strengths': [], 'weaknesses': [], 'suggestions': [],
+            'penalties': _check_penalties(photo),
+            'distortions': _parse_distortions(photo.get('distortion_attributes'))}
+
+
+def _usable_snapshot(snapshot):
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get('percentiles'), dict):
+        return False
+    def finite(value):
+        return _finite_number(value) and value >= 0
+    categories = snapshot.get('category_percentiles', {})
+    return (all(finite(value) for value in snapshot['percentiles'].values())
+            and isinstance(categories, dict)
+            and all(isinstance(values, dict) and all(finite(value) for value in values.values())
+                    for values in categories.values()))
+
+
+def _snapshot_malformed(conn):
+    """True when a percentile snapshot is persisted but cannot be scored with.
+
+    An ABSENT snapshot is not malformed. Only ``--recompute-average`` and
+    ``--recompute-category`` persist one (and a photo delete keeps it); a scan
+    scores every photo from its stored metrics with no normalizer, and
+    ``PercentileNormalizer.from_snapshot`` answers None in that case so the
+    explanation reads the stored metrics exactly as the scan did.
+    ``load_persisted`` also answers None for a row that does not parse, or for
+    any read error, so the row is probed to tell those apart from an absent
+    one. Only a missing ``stats_cache`` table counts as absent; any other read
+    error (a locked database) reports the snapshot unavailable rather than
+    explaining a normalized library un-normalized.
+    """
+    from config.percentile_normalizer import PercentileNormalizer
+    from db.stats_cache import PERCENTILES_SNAPSHOT_KEY
+
+    snapshot = PercentileNormalizer.load_persisted(conn)
+    if snapshot is not None:
+        return not _usable_snapshot(snapshot)
+    try:
+        row = conn.execute("SELECT 1 FROM stats_cache WHERE key = ?",
+                           (PERCENTILES_SNAPSHOT_KEY,)).fetchone()
+    except sqlite3.OperationalError as ex:
+        return 'no such table' not in str(ex)
+    return row is not None
+
+
+def _load_rule_critique(path, user):
+    """Read one visible scoring row, overrides and normalizer in one snapshot."""
+    from config.percentile_normalizer import PercentileNormalizer
+    from api.config import server_scoring_config
+    from db.scoring_overrides import get_photo_scoring_overrides
+    from processing.scorer import SERVED_ROW_COLUMNS
+
+    config = server_scoring_config()
+    with get_db() as conn, conn:
+        conn.execute("BEGIN")
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(photos)")}
+        columns = list(dict.fromkeys((*SERVED_ROW_COLUMNS, 'category', 'aggregate',
+                    'distortion_attributes', 'skin_tone_delta', 'skin_tone_cast')))
+        columns = [column for column in columns if column in existing]
+        user_id = user.user_id if user else None
+        vis_sql, vis_params = get_visibility_clause(user_id)
+        row = conn.execute(
+            f"SELECT {', '.join(columns)} FROM photos WHERE path = ? AND {vis_sql}",
+            [path] + vis_params,
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        photo = dict(row)
+        if set(SERVED_ROW_COLUMNS) - existing:
+            return photo, _unavailable_critique(photo, 'missing_scoring_inputs')
+        settings = config.get_normalization_settings()
+        if settings.get('method') == 'percentile' and _snapshot_malformed(conn):
+            return photo, _unavailable_critique(photo, 'normalization_snapshot_unavailable')
+        normalizer = PercentileNormalizer.from_snapshot(conn, settings)
+        has_overrides = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='photo_scoring_overrides'"
+        ).fetchone()
+        overrides = get_photo_scoring_overrides(conn, [path]).get(path) if has_overrides else None
+        try:
+            result = _build_rule_critique(photo, config=config, normalizer=normalizer,
+                                          overrides=overrides)
+        except (TypeError, ValueError, OverflowError) as error:
+            # SQLite affinity permits malformed text even in numeric columns.
+            # Keep the valid stored score; never invent a replacement breakdown.
+            logger.info("Native explanation unavailable (%s)", type(error).__name__)
+            result = _unavailable_critique(photo, 'invalid_scoring_inputs')
+    return photo, result
 
 
 @router.get("/api/critique", response_model=MediaCritiqueResponse, response_model_exclude_unset=True)
@@ -378,45 +501,11 @@ async def api_critique(
     if not VIEWER_CONFIG.get('features', {}).get('show_critique', True):
         raise HTTPException(status_code=403, detail="Critique feature is disabled")
 
-    async with get_async_db() as conn:
-        user_id = user.user_id if user else None
-        vis_sql, vis_params = get_visibility_clause(user_id)
-
-        # Select only columns needed for critique (avoid loading BLOB fields)
-        critique_cols = [
-            'path', 'category', 'aggregate', 'aesthetic', 'tech_sharpness',
-            'face_quality', 'eye_sharpness', 'face_sharpness', 'comp_score',
-            'exposure_score', 'color_score', 'contrast_score', 'isolation_bonus',
-            'noise_sigma', 'dynamic_range_stops', 'leading_lines_score',
-            'power_point_score', 'aesthetic_iaa', 'face_quality_iqa', 'liqe_score',
-            'subject_sharpness', 'subject_prominence', 'subject_placement',
-            'bg_separation', 'mean_saturation', 'mean_luminance',
-            'form_symmetry', 'form_balance', 'form_edge_entropy',
-            'form_fractal', 'color_harmony',
-            'distortion_attributes', 'skin_tone_delta', 'skin_tone_cast',
-            'face_ratio', 'face_count', 'is_monochrome', 'is_blink',
-            'is_silhouette', 'is_group_portrait',
-            'highlight_clipped', 'shadow_clipped', 'tags', 'shutter_speed',
-            'focal_length', 'f_stop', 'iso',
-        ]
-        col_str = ', '.join(critique_cols)
-        cur = await conn.execute(
-            f"SELECT {col_str} FROM photos WHERE path = ? AND {vis_sql}",
-            [path] + vis_params
-        )
-        photo = await cur.fetchone()
-        await cur.close()
-
-        if not photo:
-            raise HTTPException(status_code=404, detail="Photo not found")
-
-        photo = dict(photo)
-        result = _build_rule_critique(photo)
-
-        if mode == 'vlm':
+    photo, result = await run_sync(_load_rule_critique, path, user)
+    if mode == 'vlm':
+        async with get_async_db() as conn:
             await _attach_vlm_critique(conn, photo, result, lang, refresh, user)
-
-        return result
+    return result
 
 
 async def _attach_vlm_critique(conn, photo, result, lang, refresh, user):
@@ -507,14 +596,23 @@ def _build_vlm_prompt(rule_critique, photo):
     vlm_cfg = _FULL_CONFIG.get('critique', {}).get('vlm', {})
     template = vlm_cfg.get('prompt_template') or _DEFAULT_VLM_PROMPT
 
-    lines = []
-    for item in rule_critique.get('breakdown', [])[:12]:
-        suffix = ', lower is better' if item['metric_key'] == 'noise_sigma' else ''
-        lines.append(f"- {item['metric']}: {item['value']} (weight {item['weight']:.0%}{suffix})")
+    lines = [f"- {item['metric']}: {item['value']} (weight {item['weight']:.0%}, higher quality is better)"
+             for item in rule_critique.get('breakdown', [])[:12]]
     breakdown = '\n'.join(lines) or '- no per-metric data available'
 
-    penalty_keys = list(rule_critique.get('penalties', {}))
-    penalties = f"Penalties applied: {', '.join(penalty_keys)}.\n" if penalty_keys else ''
+    advisory_keys = list(rule_critique.get('penalties', {}))
+    advisories = f"Detected conditions: {', '.join(advisory_keys)}.\n" if advisory_keys else ''
+
+    stored = rule_critique.get('aggregate')
+    current = rule_critique.get('current_formula_score')
+    stored_text = f"{stored:.2f}" if stored is not None else 'unavailable'
+    if current is not None:
+        scope = ("These inputs describe a current-formula recalculation, not verified "
+                 f"historical publication provenance. Stored score: {stored_text}. "
+                 f"Current formula: {current:.2f}. Net adjustments and rounding: "
+                 f"{rule_critique.get('native_adjustment'):.2f}.\n")
+    else:
+        scope = f"Stored score: {stored_text}. No current-formula breakdown is available.\n"
 
     exif_parts = []
     if photo.get('f_stop'):
@@ -527,14 +625,20 @@ def _build_vlm_prompt(rule_critique, photo):
         exif_parts.append(f"{photo['focal_length']}mm")
     exif = ', '.join(exif_parts) or 'unknown'
 
-    aggregate = rule_critique.get('aggregate')
-    return template.format(
+    aggregate = current if current is not None else stored
+    prompt = template.format(
         category=rule_critique.get('category', 'photo'),
         aggregate=f"{aggregate:.1f}" if aggregate is not None else 'unscored',
         breakdown=breakdown,
-        penalties=penalties,
+        penalties=advisories + scope,
         exif=exif,
     )
+
+    # A custom template that omits {penalties}, or renders only part of it
+    # ({penalties[0]}, {penalties:.20}), must still carry the scope statement.
+    if scope not in prompt:
+        prompt += "\n" + scope
+    return prompt
 
 
 def _load_critique_image(path, thumbnail_bytes):

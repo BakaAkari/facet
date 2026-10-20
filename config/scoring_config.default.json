@@ -1,6 +1,7 @@
 {
   "scanning": {
-    "skip_hidden_directories": true
+    "skip_hidden_directories": true,
+    "skip_directories": ["@eaDir", "#recycle", "#snapshot", "@Recycle"]
   },
   "categories": [
     {
@@ -3181,7 +3182,8 @@
   },
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   },
   "capsules": {
     "min_aggregate": 6.0,
@@ -3433,6 +3435,7 @@
     "password": "",
     "default_category": "",
     "edition_password": "",
+    "trusted_local_editing": false,
     "comparison_mode": {
       "min_comparisons_for_optimization": 50,
       "pair_selection_strategy": "learning",
@@ -3450,8 +3453,16 @@
           "label": "Aesthetic"
         },
         {
+          "column": "qrealign_score",
+          "label": "Q-ReAlign (Aesthetic)"
+        },
+        {
           "column": "quality_score",
           "label": "Quality Score"
+        },
+        {
+          "column": "deqa_score",
+          "label": "DeQA"
         },
         {
           "column": "date_taken",
@@ -3464,6 +3475,10 @@
         {
           "column": "aesthetic_iaa",
           "label": "Aesthetic (IAA)"
+        },
+        {
+          "column": "aesthetic_v25",
+          "label": "Aesthetic v2.5"
         },
         {
           "column": "liqe_score",

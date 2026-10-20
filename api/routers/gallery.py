@@ -7,15 +7,19 @@ import asyncio
 import logging
 import math
 import sqlite3
+import unicodedata
 from typing import NoReturn, Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
 
 from api.auth import CurrentUser, get_optional_user
+from api import database as _database
+from api.change_token import db_change_token
 from api.config import VIEWER_CONFIG, _FULL_CONFIG, cull_allow_trash
 from api.database import get_async_db, get_db
 from api.models.gallery import (
     GalleryParams, Photo, PhotoCountResponse, PhotoPathsResponse, PhotosResponse,
+    SimilarPhotosResponse,
 )
 from api.models.discovery import PhotoSetResponse, PhotoTypeCountsResponse, ViewerConfigResponse
 from api.db_helpers import (
@@ -34,6 +38,8 @@ from api.types import (
     JUNK_ANY, JUNK_NOT_JUNK,
     SEQUENCE_OVERRIDE_FORCED, SEQUENCE_OVERRIDE_SUPPRESSED, SEQUENCE_OVERRIDE_VALUES,
 )
+from metric_columns import SCORE_RANGE_COLUMNS
+from api.visual_similarity import find_visual_page
 from utils.histogram import unpack_histogram
 from utils.sequence import BRACKET as BRACKET_KIND
 
@@ -47,10 +53,6 @@ router = APIRouter(tags=["gallery"])
 logger = logging.getLogger(__name__)
 
 
-
-_FTS_TOKEN_CHARS = set(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-)
 
 # Hue-bucket name -> [start_deg, end_deg) half-open ranges over dominant_hue (0-360).
 # Eight perceptual buckets; 'red' wraps the 0/360 boundary so it is matched with OR.
@@ -88,20 +90,23 @@ _QUALITY_TIER_KEYS = {'excellent', 'good', 'fair', 'poor'}
 
 
 def _fts5_query_from(term: str) -> Optional[str]:
-    """Convert free-text user input into an FTS5 query string.
+    """Quote Unicode word prefixes, keeping punctuation as token boundaries.
 
-    Splits on whitespace, strips FTS5 syntax characters from each token,
-    quotes the survivor and adds a `*` prefix-match wildcard, then ANDs
-    the tokens together (FTS5 default behaviour). Returns ``None`` if no
-    safe token remains, which short-circuits the search to "match nothing"
-    rather than risking an injected FTS5 expression.
+    Preserve Unicode letters, numbers and private-use characters as tokens. Combining marks continue an existing token. Operators remain
+    quoted literals rather than executable FTS syntax.
     """
-    tokens = []
-    for raw in term.split():
-        cleaned = ''.join(ch for ch in raw if ch in _FTS_TOKEN_CHARS)
-        if cleaned:
-            tokens.append(f'"{cleaned}"*')
-    return ' '.join(tokens) if tokens else None
+    tokens: list[str] = []
+    current: list[str] = []
+    for character in term:
+        category = unicodedata.category(character)
+        if category[0] in ('L', 'N') or category == 'Co' or (category[0] == 'M' and current):
+            current.append(character)
+        elif current:
+            tokens.append(''.join(current))
+            current = []
+    if current:
+        tokens.append(''.join(current))
+    return ' '.join(f'"{token}"*' for token in tokens) if tokens else None
 
 
 def _apply_search_filter(where_clauses, sql_params, term: str, conn, include_manual=True):
@@ -456,48 +461,9 @@ def _apply_preference_filters(where_clauses, sql_params, params, user_id):
         where_clauses.append(f"({pref_cols['is_rejected']} = 0 OR {pref_cols['is_rejected']} IS NULL)")
 
 
-# Single source of truth for numeric range filters: (column, min_key, max_key, is_float).
-# Drives both the WHERE-clause builders below and the /filter_options/metric_ranges endpoint.
-SCORE_RANGE_COLUMNS = [
-    ("aggregate", "min_score", "max_score", True),
-    ("aesthetic", "min_aesthetic", "max_aesthetic", True),
-    ("quality_score", "min_quality_score", "max_quality_score", True),
-    ("topiq_score", "min_topiq", "max_topiq", True),
-    ("tech_sharpness", "min_sharpness", "max_sharpness", True),
-    ("exposure_score", "min_exposure", "max_exposure", True),
-    ("color_score", "min_color", "max_color", True),
-    ("contrast_score", "min_contrast", "max_contrast", True),
-    ("noise_sigma", "min_noise", "max_noise", True),
-    ("mean_saturation", "min_saturation", "max_saturation", True),
-    ("mean_luminance", "min_luminance", "max_luminance", True),
-    ("histogram_spread", "min_histogram_spread", "max_histogram_spread", True),
-    ("channel_clip_shadow_pct", "min_channel_clip_shadow", "max_channel_clip_shadow", True),
-    ("channel_clip_highlight_pct", "min_channel_clip_highlight", "max_channel_clip_highlight", True),
-    ("dynamic_range_stops", "min_dynamic_range", "max_dynamic_range", True),
-    ("comp_score", "min_composition", "max_composition", True),
-    ("power_point_score", "min_power_point", "max_power_point", True),
-    ("leading_lines_score", "min_leading_lines", "max_leading_lines", True),
-    ("isolation_bonus", "min_isolation", "max_isolation", True),
-    ("face_count", "min_face_count", "max_face_count", False),
-    ("face_quality", "min_face_quality", "max_face_quality", True),
-    ("eye_sharpness", "min_eye_sharpness", "max_eye_sharpness", True),
-    ("face_sharpness", "min_face_sharpness", "max_face_sharpness", True),
-    ("face_ratio", "min_face_ratio", "max_face_ratio", True),
-    ("face_confidence", "min_face_confidence", "max_face_confidence", True),
-    ("star_rating", "min_star_rating", "max_star_rating", False),
-    ("aesthetic_iaa", "min_aesthetic_iaa", "max_aesthetic_iaa", True),
-    ("face_quality_iqa", "min_face_quality_iqa", "max_face_quality_iqa", True),
-    ("liqe_score", "min_liqe", "max_liqe", True),
-    ("qrealign_score", "min_qrealign", "max_qrealign", True),
-    ("aesthetic_v25", "min_aesthetic_v25", "max_aesthetic_v25", True),
-    ("deqa_score", "min_deqa", "max_deqa", True),
-    ("subject_sharpness", "min_subject_sharpness", "max_subject_sharpness", True),
-    ("subject_prominence", "min_subject_prominence", "max_subject_prominence", True),
-    ("subject_placement", "min_subject_placement", "max_subject_placement", True),
-    ("bg_separation", "min_bg_separation", "max_bg_separation", True),
-    ("narrative_moment_confidence", "min_moment_confidence", "max_moment_confidence", True),
-]
-
+# Camera/EXIF numeric range filters, same shape as SCORE_RANGE_COLUMNS (metric_columns.py):
+# (column, min_key, max_key, is_float). Both drive the WHERE-clause builders below and
+# the /filter_options/metric_ranges endpoint.
 EXIF_RANGE_COLUMNS = [
     ("iso", "min_iso", "max_iso", False),
     ("f_stop", "min_aperture", "max_aperture", True),
@@ -874,8 +840,9 @@ def _prepare_gallery_params(qp: dict):
 def _resolve_order_by(params: dict) -> str:
     """Build the ORDER BY clause matching the gallery's sort semantics.
 
-    The nullable columns (``api.types.NULLABLE_SORT_COLS``) always sink; the
-    guard itself lives in ``api.types.order_by_clause``, shared with the albums.
+    The nullable columns (``api.types.NULLABLE_SORT_COLS``) and the missing or
+    invalid ``shutter_speed`` values always sink; the clause itself lives in
+    ``api.types.order_by_clause``, shared with the albums.
     """
     sort_col = params['sort'] if params['sort'] in VALID_SORT_COLS else 'aggregate'
     sort_dir = 'ASC' if params['dir'] == 'ASC' else 'DESC'
@@ -1249,182 +1216,19 @@ def _similar_result(row, similarity):
     }
 
 
-def _vec_knn_similar(conn, source_embedding, photo_path, min_similarity, vis_sql, vis_params):
-    """CLIP-only similar search via sqlite-vec vec0 KNN (sync, runs inside to_thread).
+def _find_similar_visual(conn, source, photo_path, min_similarity, vis_sql, vis_params, offset, limit,
+                         change_token):
+    """One page of the full visual ranking, as ``(page, total, message)``.
 
-    Replaces the brute-force full-table NumPy cosine scan in the no-pHash-candidate
-    branch of ``_find_similar_visual`` with an indexed vec0 KNN against ``photos_vec``.
-    ``distance_metric=cosine`` makes ``1 - distance`` the cosine similarity, matching
-    the NumPy dot product of L2-normalized embeddings — so top-K ordering is identical.
-
-    Returns the result list (``[:500]``) on success, or ``None`` to signal the caller
-    to fall back to the NumPy scan (sqlite-vec unavailable, ``photos_vec`` missing/empty,
-    or no source embedding). An empty match set returns ``[]`` (a valid result), not
-    ``None`` — that is a successful query that found nothing.
+    See ``api.visual_similarity`` for the shared-evidence scoring. The ranking
+    is cached briefly under the database's change token, so a "load more"
+    page slices it instead of rescanning the library.
     """
-    import numpy as np
-    from db.connection import HAS_SQLITE_VEC
-
-    if not HAS_SQLITE_VEC or source_embedding is None:
-        return None
-
-    # Availability guard (plan Topic 2 step 2): photos_vec may be absent or empty.
-    # Catch OperationalError (table missing / extension not loaded) → NumPy fallback.
-    try:
-        if conn.execute("SELECT 1 FROM photos_vec LIMIT 1").fetchone() is None:
-            return None
-    except sqlite3.OperationalError:
-        return None
-
-    # vec0 MATCH cannot carry a WHERE clause, so over-fetch (k large) then post-filter
-    # by visibility/self. k≥2000 keeps the top-500 most-similar even after filtering.
-    k = 2000
-    query_bytes = np.asarray(source_embedding, dtype=np.float32).tobytes()
-    try:
-        knn_rows = conn.execute(
-            "SELECT path, distance FROM photos_vec WHERE embedding MATCH ? AND k = ?",
-            [query_bytes, k],
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return None
-
-    if not knn_rows:
-        return []
-
-    dist_by_path = {}
-    ordered_paths = []
-    for r in knn_rows:
-        p = r['path']
-        if p == photo_path or p in dist_by_path:
-            continue
-        dist_by_path[p] = r['distance']
-        ordered_paths.append(p)
-
-    if not ordered_paths:
-        return []
-
-    # Fetch display columns + apply visibility in one pass, chunked to stay under
-    # SQLite's variable limit on older builds.
-    meta_by_path = {}
-    for start in range(0, len(ordered_paths), 500):
-        chunk = ordered_paths[start:start + 500]
-        placeholders = ','.join('?' * len(chunk))
-        meta_rows = conn.execute(
-            f"""SELECT path, filename, date_taken, aggregate, aesthetic
-                FROM photos WHERE path IN ({placeholders}) AND {vis_sql}""",
-            chunk + vis_params,
-        ).fetchall()
-        for mr in meta_rows:
-            meta_by_path[mr['path']] = dict(mr)
-
-    results = []
-    for p in ordered_paths:
-        row = meta_by_path.get(p)
-        if row is None:
-            continue
-        sim = max(0.0, 1.0 - dist_by_path[p])
-        if sim >= min_similarity:
-            results.append(_similar_result(row, sim))
-
-    results.sort(key=lambda x: x['similarity'], reverse=True)
-    return results[:500]
-
-
-def _find_similar_visual(conn, source, photo_path, min_similarity, vis_sql, vis_params):
-    """Find visually similar photos using pHash hamming distance (primary) + CLIP cosine (secondary)."""
-    import numpy as np
-    from utils.duplicate import _POPCOUNT_TABLE
-    from utils.embedding import bytes_to_normalized_embedding
-    PHASH_W = 0.7
-    CLIP_W = 0.3
-
-    source_phash = np.uint64(int(source['phash'], 16)) if source.get('phash') else None
-
-    source_embedding = bytes_to_normalized_embedding(source.get('clip_embedding'))
-
-    if source_phash is None and source_embedding is None:
-        return [], None
-
-    rows = conn.execute(f"""
-        SELECT path, filename, phash, date_taken, aggregate, aesthetic
-        FROM photos
-        WHERE path != ? AND phash IS NOT NULL AND {vis_sql}
-    """, [photo_path] + vis_params).fetchall()
-    rows = [dict(r) for r in rows]
-
-    if not rows:
-        # CLIP-only fallback (no pHash candidates). Prefer the indexed vec0 KNN
-        # path; _vec_knn_similar returns None when sqlite-vec is unavailable, in
-        # which case we keep the original brute-force NumPy scan below unchanged.
-        vec_results = _vec_knn_similar(conn, source_embedding, photo_path, min_similarity, vis_sql, vis_params)
-        if vec_results is not None:
-            return vec_results, None
-        clip_rows = conn.execute(f"""
-            SELECT path, filename, clip_embedding, date_taken, aggregate, aesthetic
-            FROM photos
-            WHERE path != ? AND clip_embedding IS NOT NULL AND {vis_sql}
-            LIMIT 5000
-        """, [photo_path] + vis_params).fetchall()
-        rows = [dict(r) for r in clip_rows]
-        if not rows or source_embedding is None:
-            return [], None
-        results = []
-        for r in rows:
-            e = bytes_to_normalized_embedding(r['clip_embedding'])
-            if e is None:
-                continue
-            sim = max(0.0, float(np.dot(source_embedding, e)))
-            if sim >= min_similarity:
-                results.append(_similar_result(r, sim))
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        return results[:500], None
-
-    hashes = np.array([int(r['phash'], 16) for r in rows], dtype=np.uint64)
-    xor = np.bitwise_xor(hashes, source_phash)
-    hamming = np.zeros(len(rows), dtype=np.int32)
-    for byte_idx in range(8):
-        shift = np.uint64(byte_idx * 8)
-        byte_vals = ((xor >> shift) & np.uint64(0xFF)).astype(np.int32)
-        hamming += _POPCOUNT_TABLE[byte_vals]
-    phash_sims = 1.0 - hamming / 64.0
-
-    if source_embedding is not None:
-        phash_floor = max(0.0, (min_similarity - CLIP_W) / PHASH_W)
-    else:
-        phash_floor = min_similarity
-    candidate_indices = np.where(phash_sims >= phash_floor)[0]
-
-    clip_by_path: dict = {}
-    if source_embedding is not None and len(candidate_indices) > 0:
-        cand_paths = [rows[i]['path'] for i in candidate_indices]
-        for start in range(0, len(cand_paths), 500):
-            chunk = cand_paths[start:start + 500]
-            placeholders = ','.join('?' * len(chunk))
-            clip_rows = conn.execute(
-                f"SELECT path, clip_embedding FROM photos "
-                f"WHERE path IN ({placeholders}) AND clip_embedding IS NOT NULL",
-                chunk,
-            ).fetchall()
-            for cr in clip_rows:
-                e = bytes_to_normalized_embedding(cr['clip_embedding'])
-                if e is not None:
-                    clip_by_path[cr['path']] = e
-
-    results = []
-    for i in candidate_indices:
-        row = rows[i]
-        phash_sim = float(phash_sims[i])
-        cand_clip = clip_by_path.get(row['path'])
-        if source_embedding is not None and cand_clip is not None:
-            clip_sim = max(0.0, float(np.dot(source_embedding, cand_clip)))
-            sim = phash_sim * PHASH_W + clip_sim * CLIP_W
-        else:
-            sim = phash_sim * PHASH_W
-        if sim >= min_similarity:
-            results.append(_similar_result(row, sim))
-
-    results.sort(key=lambda x: x['similarity'], reverse=True)
-    return results[:500], None
+    db_path = str(_database.DEFAULT_DB_PATH)
+    return find_visual_page(
+        conn, source, photo_path, min_similarity, vis_sql, vis_params, offset, limit,
+        _similar_result, cache_scope=(db_path, change_token),
+    )
 
 
 def _find_similar_color(conn, source, photo_path, min_similarity, vis_sql, vis_params):
@@ -1582,22 +1386,29 @@ _MODE_DEFAULT_MIN_SIM = {
 }
 
 
-@router.get("/api/similar_photos/{photo_path:path}")
+@router.get("/api/similar_photos/{photo_path:path}", response_model=SimilarPhotosResponse,
+            response_model_exclude_unset=True)
 async def api_similar_photos(
     photo_path: str,
     mode: str = Query("visual"),
-    limit: int = Query(20),
-    offset: int = Query(0),
-    min_similarity: Optional[float] = Query(None),
+    limit: int = Query(20, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0, allow_inf_nan=False),
     full: int = Query(0),
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
     """Find similar photos using different similarity modes (async).
 
     Modes:
-      - visual: pHash hamming distance (70%) + CLIP cosine (30%)
+      - visual: scored on the features both photos carry -- pHash similarity
+        (70%) + CLIP/SigLIP cosine (30%) when both are shared, the one shared
+        feature at full weight otherwise; a photo sharing neither is never
+        listed. ``total`` counts the complete thresholded set.
       - color: histogram intersection + saturation/luminance distance
       - person: same person_id or face embedding cosine similarity
+
+    ``message`` is a machine code set when the source photo cannot be compared
+    at all: ``no_visual_features``, ``no_histogram`` or ``no_faces``.
 
     The heavy numpy + DB scan inside _find_similar_* runs in a worker thread via
     asyncio.to_thread, keeping the event loop free.  Source loading and result
@@ -1613,6 +1424,9 @@ async def api_similar_photos(
     user_id = user.user_id if user else None
     vis_sql, vis_params = get_visibility_clause(user_id)
 
+    # Read before the source SELECT: a commit landing between the two then
+    # invalidates the cached ranking instead of being hidden behind it.
+    change_token = db_change_token(str(_database.DEFAULT_DB_PATH))
     try:
         async with get_async_db() as conn:
             cur = await conn.execute(f"""
@@ -1631,17 +1445,15 @@ async def api_similar_photos(
             def _run_similarity():
                 with get_db() as sync_conn:
                     if mode == 'visual':
-                        return _find_similar_visual(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params)
+                        return _find_similar_visual(sync_conn, source, photo_path, effective_min_sim,
+                                                    vis_sql, vis_params, offset, limit, change_token)
                     if mode == 'color':
-                        return _find_similar_color(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params)
-                    if mode == 'person':
-                        return _find_similar_person(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params, user_id=user_id)
-                    return [], None
+                        results, message = _find_similar_color(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params)
+                    else:
+                        results, message = _find_similar_person(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params, user_id=user_id)
+                    return results[offset:offset + limit], len(results), message
 
-            results, message = await asyncio.to_thread(_run_similarity)
-
-            total_count = len(results)
-            page_results = results[offset:offset + limit]
+            page_results, total_count, message = await asyncio.to_thread(_run_similarity)
 
             if full:
                 page_results = await _enrich_similar_with_full_rows_async(page_results, conn, user_id)
@@ -1727,11 +1539,12 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
     from api.auth import is_edition_enabled, is_edition_authenticated
     from api.raw_processing import get_cull_styles
     from api.routers.search import search_threshold_default
-    from api.types import QUALITY_LEVELS, TYPE_LABELS, available_sort_options, unavailable_columns
+    from api.types import QUALITY_LEVELS, TYPE_LABELS, available_sort_options, populated_gated_cols, unavailable_columns
 
-    sort_options, sort_options_grouped = available_sort_options()
     features = dict(VIEWER_CONFIG.get('features', {}))
     with get_db() as conn:
+        populated_scores = populated_gated_cols(conn)
+        sort_options, sort_options_grouped = available_sort_options(populated_scores)
         has_embeddings = conn.execute(
             "SELECT 1 FROM photos WHERE clip_embedding IS NOT NULL LIMIT 1"
         ).fetchone() is not None
@@ -1759,6 +1572,7 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
         'sort_options': sort_options,
         'sort_options_grouped': sort_options_grouped,
         'unavailable_metrics': unavailable_columns(),
+        'populated_scores': sorted(populated_scores),
         'quality_levels': QUALITY_LEVELS,
         'type_labels': TYPE_LABELS,
         'defaults': VIEWER_CONFIG['defaults'],

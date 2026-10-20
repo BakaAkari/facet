@@ -1,3 +1,5 @@
+import { GalleryStore } from '../gallery/gallery.store';
+import { makePhoto } from '../../../testing/photo.fixture';
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -106,6 +108,37 @@ describe('PhotoDetailComponent', () => {
     };
     mockAuth = { isEdition: signal(true), downloadProfiles: signal([]) };
     mockDialog = { open: vi.fn(() => ({ afterClosed: () => of(undefined) })) };
+  });
+
+  it('renders NULL and zero extended metrics in the actual detail template', () => {
+    TestBed.configureTestingModule({
+      imports: [PhotoDetailComponent],
+      providers: [
+        { provide: ApiService, useValue: mockApi },
+        { provide: Router, useValue: mockRouter },
+        { provide: Location, useValue: mockLocation },
+        { provide: ActivatedRoute, useValue: mockRoute },
+        { provide: AuthService, useValue: mockAuth },
+        { provide: MatDialog, useValue: mockDialog },
+        { provide: I18nService, useValue: { t: (key: string) => key, locale: () => 'en', translations: () => ({}) } },
+      ],
+    });
+    const view = TestBed.createComponent(PhotoDetailComponent);
+    vi.spyOn(view.componentInstance, 'ngOnInit').mockResolvedValue(undefined);
+    TestBed.inject(GalleryStore).config.set({ populated_scores: ['aesthetic_v25', 'qrealign_score', 'deqa_score'] } as never);
+    view.componentInstance.photo.set(makePhoto({ aesthetic_v25: null, qrealign_score: 0, deqa_score: null }));
+    view.detectChanges();
+    expect(view.nativeElement.querySelector('[data-testid="qrealign_score-score"]').textContent.trim()).toBe('0.0');
+    for (const key of ['aesthetic_v25', 'deqa_score']) {
+      expect(view.nativeElement.querySelector(`[data-testid="${key}-score"]`).textContent).toContain('tooltip.not_computed');
+    }
+    TestBed.inject(GalleryStore).config.set({ populated_scores: [] } as never);
+    view.detectChanges();
+    expect(view.nativeElement.querySelector('[data-testid="aesthetic_v25-row"]')).toBeNull();
+    expect(view.nativeElement.querySelector('[data-testid="qrealign_score-score"]').textContent.trim()).toBe('0.0');
+    view.componentInstance.photo.set(makePhoto());
+    view.detectChanges();
+    expect(view.nativeElement.querySelectorAll('app-extended-quality [data-testid$="-row"]').length).toBe(0);
   });
 
   it('should create', () => {

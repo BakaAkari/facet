@@ -100,6 +100,10 @@ class ViewerConfigResponse(BaseModel):
     # unless OFIQ is installed). Empty in default mode. ``sort_options`` already
     # excludes them; the client hides the matching filters and disables their weights.
     unavailable_metrics: list[str] = []
+    # Extended-IQA score columns (``qrealign_score``, ``deqa_score``, ``aesthetic_v25``)
+    # that at least one photo carries, i.e. whose model has run on this library. The
+    # client shows "Not computed" for a NULL score only for these and hides the row otherwise.
+    populated_scores: list[str] = []
     # Default merge-suggestion threshold of the active face-recognition model
     # (``face_clustering.thresholds_by_model``); absent when the model has no entry.
     face_merge_threshold: Optional[float] = None

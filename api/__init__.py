@@ -163,13 +163,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle request-validation (422) errors.
 
     FastAPI's default 422 is silent server-side, which makes a malformed client
     request hard to diagnose. This logs the failure at WARNING and returns
     FastAPI's standard 422 body unchanged, so clients see no difference.
+
+    Typed ``exc: Exception`` because that is the handler signature Starlette's
+    ``add_exception_handler`` accepts; it is registered for
+    ``RequestValidationError`` only, which the assert narrows to.
     """
+    assert isinstance(exc, RequestValidationError)
     logger.warning("422 %s %s — %s", request.method, request.url.path, exc.errors())
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 

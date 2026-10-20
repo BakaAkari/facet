@@ -188,7 +188,8 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 ```json
 {
   "scanning": {
-    "skip_hidden_directories": true
+    "skip_hidden_directories": true,
+    "skip_directories": ["@eaDir", "#recycle", "#snapshot", "@Recycle"]
   }
 }
 ```
@@ -196,6 +197,7 @@ python database.py --add-user alice --role superadmin --display-name "Alice"
 | 设置 | 默认值 | 说明 |
 |---------|---------|-------------|
 | `skip_hidden_directories` | `true` | 扫描照片时跳过以 `.` 开头的目录 |
+| `skip_directories` | `["@eaDir", "#recycle", "#snapshot", "@Recycle"]` | 扫描时跳过的目录名通配符（`fnmatch`，区分大小写，按任意深度的文件夹名匹配）：Synology 的 `@eaDir`（其 `SYNOPHOTO_THUMB_*.jpg` 缩略图不是照片）、`#recycle`、`#snapshot`、QNAP 的 `@Recycle`。你的列表会完全替换默认值；`[]` 表示不按名称跳过。扫描根目录本身永远不会被跳过。已从这些文件夹索引的照片会保留在数据库中 |
 
 ---
 
@@ -1280,10 +1282,10 @@ IEC 61966-2-1。NCLX 传递特征值 16：ISO/IEC 23001-8 / ITU-T H.273。
 
 | 设置 | 默认值 | 可接受的取值 | 列 | 说明 |
 |---------|---------|-----------------|--------|-------------|
-| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B 基于 LLM 的 IQA（原生 `transformers` 加载器，不依赖 pyiqa，Apache-2.0 权重，约 2-3GB 显存/内存）。`"auto"` 会在 `8gb`/`16gb`/`24gb` 配置档下开启它、在 `legacy`/CPU 下关闭它；`true`/`false` 则显式覆盖配置档默认值。 |
+| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B 基于 LLM 的 IQA（原生 `transformers` 加载器，不依赖 pyiqa，Apache-2.0 权重，约 2-3GB 显存/内存）。`"auto"` 会在 `8gb`/`16gb`/`24gb` 配置档下开启它、在 `legacy`/CPU 下关闭它；`true`/`false` 则显式覆盖配置档默认值。可在查看器中按 **Q-ReAlign（美观度）** 排序；只有至少一张照片具有 Q-ReAlign 评分时才会出现该选项，无论升序还是降序，未评分的照片都排在最后。该列包含美学任务；画质使用 `quality_score`。 |
 | `qrealign_size` | `"mini"` | `"mini"` · `"lite"` | - | 原生评分器加载的 Q-ReAlign 规格：`mini`（0.8B）或 `lite`（4B）。用于 `qrealign` 列，并在 `licensing.mode: "commercial"` 下作为主要的美学与质量模型。 |
-| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5（SigLIP 头，约 2GB）。需要 `aesthetic-predictor-v2-5` 包。**已弃用：** 采用 AGPL-3.0 许可，且上游自 2024-12-18 起无人维护 — 请优先使用 `qrealign`。 |
-| `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score 视觉语言模型 IQA（需 16GB 以上 GPU；否则跳过并留作 NULL）。 |
+| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5（SigLIP 头，约 2GB）。需要 `aesthetic-predictor-v2-5` 包。**已弃用：** 采用 AGPL-3.0 许可，且上游自 2024-12-18 起无人维护 — 请优先使用 `qrealign`。可在查看器中按 **美学 v2.5** 排序（至少一张照片具有美学 v2.5 评分时才会出现该选项），无论升序还是降序，未评分的照片都排在最后。 |
+| `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score 视觉语言模型 IQA（需 16GB 以上 GPU；否则跳过并留作 NULL）。可在查看器中按 **DeQA** 排序（至少一张照片具有 DeQA 评分时才会出现该选项），无论升序还是降序，未评分的照片都排在最后。 |
 
 **请为你启用的功能安装可选依赖**：`pip install -e .[iqa-extended]`（会装上 `aesthetic-predictor-v2-5`），或者取消 `requirements.txt` 中对应那一行的注释。DeQA-Score 通过 `transformers` 下载。
 
@@ -1310,7 +1312,7 @@ IEC 61966-2-1。NCLX 传递特征值 16：ISO/IEC 23001-8 / ITU-T H.273。
 
 | 设置 | 默认值 | 可接受的值 | 说明 |
 |---------|---------|-----------------|-------------|
-| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` 加载所有模型（发布时的行为）。`"commercial"` 绝不导入、排队或下载许可证不适合商业使用的组件：`pyiqa`（TOPIQ、HyperIQA、LIQE 等）和 InsightFace 在每一层都会被拒绝。美学与质量由原生 Q-ReAlign 评分器提供，构图由基于规则的分析器提供，人脸由宽松许可的人脸流水线提供（YuNet 检测、128 维 SFace 特征向量，可选 MediaPipe 的眼睛/微笑和 OFIQ 人脸质量）。`liqe` 和 `aesthetic_iaa` 没有替代方案，保持为 `NULL`。 |
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` 加载所有模型（发布时的行为）。`"commercial"` 绝不导入、排队或下载许可证不适合商业使用的组件：`pyiqa`（TOPIQ、HyperIQA、LIQE 等）和 InsightFace 在每一层都会被拒绝。美学与质量由原生 Q-ReAlign 评分器提供，构图由基于规则的分析器提供，人脸由宽松许可的人脸流水线提供（YuNet 检测、128 维 SFace 特征向量，可选 MediaPipe 的眼睛/微笑和 OFIQ 人脸质量）。`liqe` 和 `aesthetic_iaa` 没有替代方案，保持为 `NULL`；`deqa`（许可证*不明确*）除非设置了 `allow_unclear` 否则不可用，`aesthetic_v25`（AGPL）始终不可用。 |
 | `allow_unclear` | `false` | `true` / `false` | 在商业模式下，同时允许许可证*不明确*的组件（SAMP-Net、U2-Net-P、LAION CLIP-MLP 美学头）。非商业许可的组件仍被拒绝。必须是 JSON 布尔值；其他任何值都是会中止启动的错误。 |
 
 被拒绝的组件会抛出 `LicenceError`，其中指明该组件及其替代项；所有可能吞掉它的处理器都会重新抛出它（有测试强制保证），因此拒绝会在启动时终止扫描，而不是变成逐张照片的失败或静默回退。仅依赖被拒绝组件的命令（`--score-topiq`、针对 pyiqa 模型的 `--recompute-iqa`、`--recompute-composition-gpu`）在商业模式下会带着该消息退出。该模式在启动时从解析后的配置中读取。查看器会在其启动的每个 `facet.py` 进程（扫描、重新计算）的环境中传入 `FACET_LICENSING_MODE=commercial`，因此子进程不会因工作目录不同而回落到默认模式。以上内容不构成法律建议。
@@ -1682,7 +1684,8 @@ python facet.py --recompute-tags-vlm   # 用 VLM 标签模型重新打标签
 | 设置 | 默认值 | 说明 |
 |---------|---------|-------------|
 | `default_category` | `""` | 默认的类别筛选 |
-| `edition_password` | `""` | 解锁编辑模式的密码（留空 = 所有编辑均被拒绝；安装为只读） |
+| `edition_password` | `""` | 解锁编辑模式的密码（留空 = 所有编辑均被拒绝；安装为只读，启用 `trusted_local_editing` 时直接访问的本地浏览器除外） |
+| `trusted_local_editing` | `false` | 无需编辑密码，即授予同一台计算机上经 loopback 直接访问查看器的浏览器编辑权限。仅当单用户安装的 `password` 与 `edition_password` 均为空时生效；涵盖除扫描触发之外的所有需要编辑权限的路由。**切勿在同一主机的反向代理之后启用。** 参见[受信任的本地编辑](#受信任的本地编辑) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | 建议权重之前，该类别所需的最少决定性比较次数（一方获胜；平局不计） |
 | `pair_selection_strategy` | `"learning"` | 配对策略：`learning`（冷启动阶段按嵌入多样性，训练完成后按排序分歧）、`uncertainty`、`boundary`、`active`、`random` |
@@ -1938,6 +1941,31 @@ python facet.py --recompute-tags-vlm   # 用 VLM 标签模型重新打标签
 ```
 
 设置之后，用户必须先通过认证才能访问查看器。
+
+### 受信任的本地编辑
+
+仅由同一台计算机上的浏览器使用的单用户查看器，可通过显式启用，在没有编辑密码的情况下进行编辑：
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+该选项仅在 `viewer.password` 与 `viewer.edition_password` **均**为空、多用户模式关闭且配置正常加载时生效。设置编辑密码即会使其失效：设置了编辑密码的运维者期望系统要求输入它，因此该选项绝不会绕过它。它不会设置或泄露任何密码，不会更改令牌，也不会启用多用户管理。
+
+访问权限按每个请求判定，绝不依据令牌声明。只有同时满足以下所有条件的请求才被信任；否则（包括 GET 请求）按该选项关闭处理：
+
+- TCP 对端是 loopback 地址（`::ffff:127.0.0.1` 这类 IPv4 映射对端按其 IPv4 地址判断）；
+- 恰好有一个 `Host` 头，且其值为 `localhost`、`127.0.0.1` 或 `[::1]`，端口可选；
+- 请求不带任何 `Forwarded`、`Via`、`X-Real-IP`、`X-Client-IP`、`True-Client-IP`、`CF-Connecting-IP`、`X-Original-Forwarded-For` 或 `X-Forwarded-*` 头；
+- 若存在 `Origin` 或 `Referer`，必须与请求的协议、主机和端口完全一致且不含凭据（带路径、查询或片段的 `Origin` 会被拒绝）；若存在 `Sec-Fetch-Site`，其值必须为 `same-origin` 或 `none`。
+
+受信任的请求拥有完整的编辑权限：凡是原本需要编辑会话的路由都包括在内，而不只是评分。这涵盖评分、收藏与拒绝、比较模式、选片（包括会移动文件或将其移入回收站的**选片后导出／清理**，以及单张照片删除）、相册、人物与人脸管理、权重、优先级与评分情境的修改、元数据嵌入与导出、参数固定的重算与全景检测任务，以及按需生成描述与点评。扫描触发是唯一的例外：它仍然需要 `viewer.edition_password`，而该选项生效时编辑密码必然为空，因此扫描始终被拒绝。
+
+> **警告：** loopback 对端是唯一真正的边界。`Host`、`Origin`、`Referer` 和 `Sec-Fetch-Site` 由客户端设置，只能用来拒绝请求；同一主机上不添加上述任何头的反向代理、隧道或端口转发与你的浏览器无法区分。切勿在同一主机的任何反向代理之后启用此选项。启用期间，本机的任何本地进程和任何账户都可以编辑。
 
 ### 查看器性能
 
@@ -2280,7 +2308,8 @@ Webhook 选项：`url`（必填）、`events`（事件名列表）、`min_score`
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2289,6 +2318,7 @@ Webhook 选项：`url`（必填）、`events`（事件名列表）、`min_score`
 |---------|---------|-------------|
 | `threshold` | `25` | 用户必须累积多少次新比较才会武装一次重训练。如果你一次评分的批量非常大，并希望这次训练（CPU，耗时数秒到数分钟）摊到更多信号上，可以调高它 |
 | `idle_seconds` | `60` | 已武装的重训练真正开始之前，需要多少秒没有评分/选片活动。每一次新操作都会把计时器往后推。`0` 表示立即派发（1.7.3 之前的行为） |
+| `backend` | `"native"` | `"native"` 在本地训练个人排序模型、选片头和学习到的权重。`"external"` 只保留偏好和待处理的比较计数，绝不在本地训练或评估学习得到的头；参见[外部学习后端](#外部学习后端) |
 
 两者都可在运行时由环境变量覆盖，且环境变量优先于 JSON 中的取值 — 这对 Docker 很有用，因为配置常常被烘焙进镜像：
 
@@ -2301,9 +2331,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-无法解析的取值会回退到 JSON 设置，而缺失或格式错误的配置块会回退到内置默认值，因此一个拼写错误只会退化成随附行为，而不会禁用自动重训练。这两个值只在启动时读取一次 — 改动它们需要重启。
+无法解析的 `threshold` 或 `idle_seconds` 会回退到 JSON 设置，而缺失或格式错误的配置块会回退到内置默认值，因此一个拼写错误只会退化成随附行为，而不会禁用自动重训练。`backend` 是例外：无法读取或无效的取值会保守地回退为 `"external"`（见下文）。`threshold` 和 `idle_seconds` 只在启动时读取一次 — 改动它们需要重启。
 
 重训练仍然保留其留出集交叉验证门槛：一次未能超过当前基线的运行不会写入任何内容。
+
+### 外部学习后端
+
+`auto_retrain.backend` 默认为 `"native"`，保持本地个人排序模型和选片头的原有行为。设置 `"backend": "external"` 可保留偏好和待处理的比较计数，而不启动本地个人学习，也不在 CPU 上评估学习得到的头。
+
+这是一项调度策略，而不是外部作业服务。它不会启动外部 GPU 工作进程，也不会声称个人模型已经训练完成。需要由运维人员控制的独立训练流程来验证观测数据、评定其模型并发布得到的分数。已有的评分和比较仍可供该流程使用。
+
+在外部模式下，通知会递增现有的持久计数器，但不会消耗它们，也不会调度训练线程。已排队的工作进程会重新检查策略，被推迟时会归还它们已消耗的待处理计数。个人排序模型、选片头和权重学习的手动入口会返回明确的“已推迟”结果。选片概率不可用；“比较”的学习权重与置信度响应会返回 `available: false` 及说明信息。
+
+格式错误或无法读取的后端策略（`auto_retrain` 块不是对象、`backend` 不是 `"native"` 或 `"external"`、配置无法读取）会保守地回退为外部模式，并记录一条警告。没有 `backend` 键的有效配置使用原生模式。查看器读取其已解析的服务器配置路径；CLI 调用遵循其显式指定的配置。此选项不会禁用常规的确定性照片评分，也不会清除投票。
 
 ## 按题材区分的选片配置
 

@@ -21,7 +21,7 @@ are declared ``Any`` here rather than guessed into a ``Union`` that risks
 silently coercing one branch (e.g. ``True`` -> ``1.0``).
 """
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -103,6 +103,15 @@ class MediaCritiqueResponse(BaseModel):
     category: str
     category_reason: MediaCritiqueCategoryReason
     aggregate: Optional[float] = None
+    score_basis: Optional[Literal['current_formula']] = None
+    current_formula_score: Optional[float] = None
+    native_adjustment: Optional[float] = None
+    stored_score_matches_current_formula: Optional[bool] = None
+    normalization_basis: Optional[Literal['persisted_percentiles', 'stored_metrics']] = None
+    explanation_unavailable_reason: Optional[Literal[
+        'missing_scoring_inputs', 'normalization_snapshot_unavailable',
+        'invalid_scoring_inputs']] = None
+    stored_score_state: Optional[Literal['present', 'missing', 'invalid']] = None
     breakdown: list[MediaCritiqueBreakdownItem] = []
     strengths: list[MediaCritiqueMetricRef] = []
     weaknesses: list[MediaCritiqueMetricRef] = []

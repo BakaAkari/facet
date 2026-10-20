@@ -196,7 +196,8 @@ Controla o comportamento de escaneamento de diretórios.
 ```json
 {
   "scanning": {
-    "skip_hidden_directories": true
+    "skip_hidden_directories": true,
+    "skip_directories": ["@eaDir", "#recycle", "#snapshot", "@Recycle"]
   }
 }
 ```
@@ -204,6 +205,7 @@ Controla o comportamento de escaneamento de diretórios.
 | Configuração | Padrão | Descrição |
 |--------------|--------|-----------|
 | `skip_hidden_directories` | `true` | Ignora diretórios que começam com `.` durante o escaneamento de fotos |
+| `skip_directories` | `["@eaDir", "#recycle", "#snapshot", "@Recycle"]` | Globs de nomes de diretório (`fnmatch`, sensíveis a maiúsculas, aplicados ao nome da pasta em qualquer profundidade) excluídos do escaneamento: `@eaDir` da Synology (as miniaturas `SYNOPHOTO_THUMB_*.jpg` não são fotos), `#recycle`, `#snapshot`, `@Recycle` da QNAP. Sua lista substitui totalmente a padrão; `[]` desativa a exclusão por nome. A raiz do escaneamento nunca é excluída. Fotos já indexadas dessas pastas permanecem no banco de dados |
 
 ---
 
@@ -1319,10 +1321,10 @@ Pontuadores de qualidade pesados/experimentais que adicionam colunas suplementar
 
 | Configuração | Padrão | Valores aceitos | Coluna | Descrição |
 |--------------|--------|-----------------|--------|-----------|
-| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | IQA baseado em LLM Q-ReAlign-Mini 0.8B (carregador nativo `transformers`, sem pyiqa; pesos Apache-2.0, ~2-3GB VRAM/RAM). `"auto"` liga para os perfis `8gb`/`16gb`/`24gb` e desliga para `legacy`/CPU; `true`/`false` sobrepõem explicitamente o padrão do perfil. |
+| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | IQA baseado em LLM Q-ReAlign-Mini 0.8B (carregador nativo `transformers`, sem pyiqa; pesos Apache-2.0, ~2-3GB VRAM/RAM). `"auto"` liga para os perfis `8gb`/`16gb`/`24gb` e desliga para `legacy`/CPU; `true`/`false` sobrepõem explicitamente o padrão do perfil. Ordenável no visualizador como **Q-ReAlign (estética)**; a opção só aparece quando pelo menos uma foto tem pontuação Q-ReAlign, e as fotos sem pontuação ficam por último nos dois sentidos. Esta coluna contém a tarefa estética; a qualidade usa `quality_score`. |
 | `qrealign_size` | `"mini"` | `"mini"` · `"lite"` | - | Tamanho do Q-ReAlign carregado pelo avaliador nativo: `mini` (0.8B) ou `lite` (4B). Usado para a coluna `qrealign` e, com `licensing.mode: "commercial"`, como modelo principal de estética e qualidade. |
-| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (cabeça SigLIP, ~2GB). Requer o pacote `aesthetic-predictor-v2-5`. **Descontinuado:** licenciado sob AGPL-3.0 e sem manutenção desde 2024-12-18 — prefira `qrealign`. |
-| `deqa` | `false` | `true` / `false` | `deqa_score` | IQA VLM DeQA-Score (GPU 16GB+; ignorado e deixado NULL caso contrário). |
+| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (cabeça SigLIP, ~2GB). Requer o pacote `aesthetic-predictor-v2-5`. **Descontinuado:** licenciado sob AGPL-3.0 e sem manutenção desde 2024-12-18 — prefira `qrealign`. Ordenável no visualizador como **Estética v2.5** (a opção aparece quando pelo menos uma foto tem pontuação Estética v2.5), com as fotos sem pontuação por último nos dois sentidos. |
+| `deqa` | `false` | `true` / `false` | `deqa_score` | IQA VLM DeQA-Score (GPU 16GB+; ignorado e deixado NULL caso contrário). Ordenável no visualizador como **DeQA** (a opção aparece quando pelo menos uma foto tem pontuação DeQA), com as fotos sem pontuação por último nos dois sentidos. |
 
 **Instale as dependências opcionais** para o que você habilitar: `pip install -e .[iqa-extended]` (adiciona `aesthetic-predictor-v2-5`), ou descomente a linha correspondente em `requirements.txt`. O DeQA-Score é baixado via `transformers`.
 
@@ -1349,7 +1351,7 @@ Controla quais componentes de modelos o Facet pode carregar. Veja [THIRD_PARTY_M
 
 | Configuração | Padrão | Valores aceitos | Descrição |
 |---------|---------|-------------------|-------------|
-| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` carrega todos os modelos (comportamento entregue). `"commercial"` nunca importa, enfileira nem baixa componentes cuja licença não seja adequada ao uso comercial: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) e InsightFace são recusados em todas as camadas. Estética e qualidade vêm do avaliador nativo Q-ReAlign, a composição do analisador baseado em regras e os rostos do pipeline facial permissivo (deteção YuNet, embeddings SFace de 128 dimensões, e opcionalmente MediaPipe para olhos/sorriso e a qualidade facial OFIQ). `liqe` e `aesthetic_iaa` não têm substituto e ficam `NULL`. |
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` carrega todos os modelos (comportamento entregue). `"commercial"` nunca importa, enfileira nem baixa componentes cuja licença não seja adequada ao uso comercial: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) e InsightFace são recusados em todas as camadas. Estética e qualidade vêm do avaliador nativo Q-ReAlign, a composição do analisador baseado em regras e os rostos do pipeline facial permissivo (deteção YuNet, embeddings SFace de 128 dimensões, e opcionalmente MediaPipe para olhos/sorriso e a qualidade facial OFIQ). `liqe` e `aesthetic_iaa` não têm substituto e ficam `NULL`; `deqa` (licença *pouco clara*) fica indisponível a menos que `allow_unclear` esteja definido, e `aesthetic_v25` (AGPL) está sempre indisponível. |
 | `allow_unclear` | `false` | `true` / `false` | No modo comercial, permite também componentes com licença *incerta* (SAMP-Net, U2-Net-P, a cabeça estética CLIP-MLP da LAION). Componentes com licença não comercial continuam recusados. Tem de ser um booleano JSON; qualquer outro valor é um erro que interrompe o arranque. |
 
 Um componente recusado lança um `LicenceError` que nomeia o componente e o seu substituto; todo manipulador que pudesse absorvê-lo volta a lançá-lo (um teste exige isso), de modo que uma recusa para a varredura no arranque em vez de virar falhas por foto ou um recurso silencioso. Os comandos que dependem apenas de um componente recusado (`--score-topiq`, `--recompute-iqa` para modelos pyiqa, `--recompute-composition-gpu`) terminam com essa mensagem no modo comercial. O modo é lido da configuração resolvida no arranque. O visualizador passa `FACET_LICENSING_MODE=commercial` no ambiente de cada processo `facet.py` que inicia (varreduras, recálculos), de modo que um filho nunca volte ao modo padrão a partir de outro diretório de trabalho. Nada disto é aconselhamento jurídico.
@@ -1714,7 +1716,8 @@ Exibição e comportamento da galeria web.
 | Configuração | Padrão | Descrição |
 |--------------|--------|-----------|
 | `default_category` | `""` | Filtro de categoria padrão |
-| `edition_password` | `""` | Senha para desbloquear o modo de edição (vazio = toda edição é recusada; a instalação é somente leitura) |
+| `edition_password` | `""` | Senha para desbloquear o modo de edição (vazio = toda edição é recusada; a instalação é somente leitura, exceto para um navegador local direto com `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Concede direitos de edição, sem senha de edição, a um navegador no mesmo computador que acessa o visualizador diretamente por loopback. Só se aplica enquanto `password` E `edition_password` estiverem vazias numa instalação de usuário único; cobre todas as rotas sujeitas a edição, exceto o disparo da varredura. **Nunca ative atrás de um proxy reverso no mesmo host.** Veja [Edição Local Confiável](#edição-local-confiável) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Número mínimo de comparações decisivas (uma foto venceu; empates não contam) da categoria antes de sugerir pesos |
 | `pair_selection_strategy` | `"learning"` | Estratégia de pares: `learning` (partida a frio por diversidade de embeddings + discordância de classificação uma vez treinado), `uncertainty`, `boundary`, `active`, `random` |
@@ -1972,6 +1975,31 @@ Proteção por senha opcional para o visualizador:
 ```
 
 Quando definida, os usuários precisam se autenticar antes de acessar o visualizador.
+
+### Edição Local Confiável
+
+Um visualizador de usuário único usado apenas a partir de um navegador no mesmo computador pode editar sem senha de edição, mediante ativação explícita:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+A opção só se aplica enquanto **tanto** `viewer.password` **quanto** `viewer.edition_password` estiverem vazias, o modo multiusuário estiver desativado e a configuração tiver sido carregada sem erros. Definir uma senha de edição a desativa: quem definiu uma espera que ela seja pedida, então a opção nunca a contorna. Ela não define nem revela nenhuma senha, não altera tokens nem habilita a administração multiusuário.
+
+O acesso é decidido a cada requisição, nunca a partir de um claim do token. Uma requisição só é confiável quando todas estas condições valem; caso contrário é tratada como se a opção estivesse desativada, requisições GET incluídas:
+
+- o par TCP é um endereço de loopback (um par IPv4 mapeado como `::ffff:127.0.0.1` é avaliado pelo seu endereço IPv4);
+- há exatamente um cabeçalho `Host`, e ele é `localhost`, `127.0.0.1` ou `[::1]`, com uma porta opcional;
+- a requisição não traz nenhum cabeçalho `Forwarded`, `Via`, `X-Real-IP`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Original-Forwarded-For` nem `X-Forwarded-*`;
+- um `Origin` ou `Referer`, quando presente, indica exatamente o esquema, o host e a porta da requisição, sem credenciais (um `Origin` com caminho, consulta ou fragmento é recusado), e um `Sec-Fetch-Site`, quando presente, é `same-origin` ou `none`.
+
+Uma requisição confiável tem todos os direitos de edição: toda rota que, de outra forma, exige uma sessão de edição, não apenas as avaliações. Isso abrange avaliações, favoritos e rejeições, o modo de comparação, a seleção (incluindo **Selecionar para pasta**, que move arquivos ou os envia para a lixeira, e a exclusão de uma foto), os álbuns, o gerenciamento de pessoas e rostos, as mudanças de pesos, prioridades e contextos de pontuação, a incorporação de metadados e as exportações, os jobs de argumentos fixos de recálculo e de detecção de panoramas, e a geração sob demanda de legendas e críticas. O disparo da varredura é a única exceção: continua exigindo `viewer.edition_password`, que nunca pode estar definida enquanto esta opção se aplica, então continua recusado.
+
+> **Aviso:** o par de loopback é a única fronteira real. `Host`, `Origin`, `Referer` e `Sec-Fetch-Site` são definidos pelo cliente e só podem recusar uma requisição, e um proxy reverso, túnel ou redirecionamento de porta no mesmo host que não adicione nenhum dos cabeçalhos acima é indistinguível do seu navegador. Nunca ative esta opção atrás de qualquer proxy reverso no mesmo host. Enquanto estiver ativa, qualquer processo local e qualquer conta do computador pode editar.
 
 ### Desempenho do Visualizador
 
@@ -2314,7 +2342,8 @@ A janela de inatividade é essencial: o re-treinamento reescreve uma linha por f
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2323,6 +2352,7 @@ A janela de inatividade é essencial: o re-treinamento reescreve uma linha por f
 |--------------|--------|-----------|
 | `threshold` | `25` | Novas comparações que um usuário deve acumular antes de armar um re-treinamento. Aumente se você avalia lotes muito grandes e quer amortizar o custo do treinamento (CPU, de segundos a minutos) sobre mais sinal |
 | `idle_seconds` | `60` | Segundos sem atividade de avaliação/triagem necessários antes que o re-treinamento armado realmente comece. Cada nova ação adia o temporizador. `0` dispara imediatamente (comportamento anterior à 1.7.3) |
+| `backend` | `"native"` | `"native"` treina localmente o classificador pessoal, a cabeça de seleção e os pesos aprendidos. `"external"` apenas mantém as preferências e os contadores de comparações pendentes, e nunca treina nem avalia localmente uma cabeça aprendida; veja [Backend de aprendizado externo](#backend-de-aprendizado-externo) |
 
 Ambos podem ser sobrescritos em tempo de execução por variáveis de ambiente, que têm precedência sobre os valores do JSON — útil no Docker, onde a configuração costuma vir embutida na imagem:
 
@@ -2335,9 +2365,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-Um valor ilegível recai na configuração do JSON, e um bloco ausente ou malformado recai nos padrões embutidos, de modo que um erro de digitação degrada para o comportamento de fábrica em vez de desativar o re-treinamento automático. Ambos os valores são lidos uma única vez na inicialização — alterá-los exige um reinício.
+Um `threshold` ou `idle_seconds` ilegível recai na configuração do JSON, e um bloco ausente ou malformado recai nos padrões embutidos, de modo que um erro de digitação degrada para o comportamento de fábrica em vez de desativar o re-treinamento automático. `backend` é a exceção: um valor ilegível ou inválido recai por precaução em `"external"` (veja abaixo). `threshold` e `idle_seconds` são lidos uma única vez na inicialização — alterá-los exige um reinício.
 
 O re-treinamento mantém sua verificação por validação cruzada em dados reservados: uma execução que não supera a referência atual não escreve nada.
+
+### Backend de aprendizado externo
+
+O valor padrão de `auto_retrain.backend` é `"native"`, que preserva o comportamento local do classificador pessoal e da cabeça de seleção. Defina `"backend": "external"` para manter as preferências e os contadores de comparações pendentes sem iniciar aprendizado pessoal local nem avaliar cabeças aprendidas na CPU.
+
+Trata-se de uma política de despacho, não de um serviço de jobs externo. Ela não inicia nenhum worker de GPU externo nem afirma que um modelo pessoal foi treinado. Um fluxo de treinamento separado, controlado pelo operador, deve autenticar as observações, qualificar seu modelo e publicar as pontuações resultantes. As avaliações e comparações existentes continuam disponíveis para esse fluxo.
+
+No modo externo, as notificações incrementam os contadores duráveis existentes sem consumi-los nem agendar uma thread de treinamento. Os workers enfileirados verificam a política novamente e devolvem a contagem pendente que haviam consumido quando são adiados. Os pontos de entrada manuais do classificador pessoal, da cabeça de seleção e do aprendizado de pesos retornam um resultado adiado explícito. As probabilidades de seleção não estão disponíveis; as respostas de Comparar (pesos aprendidos e confiança) informam `available: false` com uma mensagem explicativa.
+
+Uma política de backend malformada ou ilegível (bloco `auto_retrain` que não é um objeto, `backend` diferente de `"native"` ou `"external"`, configuração ilegível) recai por precaução no modo externo e registra um aviso. Uma configuração válida sem a chave `backend` usa o modo nativo. O visualizador lê o caminho de configuração do servidor já resolvido; as chamadas CLI respeitam sua configuração explícita. Esta opção não desativa a pontuação determinística comum das fotos nem apaga votos.
 
 ## Perfis de seleção por gênero
 

@@ -186,8 +186,16 @@ def _keeper_optimizer():
 
 
 def _keeper_head_for(conn, user_id):
-    """Load the keeper head for this scope (user → global fallback), or None."""
+    """Load the keeper head for this scope (user → global fallback), or None.
+
+    None in external mode too: the one gate that lets every caller skip its
+    per-group row queries and inference.
+    """
+    from api.config import server_config_path
     from optimization.keeper_head import load_keeper_head
+    from optimization.learning_policy import learning_backend
+    if learning_backend(server_config_path()) != 'native':
+        return None
     head = load_keeper_head(conn, user_id, None)
     if head is None and user_id:
         head = load_keeper_head(conn, None, None)
@@ -1376,7 +1384,7 @@ def _subject_crop_and_sharpness(thumbnail_bytes, bbox):
         return None, None
     crop = img.crop((px0, py0, px1, py1))
     if max(crop.size) > _SUBJECT_CROP_OUTPUT:
-        crop.thumbnail((_SUBJECT_CROP_OUTPUT, _SUBJECT_CROP_OUTPUT), Image.LANCZOS)
+        crop.thumbnail((_SUBJECT_CROP_OUTPUT, _SUBJECT_CROP_OUTPUT), Image.Resampling.LANCZOS)
     gray = cv2.cvtColor(np.asarray(crop), cv2.COLOR_RGB2GRAY)
     sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     buf = BytesIO()

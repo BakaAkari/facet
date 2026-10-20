@@ -7,7 +7,8 @@ with a plain stub since it is wrapped in asyncio.to_thread in the handler.
 """
 
 import sqlite3
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+import json
 from unittest import mock
 
 import aiosqlite
@@ -16,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from api import create_app
 from api.auth import CurrentUser, get_optional_user
+from db.schema import PHOTOS_COLUMNS, _build_create_table_sql
 
 
 # Columns selected by the critique endpoint (must all exist in the test DB).
@@ -37,12 +39,8 @@ _CRITIQUE_COLS = [
 ]
 
 
-_CRITIQUE_SCHEMA = (
-    "CREATE TABLE photos (path TEXT PRIMARY KEY, "
-    + ", ".join(f"{c} TEXT" for c in _CRITIQUE_COLS if c != 'path')
-    + ", is_rejected INTEGER DEFAULT 0"
-    + ", thumbnail BLOB, vlm_critique TEXT, vlm_critique_translated TEXT);"
-)
+_CRITIQUE_SCHEMA = _build_create_table_sql('photos', PHOTOS_COLUMNS) + ";"
+
 
 _VLM_TEST_COLS = set(_CRITIQUE_COLS) | {'thumbnail', 'vlm_critique', 'vlm_critique_translated'}
 
@@ -50,6 +48,9 @@ _VLM_TEST_COLS = set(_CRITIQUE_COLS) | {'thumbnail', 'vlm_critique', 'vlm_critiq
 def _make_db(path, photos):
     conn = sqlite3.connect(path)
     conn.executescript(_CRITIQUE_SCHEMA)
+    conn.execute("CREATE TABLE stats_cache(key TEXT PRIMARY KEY,value TEXT,updated_at REAL)")
+    conn.execute("INSERT INTO stats_cache VALUES('percentiles_snapshot',?,0)",
+                 (json.dumps({'percentiles': {}, 'category_percentiles': {}, 'target_percentile': 95}),))
     for p in photos:
         cols = list(p.keys())
         placeholders = ", ".join("?" for _ in cols)
@@ -59,6 +60,18 @@ def _make_db(path, photos):
         )
     conn.commit()
     conn.close()
+
+
+def _sync_conn_factory(db_path):
+    @contextmanager
+    def factory():
+        connection = sqlite3.connect(db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+        finally:
+            connection.close()
+    return factory
 
 
 def _async_conn_factory(db_path):
@@ -155,6 +168,7 @@ class TestCritiqueEndpoint:
         with (
             mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
             mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+            mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
             mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
         ):
             resp = client.get("/api/critique", params={"path": "/photos/missing.jpg"})
@@ -184,6 +198,7 @@ class TestCritiqueEndpoint:
         with (
             mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
             mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+            mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
             mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
             mock.patch("api.routers.critique._build_rule_critique", return_value=fake_result),
         ):
@@ -222,6 +237,7 @@ class TestCritiqueEndpoint:
         with (
             mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
             mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+            mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
             mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
             mock.patch("api.routers.critique.get_existing_columns", return_value=_VLM_TEST_COLS),
             mock.patch("api.routers.critique._build_rule_critique", return_value=fake_rule),
@@ -253,6 +269,7 @@ class TestCritiqueEndpoint:
         with (
             mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
             mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+            mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
             mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
             mock.patch("api.routers.critique.get_existing_columns", return_value=_VLM_TEST_COLS),
             mock.patch("api.routers.critique._build_rule_critique", return_value=fake_rule),
@@ -286,6 +303,7 @@ class TestCritiqueEndpoint:
         with (
             mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
             mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+            mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
             mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
             mock.patch("api.routers.critique.get_existing_columns", return_value=_VLM_TEST_COLS),
             mock.patch("api.routers.critique._build_rule_critique", return_value=fake_rule),
@@ -328,6 +346,7 @@ class TestCritiqueEndpoint:
         with (
             mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
             mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+            mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
             mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
             mock.patch("api.routers.critique.get_existing_columns", return_value=_VLM_TEST_COLS),
             mock.patch("api.routers.critique._build_rule_critique", return_value=fake_rule),
@@ -361,6 +380,7 @@ class TestCritiqueEndpoint:
         with (
             mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
             mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+            mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
             mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
             mock.patch("api.routers.critique.get_existing_columns", return_value=_VLM_TEST_COLS),
             mock.patch("api.routers.critique._build_rule_critique", return_value=fake_rule),
@@ -413,6 +433,7 @@ class TestCritiqueVlmEditionGate:
             with (
                 mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
                 mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+                mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
                 mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
                 mock.patch("api.routers.critique.get_existing_columns", return_value=_VLM_TEST_COLS),
                 mock.patch("api.routers.critique._build_rule_critique", return_value=dict(self._RULE)),
@@ -447,6 +468,7 @@ class TestCritiqueVlmEditionGate:
             with (
                 mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
                 mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+                mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
                 mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
                 mock.patch("api.routers.critique.get_existing_columns", return_value=_VLM_TEST_COLS),
                 mock.patch("api.routers.critique._build_rule_critique", return_value=dict(self._RULE)),
@@ -470,6 +492,7 @@ class TestCritiqueVlmEditionGate:
             with (
                 mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
                 mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+                mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
                 mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
                 mock.patch("api.routers.critique.get_existing_columns", return_value=_VLM_TEST_COLS),
                 mock.patch("api.routers.critique._build_rule_critique", return_value=dict(self._RULE)),
@@ -493,11 +516,12 @@ class TestBuildRuleCritique:
 
     def _mock_scoring_config(self, weights, category_config=None):
         """Return a mock ScoringConfig class whose instances return *weights*."""
-        instance = mock.MagicMock()
-        instance.get_weights.return_value = weights
-        instance.get_category_config.return_value = category_config or {}
-        cls = mock.MagicMock(return_value=instance)
-        return cls
+        from config.scoring_config import ScoringConfig
+        from pathlib import Path
+        instance = ScoringConfig(str(Path(__file__).parents[1] / 'config/scoring_config.default.json'), validate=False)
+        instance.get_weights = lambda category: dict(weights)
+        instance.get_category_config = lambda category: category_config or {}
+        return mock.MagicMock(return_value=instance)
 
     def test_rule_critique_with_penalties(self):
         """Photo with is_blink=1 and high noise_sigma produces penalties."""
@@ -524,8 +548,8 @@ class TestBuildRuleCritique:
 
         penalties = result["penalties"]
         assert penalties.get("blink") is True
-        assert "noise" in penalties
-        assert penalties["noise"] < 0  # negative penalty value
+        assert "noise" not in penalties  # No invented numeric deductions.
+        assert result['native_adjustment'] < 0
 
     def test_critique_fields(self):
         """Verify all expected keys are present in the result."""
@@ -551,7 +575,9 @@ class TestBuildRuleCritique:
             "weaknesses",
             "suggestions",
             "penalties",
-            "distortions",
+            "distortions", "score_basis", "current_formula_score",
+            "native_adjustment", "stored_score_matches_current_formula",
+            "normalization_basis", "stored_score_state",
         }
         assert expected_keys == set(result.keys())
 
@@ -564,7 +590,7 @@ class TestBuildRuleCritique:
         assert isinstance(result["distortions"], list)
         assert isinstance(result["category_reason"], dict)
         assert result["aggregate"] == photo["aggregate"]
-        assert result["category"] == photo["category"]
+        assert result["category"] == "default"  # Current native category, not a stale stored label.
 
     def test_breakdown_item_structure(self):
         """Each breakdown item has metric, metric_key, value, weight, contribution."""
@@ -758,9 +784,12 @@ class TestBuildVlmPrompt:
         rule = {
             "category": "portrait",
             "aggregate": 6.4,
+            "score_basis": "current_formula",
+            "current_formula_score": 6.4,
+            "native_adjustment": 4.0,
             "breakdown": [
                 {"metric": "Aesthetic Quality", "metric_key": "aesthetic", "value": 7.1, "weight": 0.3, "contribution": 2.1},
-                {"metric": "Noise Level", "metric_key": "noise_sigma", "value": 2.5, "weight": 0.1, "contribution": 0.3},
+                {"metric": "Noise quality", "metric_key": "noise_sigma", "value": 2.5, "weight": 0.1, "contribution": 0.3},
             ],
             "penalties": {"blink": True},
         }
@@ -770,10 +799,94 @@ class TestBuildVlmPrompt:
 
         assert "portrait" in prompt
         assert "6.4/10" in prompt
-        assert "- Aesthetic Quality: 7.1 (weight 30%)" in prompt
-        assert "- Noise Level: 2.5 (weight 10%, lower is better)" in prompt
-        assert "Penalties applied: blink." in prompt
+        assert "- Aesthetic Quality: 7.1 (weight 30%, higher quality is better)" in prompt
+        assert "- Noise quality: 2.5 (weight 10%, higher quality is better)" in prompt
         assert "f/2.8, 1/250s, ISO 400, 85mm" in prompt
+
+    def _current_rule(self, **overrides):
+        rule = {
+            "category": "portrait", "aggregate": 5.0, "score_basis": "current_formula",
+            "current_formula_score": 6.4, "native_adjustment": -0.25,
+            "breakdown": [
+                {"metric": "Composition", "metric_key": "comp_score", "value": 5.0, "weight": 0.2, "contribution": 1.0},
+            ],
+            "penalties": {"blink": True, "skin_tone": {"cast": "red", "delta": 9.0}},
+        }
+        rule.update(overrides)
+        return rule
+
+    def test_default_template_keeps_advisories_and_states_scope_once(self):
+        from api.routers.critique import _build_vlm_prompt
+
+        prompt = _build_vlm_prompt(self._current_rule(), _make_photo())
+
+        assert "Detected conditions: blink, skin_tone." in prompt
+        assert prompt.count("not verified historical publication provenance") == 1
+        assert ("Stored score: 5.00. Current formula: 6.40. "
+                "Net adjustments and rounding: -0.25.") in prompt
+        assert "6.4/10" in prompt
+
+    def test_custom_template_without_penalties_gets_the_scope_appended_once(self):
+        from api.routers import critique
+
+        template = "Critique this {category} photo scored {aggregate}/10:\n{breakdown}\n{exif}"
+        with mock.patch.object(critique, "_FULL_CONFIG",
+                               {"critique": {"vlm": {"prompt_template": template}}}):
+            prompt = critique._build_vlm_prompt(self._current_rule(), _make_photo())
+
+        assert prompt.startswith("Critique this portrait photo scored 6.4/10:")
+        assert prompt.count("not verified historical publication provenance") == 1
+        assert prompt.endswith(
+            "\nThese inputs describe a current-formula recalculation, not verified "
+            "historical publication provenance. Stored score: 5.00. Current formula: "
+            "6.40. Net adjustments and rounding: -0.25.\n")
+
+    def test_custom_template_without_penalties_states_an_unavailable_explanation(self):
+        from api.routers import critique
+
+        rule = critique._unavailable_critique(
+            {"aggregate": 6.3, "is_blink": 1, "category": "portrait"},
+            "normalization_snapshot_unavailable",
+        )
+        template = "Critique this {category} photo scored {aggregate}/10:\n{breakdown}\n{exif}"
+        with mock.patch.object(critique, "_FULL_CONFIG",
+                               {"critique": {"vlm": {"prompt_template": template}}}):
+            prompt = critique._build_vlm_prompt(rule, _make_photo())
+
+        assert "None" not in prompt
+        assert prompt.endswith(
+            "\nStored score: 6.30. No current-formula breakdown is available.\n")
+
+    @pytest.mark.parametrize("field", ["{penalties[0]}", "{penalties:.5}"])
+    def test_custom_template_that_cuts_penalties_short_still_states_the_scope_once(self, field):
+        """A template naming {penalties} but rendering only part of it must not
+        drop the scope statement, nor repeat it."""
+        from api.routers import critique
+
+        template = "Critique this {category} photo scored {aggregate}/10:\n" + field
+        with mock.patch.object(critique, "_FULL_CONFIG",
+                               {"critique": {"vlm": {"prompt_template": template}}}):
+            prompt = critique._build_vlm_prompt(self._current_rule(), _make_photo())
+
+        assert prompt.count("not verified historical publication provenance") == 1
+        assert prompt.endswith("Net adjustments and rounding: -0.25.\n")
+
+    def test_unavailable_explanation_falls_back_to_the_stored_score(self):
+        from api.routers.critique import _build_vlm_prompt, _unavailable_critique
+
+        rule = _unavailable_critique(
+            {"aggregate": 6.3, "is_blink": 1, "category": "portrait"},
+            "normalization_snapshot_unavailable",
+        )
+        prompt = _build_vlm_prompt(rule, _make_photo())
+
+        assert "None" not in prompt
+        assert "unscored" not in prompt
+        assert "6.3/10" in prompt
+        assert "Stored score: 6.30. No current-formula breakdown is available." in prompt
+        assert "Current formula:" not in prompt
+        assert "Net adjustments" not in prompt
+        assert "Detected conditions: blink." in prompt
 
     def test_prompt_handles_missing_data(self):
         from api.routers.critique import _build_vlm_prompt
@@ -902,6 +1015,7 @@ class TestCritiqueOpenInstallIsReadOnly:
         with (
             mock.patch("api.routers.critique.VIEWER_CONFIG", {"features": {"show_critique": True}}),
             mock.patch("api.routers.critique.get_async_db", _async_conn_factory(db)),
+            mock.patch("api.routers.critique.get_db", _sync_conn_factory(db)),
             mock.patch("api.routers.critique.get_visibility_clause", _fake_vis),
             mock.patch("api.routers.critique.get_existing_columns", return_value=_VLM_TEST_COLS),
             mock.patch("api.routers.critique._build_rule_critique", return_value=dict(self._RULE)),

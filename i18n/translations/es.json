@@ -85,6 +85,7 @@
     "end_of_results": "Fin de los resultados"
   },
   "tooltip": {
+    "not_computed": "Sin calcular",
     "category": "Categoría",
     "aggregate": "Global",
     "quality_section": "Calidad",
@@ -409,6 +410,7 @@
   "sort_options": {
     "aggregate": "Puntuación global",
     "aesthetic": "Estética",
+    "qrealign_score": "Q-ReAlign (estética)",
     "date_taken": "Fecha de captura",
     "star_rating": "Clasificación por estrellas",
     "face_quality": "Calidad facial",
@@ -433,7 +435,9 @@
     "focal_length": "Distancia focal",
     "shutter_speed": "Velocidad de obturación",
     "quality_score": "Puntuación de calidad",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "Estética (IAA)",
+    "aesthetic_v25": "Estética v2.5",
     "liqe_score": "Puntuación LIQE",
     "face_quality_iqa": "Calidad facial (IQA)",
     "composition_pattern": "Patrón de composición",
@@ -530,7 +534,8 @@
     "mode_color": "Paleta de colores",
     "mode_person": "Misma persona",
     "no_faces": "No se detectaron rostros en esta foto",
-    "no_histogram": "No hay datos de color disponibles para esta foto"
+    "no_histogram": "No hay datos de color disponibles para esta foto",
+    "no_visual_features": "La similitud visual no está disponible: esta foto no tiene una huella visual ni un embedding válidos. Vuelve a escanearla con --force para calcularlos."
   },
   "merge_suggestions": {
     "title": "Sugerencias de fusión",
@@ -1716,7 +1721,6 @@
     "strengths": "Fortalezas",
     "weaknesses": "Debilidades",
     "suggestions": "Sugerencias",
-    "penalties": "Penalizaciones",
     "distortions": "Distorsiones detectadas",
     "vlm_title": "Critica IA",
     "vlm_loading": "Generando critica IA...",
@@ -1733,7 +1737,7 @@
       "color_score": "Color",
       "contrast_score": "Contraste",
       "isolation_bonus": "Aislamiento del sujeto",
-      "noise_sigma": "Nivel de ruido",
+      "noise_sigma": "Calidad de ruido",
       "dynamic_range_stops": "Rango dinamico",
       "leading_lines_score": "Lineas directrices",
       "power_point_score": "Puntos de fuerza",
@@ -1750,7 +1754,10 @@
       "form_balance": "Equilibrio visual",
       "form_edge_entropy": "Entropia de bordes",
       "form_fractal": "Complejidad fractal",
-      "color_harmony": "Armonia de color"
+      "color_harmony": "Armonia de color",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "Busca un mayor impacto visual con mejor iluminacion o eleccion de sujeto",
@@ -1838,14 +1845,34 @@
         "f_stop_min": "apertura {actual} < {required}",
         "f_stop_max": "apertura {actual} > {required}",
         "no_value": "dato no disponible"
-      }
+      },
+      "override": "Categoría forzada: {category}"
     },
     "penalty": {
       "blink": "Parpadeo detectado",
-      "noise": "Ruido: {value}",
-      "highlight_clipping": "Recorte de altas luces: {value}",
-      "shadow_clipping": "Recorte de sombras: {value}",
       "skin_tone": "Tono de piel: dominante {cast} (ΔE {delta})"
+    },
+    "current_formula": "Cálculo actual",
+    "stored_score": "Puntuación guardada",
+    "calculation_note": "Los ajustes actuales y la normalización guardada determinan estos valores de calidad. Más alto es mejor; los valores ausentes usan los valores predeterminados del cálculo.",
+    "adjustments": "Ajustes netos y redondeo",
+    "different_score": "La puntuación guardada difiere de este cálculo.",
+    "calculation_unavailable": "No está disponible el contexto completo del cálculo. Se sigue mostrando la puntuación guardada.",
+    "advisories": "Condiciones detectadas",
+    "cached_commentary": "El comentario guardado no tiene un contexto de puntuación verificado.",
+    "stored_unavailable": "No hay una puntuación guardada válida",
+    "stored_state": {
+      "missing": "Aún sin puntuar",
+      "invalid": "La puntuación guardada no es utilizable. Ejecuta python facet.py --recompute-average para reconstruirla."
+    },
+    "unavailable_reason": {
+      "missing_scoring_inputs": "A la base de datos le faltan columnas de puntuación, así que no se puede calcular. Ejecuta python database.py para actualizar el esquema.",
+      "normalization_snapshot_unavailable": "La instantánea de normalización guardada de la biblioteca no está disponible. Inténtalo de nuevo; si persiste, ejecuta python facet.py --recompute-average para reconstruirla.",
+      "invalid_scoring_inputs": "Las métricas guardadas de esta foto no son válidas. Vuelve a escanearla con --force para reemplazarlas."
+    },
+    "normalization_basis": {
+      "persisted_percentiles": "Normalizado con la instantánea de percentiles guardada de la biblioteca.",
+      "stored_metrics": "Se usan los valores brutos de las métricas guardadas, sin normalización por percentiles."
     }
   },
   "culling": {

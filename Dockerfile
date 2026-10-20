@@ -190,7 +190,7 @@ COPY plugins/ plugins/
 COPY storage/ storage/
 COPY sync/ sync/
 COPY validation/ validation/
-COPY facet.py cli_args.py config_resolve.py int_affinity.py licensing.py database.py viewer.py tag_existing.py validate_db.py calibrate.py diagnostics.py ./
+COPY facet.py cli_args.py config_resolve.py int_affinity.py licensing.py metric_columns.py database.py viewer.py tag_existing.py validate_db.py calibrate.py diagnostics.py ./
 # No scoring_config.json is baked. The sanitized defaults ride along inside the
 # `config` PYTHON PACKAGE that COPY config/ config/ above already brings, and an
 # absent config file that nobody NAMED resolves to exactly those — so `docker run`
@@ -229,9 +229,9 @@ RUN if getent passwd 1000 >/dev/null; then userdel --remove "$(getent passwd 100
 
 # Pin HOME so the HuggingFace / InsightFace caches are deterministic. They pick
 # their dir from os.path.expanduser("~"), which is $HOME when set and otherwise
-# the passwd home. gosu does not reset $HOME on the privilege drop, so without
-# this the cache landed in /root or /home/facet depending on the environment's
-# inherited $HOME — and the bind mounts only catch one of them.
+# the passwd home. The entrypoint's privilege drop (setpriv) does not reset
+# $HOME, so without this the cache landed in /root or /home/facet depending on
+# the environment's inherited $HOME — and the bind mounts only catch one of them.
 ENV HOME=/home/facet
 
 # Licensing mode for the whole image. "default" is the no-override value; the

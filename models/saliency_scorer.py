@@ -477,8 +477,10 @@ class SaliencyScorer:
         total_pixels = h * w
         fast_mask = _is_u8_plane(mask)
 
-        # Subject area ratio: any non-zero value counts
-        subject_pixels = cv2.countNonZero(mask) if fast_mask else np.count_nonzero(mask)
+        # Subject area ratio: any non-zero value counts. int(): since NumPy 2.3,
+        # np.count_nonzero returns np.int64, which made prominence an np.float64
+        # on the numpy route while cv2's route (and every other metric) is a float.
+        subject_pixels = cv2.countNonZero(mask) if fast_mask else int(np.count_nonzero(mask))
         subject_prominence = subject_pixels / total_pixels if total_pixels > 0 else 0
 
         # No subject detected: prominence 0.0 is a real measurement, the three metrics

@@ -5,6 +5,7 @@ VACUUM, ANALYZE, optimization, and viewer database export.
 """
 
 import glob
+import json
 import logging
 import os
 import shutil
@@ -14,7 +15,7 @@ from io import BytesIO
 
 from int_affinity import storable_int
 from db.connection import apply_pragmas
-from db.stats_cache import METRIC_RANGES_KEY
+from db.stats_cache import PERCENTILES_SNAPSHOT_KEY, invalidate_metric_ranges
 
 logger = logging.getLogger("facet.db_maintenance")
 
@@ -23,6 +24,25 @@ _PATH_DELETED = 'deleted'
 _PATH_INACCESSIBLE = 'inaccessible'
 
 _MIN_BACKUPS_TO_KEEP = 1
+
+# stats_cache rows that are library STATE rather than an aggregate derived from
+# the photo rows, so a photo delete keeps them while it invalidates the rest.
+# GLOB patterns, not LIKE: GLOB is case-sensitive and `_` is literal in it. The
+# writers live above db in the import graph (sync, optimization, facet, api), so
+# the keys are spelled here; tests/test_cleanup_missing_photos.py builds each one
+# through its producer's own key function and fails if a pattern drifts.
+DURABLE_STATS_CACHE_KEY_GLOBS: tuple[str, ...] = (
+    PERCENTILES_SNAPSHOT_KEY,          # the distribution stored aggregates were normalized with
+    'immich_synced_paths:*',           # sync.immich: paths last pushed active (drives explicit clears)
+    'immich_webhook_pending:*',        # sync.immich: webhook assets Facet has not scored yet
+    'keeper_head:*',                   # optimization.keeper_head: trained head weights
+    'ranker_metrics:*',                # optimization.personal_ranker: last-train metrics
+    'refresh_thumbnails_watermark',    # facet --refresh-thumbnails resume point
+    'thumbnail_dims_repaired',         # api.db_helpers one-shot repair marker
+)
+# optimization.auto_retrain's per-scope "comparisons since last train" counters,
+# kept only when the caller asks (see delete_photo_rows).
+AUTO_RETRAIN_COUNTER_KEY_GLOB = 'auto_retrain_pending:*'
 
 
 def _classify_missing_path(path):
@@ -229,6 +249,32 @@ def backup_database(db_path='photo_scores_pro.db', keep=3, dest_dir=None, verbos
     return backup_path
 
 
+def _prune_immich_synced_paths(cursor, paths):
+    """Drop deleted paths from every ``immich_synced_paths:*`` blob.
+
+    The blob is ``{path: {"rating": bool, "favorite": bool}}`` (sync.immich);
+    the push only revisits paths still in ``photos``, so an entry for a deleted
+    photo would otherwise stay forever. The writer sits above db in the import
+    graph, so the format is handled minimally here.
+    """
+    try:
+        rows = cursor.execute(
+            "SELECT key, value FROM stats_cache WHERE key GLOB 'immich_synced_paths:*'"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return
+    gone = set(paths)
+    for key, value in rows:
+        try:
+            state = json.loads(value) if value else None
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(state, dict) or gone.isdisjoint(state):
+            continue
+        cursor.execute("UPDATE stats_cache SET value = ? WHERE key = ?",
+                       (json.dumps({k: v for k, v in state.items() if k not in gone}), key))
+
+
 def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters: bool = False) -> dict:
     """Delete photo rows and their cascade-adjacent side effects.
 
@@ -244,7 +290,12 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
     stores that have no cascade of their own: ``album_photos`` membership,
     ``album_client_picks``, and the ``albums.cover_photo_path``
     back-reference. Refreshes ``persons.face_count`` afterward so the viewer
-    stays accurate, and invalidates ``stats_cache``.
+    stays accurate, and invalidates ``stats_cache`` -- every row except the
+    library state in ``DURABLE_STATS_CACHE_KEY_GLOBS`` (the percentile snapshot
+    the last recompute normalized every stored aggregate with, the Immich push
+    state, trained keeper heads, ranker metrics, the thumbnail-refresh
+    watermark and the dimension-repair marker). Those survive the delete; only
+    the Immich push state is edited, to drop the deleted paths from it.
 
     ``preserve_auto_retrain_counters`` (default off, ``cleanup_missing_photos``'s
     behaviour unchanged) scopes that invalidation to spare
@@ -296,12 +347,19 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
         "SELECT COUNT(*) FROM persons WHERE face_count = 0"
     ).fetchone()[0]
 
+    _prune_immich_synced_paths(cursor, paths)
+
     # Invalidate stats cache since photo counts and details have changed.
     try:
+        kept = DURABLE_STATS_CACHE_KEY_GLOBS
         if preserve_auto_retrain_counters:
-            cursor.execute("DELETE FROM stats_cache WHERE key NOT LIKE 'auto_retrain_pending:%'")
-        else:
-            cursor.execute("DELETE FROM stats_cache")
+            kept += (AUTO_RETRAIN_COUNTER_KEY_GLOB,)
+        cursor.execute(
+            "DELETE FROM stats_cache WHERE NOT (" + " OR ".join(["key GLOB ?"] * len(kept)) + ")",
+            kept)
+        # Tombstone rather than absence, so a viewer computing the ranges right
+        # now cannot write its pre-deletion result back (invalidate_metric_ranges).
+        invalidate_metric_ranges(cursor)
     except sqlite3.OperationalError:
         pass
 
@@ -519,7 +577,7 @@ def _downsize_face_thumbnails(dest_conn, face_resync_paths, thumbnail_size, batc
             try:
                 img = Image.open(BytesIO(thumb_bytes))
                 if max(img.size) > thumbnail_size:
-                    img.thumbnail((thumbnail_size, thumbnail_size), Image.LANCZOS)
+                    img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
                     buf = BytesIO()
                     img.save(buf, format='JPEG', quality=80)
                     updates.append((buf.getvalue(), face_id))
@@ -652,7 +710,7 @@ def _incremental_update_viewer_db(source_db, output_path, thumbnail_size, verbos
                 try:
                     img = Image.open(BytesIO(thumb_bytes))
                     if max(img.size) > thumbnail_size:
-                        img.thumbnail((thumbnail_size, thumbnail_size), Image.LANCZOS)
+                        img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
                         buf = BytesIO()
                         img.save(buf, format='JPEG', quality=80)
                         updates.append((buf.getvalue(), path))
@@ -841,6 +899,7 @@ def _incremental_update_viewer_db(source_db, output_path, thumbnail_size, verbos
     # --- Clear stats_cache (viewer regenerates on demand) ---
     if 'stats_cache' in dest_tables:
         dest_conn.execute("DELETE FROM main.stats_cache")
+        invalidate_metric_ranges(dest_conn)
         dest_conn.commit()
 
     # --- Finalize ---
@@ -961,7 +1020,7 @@ def export_viewer_db(source_db='photo_scores_pro.db', output_path=None, thumbnai
             try:
                 img = Image.open(BytesIO(thumb_bytes))
                 if max(img.size) > thumbnail_size:
-                    img.thumbnail((thumbnail_size, thumbnail_size), Image.LANCZOS)
+                    img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
                     buf = BytesIO()
                     img.save(buf, format='JPEG', quality=80)
                     updates.append((buf.getvalue(), path))
@@ -1005,7 +1064,7 @@ def export_viewer_db(source_db='photo_scores_pro.db', output_path=None, thumbnai
                 img = Image.open(BytesIO(thumb_bytes))
                 # Face thumbnails are small; only resize if larger than thumbnail_size
                 if max(img.size) > thumbnail_size:
-                    img.thumbnail((thumbnail_size, thumbnail_size), Image.LANCZOS)
+                    img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
                     buf = BytesIO()
                     img.save(buf, format='JPEG', quality=80)
                     updates.append((buf.getvalue(), face_id))
@@ -1222,8 +1281,8 @@ def repair_neutral_iqa(db_path='photo_scores_pro.db', verbose=True):
     too; ``--recompute-iqa`` refills it with the same number. A NULL metric is scored
     as a neutral 5.0 at full weight in the aggregate, so no aggregate moves.
 
-    When anything changed, the cached gallery metric ranges are dropped in the same
-    transaction, since they are computed from these columns.
+    When anything changed, the cached gallery metric ranges are invalidated in the
+    same transaction, since they are computed from these columns.
 
     Returns ``{column: rows cleared}``.
     """
@@ -1235,7 +1294,7 @@ def repair_neutral_iqa(db_path='photo_scores_pro.db', verbose=True):
             cleared[col] = conn.execute(
                 f"UPDATE photos SET {col} = NULL WHERE {col} = 5.0").rowcount
         if sum(cleared.values()):
-            conn.execute("DELETE FROM stats_cache WHERE key = ?", (METRIC_RANGES_KEY,))
+            invalidate_metric_ranges(conn)
         conn.commit()
 
     if verbose:

@@ -3,6 +3,7 @@ paths (F33): a permission-denied directory or an unmounted/absent scan root
 must be preserved, never cascade-deleted, unless --force is given.
 """
 
+import json
 import os
 import sqlite3
 
@@ -10,6 +11,7 @@ import pytest
 
 from db.maintenance import cleanup_missing_photos, delete_photo_rows
 from db.schema import init_database
+from db.stats_cache import PERCENTILES_SNAPSHOT_KEY
 
 _IS_ROOT = hasattr(os, 'geteuid') and os.geteuid() == 0
 
@@ -169,6 +171,130 @@ def test_delete_photo_rows_refreshes_face_count_without_its_own_commit(tmp_path)
     conn.commit()
     conn.close()
     assert path not in _paths_in_db(db)
+
+
+def _seed_stats_cache(db):
+    conn = sqlite3.connect(db)
+    conn.executemany(
+        "INSERT INTO stats_cache (key, value, updated_at) VALUES (?, ?, 0)",
+        [(PERCENTILES_SNAPSHOT_KEY, '{"percentiles": {"raw_sharpness_variance": 100.0}}'),
+         ('total_photos', '2'),
+         ('auto_retrain_pending:global', '3')],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _stats_cache_keys(db):
+    conn = sqlite3.connect(db)
+    # A NULL value is an eviction tombstone (invalidate_metric_ranges), not a kept entry.
+    keys = {r[0] for r in conn.execute("SELECT key FROM stats_cache WHERE value IS NOT NULL").fetchall()}
+    conn.close()
+    return keys
+
+
+@pytest.mark.parametrize('preserve_counters', [True, False])
+def test_delete_photo_rows_keeps_the_percentile_snapshot(tmp_path, preserve_counters):
+    """The snapshot is the distribution the last recompute normalized every stored
+    aggregate with; deleting a photo invalidates the derived counts, not that."""
+    db = str(tmp_path / 'scores.db')
+    _make_db(db, ['/lib/a.jpg', '/lib/b.jpg'])
+    _seed_stats_cache(db)
+
+    conn = sqlite3.connect(db)
+    delete_photo_rows(conn, ['/lib/b.jpg'], preserve_auto_retrain_counters=preserve_counters)
+    conn.commit()
+    conn.close()
+
+    expected = {PERCENTILES_SNAPSHOT_KEY}
+    if preserve_counters:
+        expected.add('auto_retrain_pending:global')
+    assert _stats_cache_keys(db) == expected
+
+
+def test_cleanup_missing_photos_keeps_the_percentile_snapshot(tmp_path):
+    present = tmp_path / 'present.jpg'
+    present.write_bytes(b'x')
+    db = str(tmp_path / 'scores.db')
+    _make_db(db, [str(present), str(tmp_path / 'deleted.jpg')])
+    _seed_stats_cache(db)
+
+    assert cleanup_missing_photos(db, dry_run=False, force=False, verbose=False) == 1
+
+    assert _stats_cache_keys(db) == {PERCENTILES_SNAPSHOT_KEY}
+
+
+def _durable_keys():
+    """Every durable stats_cache key, named through the module that writes it.
+
+    Built from the producers' own key functions/constants rather than copied
+    literals, so a renamed key fails here instead of silently falling out of
+    the preserved set.
+    """
+    from api.db_helpers import THUMBNAIL_DIMS_REPAIRED_KEY
+    from facet import REFRESH_THUMBNAILS_WATERMARK_KEY
+    from optimization.keeper_head import keeper_head_key
+    from optimization.personal_ranker import ranker_metrics_key
+    from sync.immich import _pending_key, _scope_key
+
+    return {
+        _scope_key(None), _scope_key('alice'),
+        _pending_key(None),
+        keeper_head_key(), keeper_head_key('alice', 'portrait'),
+        ranker_metrics_key(), ranker_metrics_key('alice', 'portrait'),
+        REFRESH_THUMBNAILS_WATERMARK_KEY,
+        THUMBNAIL_DIMS_REPAIRED_KEY,
+    }
+
+
+@pytest.mark.parametrize('preserve_counters', [True, False])
+def test_delete_photo_rows_keeps_durable_library_state(tmp_path, preserve_counters):
+    """stats_cache also holds state that is not a derived aggregate: the Immich
+    push state (without which a rating reset in Facet is never cleared in
+    Immich), trained keeper heads, ranker train metrics, the thumbnail-refresh
+    resume watermark and the one-shot dimension-repair marker. Deleting a photo
+    must not wipe them along with the counts."""
+    db = str(tmp_path / 'scores.db')
+    _make_db(db, ['/lib/a.jpg', '/lib/b.jpg'])
+    _seed_stats_cache(db)
+    durable = _durable_keys()
+    conn = sqlite3.connect(db)
+    conn.executemany("INSERT INTO stats_cache (key, value, updated_at) VALUES (?, '{}', 0)",
+                     [(k,) for k in sorted(durable)])
+    # Look-alikes a LIKE pattern would keep (`_` and case are wildcards there).
+    conn.executemany("INSERT INTO stats_cache (key, value, updated_at) VALUES (?, '1', 0)",
+                     [('immichXsynced_paths:global',), ('KEEPER_HEAD:global:all',)])
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(db)
+    delete_photo_rows(conn, ['/lib/b.jpg'], preserve_auto_retrain_counters=preserve_counters)
+    conn.commit()
+    conn.close()
+
+    expected = {PERCENTILES_SNAPSHOT_KEY} | durable
+    if preserve_counters:
+        expected.add('auto_retrain_pending:global')
+    assert _stats_cache_keys(db) == expected
+
+
+def test_delete_photo_rows_prunes_deleted_paths_from_immich_synced_state(tmp_path):
+    """A deleted photo can never be re-pushed or cleared, so its entry must not
+    linger in the durable synced-paths blob; surviving paths stay."""
+    db = str(tmp_path / 'scores.db')
+    _make_db(db, ['/lib/a.jpg', '/lib/b.jpg'])
+    state = {'/lib/a.jpg': {'rating': True, 'favorite': False},
+             '/lib/b.jpg': {'rating': False, 'favorite': True}}
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO stats_cache (key, value, updated_at) VALUES (?, ?, 0)",
+                 ('immich_synced_paths:global', json.dumps(state)))
+    conn.commit()
+    delete_photo_rows(conn, ['/lib/b.jpg'])
+    conn.commit()
+    value = conn.execute(
+        "SELECT value FROM stats_cache WHERE key = 'immich_synced_paths:global'").fetchone()[0]
+    conn.close()
+    assert json.loads(value) == {'/lib/a.jpg': state['/lib/a.jpg']}
 
 
 if __name__ == '__main__':

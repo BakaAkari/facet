@@ -5,6 +5,9 @@ Evaluates whether a photo matches a category's filter rules.
 """
 
 
+import math
+
+
 FACE_DEFAULT_FIELDS = ("face_count", "face_ratio", "is_group_portrait")
 
 
@@ -26,23 +29,18 @@ def with_face_defaults(photo_data: dict) -> dict:
 
 
 def _to_float(val):
-    """Coerce a value to float, handling fractional strings like '1/250'.
-
-    Shutter speeds are stored as strings ('1/250'); a plain float() raises on
-    them, which would make every shutter_speed filter unconditionally mismatch
-    and diverge from the scorer's category assignment (it parses fractions).
-    """
+    """Preserve numeric/fraction parsing while refusing nonfinite comparisons."""
     if val is None:
         return None
-    if isinstance(val, (int, float)):
-        return float(val)
     try:
         if isinstance(val, str) and '/' in val:
             num, denom = val.split('/')
-            return float(num) / float(denom)
-        return float(val)
-    except (ValueError, TypeError, ZeroDivisionError):
+            number = float(num) / float(denom)
+        else:
+            number = float(val)
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError):
         return None
+    return number if math.isfinite(number) else None
 
 
 # Valid filter fields for v4.0 category-centric config

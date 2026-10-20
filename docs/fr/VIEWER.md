@@ -123,6 +123,13 @@ python database.py --migrate-user-preferences --user alice
 
 ## Options de filtrage
 
+La recherche textuelle de la galerie conserve les mots Unicode et traite la
+ponctuation des noms de fichiers comme des séparateurs de mots. Par exemple,
+`IMG_0042.JPG` recherche ensemble les préfixes `IMG`, `0042` et `JPG`. Les termes
+cyrilliques et CJK sont recherchables ; les opérateurs FTS comme `OR` sont traités
+comme des mots littéraux. La correspondance suit les règles du tokeniseur SQLite
+existant, y compris ses limites de normalisation Unicode.
+
 <details><summary>Barre latérale de filtres complète — toutes les sections développées (cliquer pour voir)</summary>
 <p align="center"><img src="screenshots/filter-sidebar-full.jpg" alt="Filter sidebar with every section expanded" width="360"></p>
 </details>
@@ -155,7 +162,7 @@ python database.py --migrate-user-preferences --user alice
 | **Contenu** | Tags, bascule monochrome |
 | **Moments** | Confiance du moment narratif (curseur de plage 0–1 : `min_moment_confidence` / `max_moment_confidence`) |
 
-Les filtres de plage sur Esthétique IAA, Qualité du visage IQA, LIQE et Aesthetic V2.5 ne retiennent que les photos qui ont un score. Une photo qu'un modèle n'a pas pu noter est stockée comme NULL (elle portait auparavant un 5,0 neutre) : même un filtre qui commence à 0 l'exclut, et un tri croissant sur Esthétique (IAA), Qualité du visage (IQA) ou LIQE la place en dernier, dans la galerie comme dans les albums (intelligents et partagés compris). Voir [Dimensions IQA supplémentaires](SCORING.md#dimensions-iqa-supplémentaires).
+Les filtres de plage sur Esthétique IAA, Qualité du visage IQA, LIQE, Aesthetic V2.5, Q-ReAlign et DeQA ne retiennent que les photos qui ont un score. Une photo qu'un modèle n'a pas pu noter est stockée comme NULL (elle portait auparavant un 5,0 neutre) : même un filtre qui commence à 0 l'exclut, et un tri croissant sur Esthétique (IAA), Qualité du visage (IQA), LIQE, Aesthetic V2.5, Q-ReAlign ou DeQA la place en dernier, dans la galerie comme dans les albums (intelligents et partagés compris). Voir [Dimensions IQA supplémentaires](SCORING.md#dimensions-iqa-supplémentaires).
 
 Les filtres de plage Netteté du sujet, Placement du sujet, Séparation de l'arrière-plan et Points de force ne retiennent aussi que les photos mesurées : une photo sans sujet détectable stocke NULL dans ces colonnes (elle portait auparavant un 5.0 neutre), donc même un filtre qui commence à 0 l'exclut, et le panneau de détail et l'infobulle omettent la ligne. La prééminence du sujet vaut 0.0 pour une telle photo. Voir [SCORING.md](SCORING.md).
 
@@ -168,11 +175,18 @@ Filtrer par les motifs détectés par SAMP-Net (le modèle n'en émet que ces
 
 ## Tri
 
+Les vitesses d'obturation sont triées par durée d'exposition en secondes, y compris
+les valeurs EXIF décimales et rationnelles : `1/250` et `0.004` sont égales. Les
+valeurs manquantes, malformées, nulles, négatives et non finies apparaissent en
+dernier dans les deux sens. Les valeurs égales conservent le départage par chemin.
+Cela s'applique aussi au tri des albums et aux couvertures des albums intelligents ;
+le texte EXIF stocké n'est pas modifié.
+
 Colonnes triables regroupées par catégorie (depuis `viewer.sort_options`) :
 
 | Groupe | Colonnes |
 |-------|---------|
-| **Général** | Score agrégé, Esthétique, Score de qualité, Date de prise de vue, Note en étoiles, Esthétique (IAA), Score LIQE |
+| **Général** | Score agrégé, Esthétique, Score de qualité, Date de prise de vue, Note en étoiles, Esthétique (IAA), Score LIQE, Q-ReAlign (esthétique), DeQA, Esthétique v2.5 (les trois derniers n'apparaissent que si au moins une photo a ce score) |
 | **Métriques de visage** | Qualité du visage, Qualité du visage (IQA), Netteté des yeux, Netteté du visage, Proportion du visage, Nombre de visages |
 | **Technique** | Netteté technique, Contraste, Niveau de bruit |
 | **Couleur** | Score de couleur, Saturation |
@@ -189,7 +203,7 @@ Contrôlé par `viewer.features.show_my_taste` (par défaut : `true`). L'état d
 
 ### Métriques masquées en mode commercial
 
-Avec `licensing.mode` réglé sur `commercial`, la visionneuse masque les métriques dont les modèles ne sont pas utilisables commercialement : les filtres de plage LIQE, Aesthetic IAA et (sauf si OFIQ est installé) Face Quality IQA, leurs puces de filtre et leurs options de tri. `/api/config` les liste dans `unavailable_metrics`. Sur la page de réglage des poids, leurs curseurs restent visibles mais désactivés, avec une infobulle ; les poids sont conservés, car le calcul du score les écarte et renormalise. Redémarrez la visionneuse après avoir changé le mode de licence.
+Avec `licensing.mode` réglé sur `commercial`, la visionneuse masque les métriques dont les modèles ne sont pas utilisables commercialement : LIQE, Aesthetic IAA, Face Quality IQA (sauf si OFIQ est installé), DeQA (sauf si `licensing.allow_unclear` est défini) et Aesthetic V2.5 : leurs filtres de plage, puces de filtre et options de tri. `/api/config` les liste dans `unavailable_metrics`. Sur la page de réglage des poids, leurs curseurs restent visibles mais désactivés, avec une infobulle ; les poids sont conservés, car le calcul du score les écarte et renormalise. Redémarrez la visionneuse après avoir changé le mode de licence.
 
 ## Fonctionnalités de la galerie
 
@@ -275,7 +289,7 @@ Contrairement à Trier vers un dossier, qui laisse la ligne de base de données 
 
 Cliquez sur le bouton « Similaires » de n'importe quelle photo pour choisir un mode de similarité :
 
-- **Visuel** (par défaut) — distance de Hamming pHash (70%) + similarité cosinus CLIP/SigLIP (30%). Bascule sur CLIP seul lorsqu'aucun pHash n'est disponible.
+- **Visuel** (par défaut) — ne compare que les indices que les deux photos possèdent : similarité pHash (70%) + similarité cosinus CLIP/SigLIP (30%) lorsque les deux photos ont les deux ; lorsqu'elles n'en partagent qu'un (pas de pHash, ou un embedding absent, illisible ou d'une autre dimension), celui-ci compte pour la totalité ; une photo qui n'en partage aucun n'est jamais listée, même à 0%. Toutes les correspondances au-dessus du seuil sont renvoyées, page par page, au lieu des 500 premières, et le classement est conservé deux minutes (ou jusqu'à une modification de la base) pour que les pages suivantes se chargent sans réanalyser la bibliothèque. Si la photo elle-même n'a ni pHash ni embedding, la galerie l'indique et propose de la scanner de nouveau avec `--force` (un simple `python facet.py <dir>` ignore les fichiers déjà traités). L'API répond `422` pour un `limit` hors de 1–500, un `offset` négatif ou un `min_similarity` hors de 0–1.
 - **Couleur** — Intersection d'histogrammes (70%) + distance de saturation (10%) + distance de luminance (10%) + bonus monochrome (10%). Préfiltre par l'indicateur monochrome et la plage de saturation.
 - **Personne** — Trouve les photos contenant la ou les mêmes personnes. Utilise `person_id` lorsqu'il est disponible (rapide), sinon bascule sur la similarité cosinus des embeddings de visages.
 
@@ -422,7 +436,7 @@ Décompose les scores d'une photo en forces, faiblesses et suggestions.
 
 ### Critique basée sur des règles
 
-Disponible sur tous les profils VRAM. Analyse les métriques stockées (esthétique, composition, netteté, qualité du visage, etc.) et génère une explication structurée du score.
+Disponible sur tous les profils VRAM. Recalcule le score de la photo avec le calcul natif, à partir de ses métriques stockées et de la configuration actuelle, et explique ce calcul. La catégorie affichée est celle que la formule actuelle attribue (une catégorie forcée et le contexte de notation sont respectés), qui peut différer de la catégorie stockée jusqu'au prochain `--recompute-average`. Chaque ligne de la décomposition est la valeur effective sur 0–10 que le calcul pondère, et non la mesure brute — le bruit et la plage dynamique se lisent comme une qualité, une valeur élevée est meilleure — avec son poids et sa contribution. Une ligne **Ajustements nets et arrondi** (bonus, multiplicateur de clignement, pénalités d'écrêtage, de bruit et de sursaturation, bornage) réconcilie les lignes avec le total du **Calcul actuel**, affiché à côté de la **Note enregistrée** avec une mention lorsque les deux diffèrent. La netteté, la couleur et la netteté des yeux sont normalisées avec l'instantané de percentiles enregistré par le dernier `--recompute-average` ; une bibliothèque seulement scannée n'en a pas, et les valeurs stockées sont lues telles que le scan les a notées. Lorsque les entrées ne peuvent pas être recalculées (instantané malformé, schéma plus ancien, valeur stockée malformée), seule la note enregistrée est affichée, jamais une décomposition inventée. Le clignement et une dominante de teint sont listés comme **Conditions détectées** ; le bruit et l'écrêtage ne sont plus listés comme pénalités distinctes, puisque leurs pénalités natives font partie de l'ajustement net. Lorsque le calcul est indisponible, la boîte de dialogue en indique la raison et le remède : schéma obsolète (`python database.py`), instantané de normalisation indisponible (réessayer, puis `python facet.py --recompute-average` si cela persiste) ou métriques enregistrées invalides (réanalyser avec `--force`). Elle distingue aussi une photo *pas encore notée* (aucun score enregistré) d'une photo dont le *score enregistré est inutilisable*, et précise si le détail a utilisé la normalisation par percentiles enregistrée ou les métriques brutes enregistrées.
 
 La décomposition fait aussi apparaître les lignes explicables de **forme et d'harmonie colorimétrique** (symétrie, équilibre, entropie d'orientation des contours, complexité fractale, harmonie colorimétrique Matsuda — renseignées par `--recompute-form`), des **puces d'attributs de distorsion** pour tout défaut probable (flou de bougé, dominante colorée, suraccentuation, … — issues de `--recompute-distortions`), et une **note de teint** pour les portraits dont le chroma de peau s'écarte du naturel (`--recompute-skin-tone`). Ces trois éléments sont indicatifs — ils expliquent la photo, ils ne modifient pas l'agrégat — et chaque ligne ne s'affiche que lorsque sa colonne sous-jacente est renseignée.
 
@@ -430,7 +444,7 @@ La décomposition fait aussi apparaître les lignes explicables de **forme et d'
 
 Utilise le VLM configuré (Qwen3.5-2B ou Qwen3.5-4B) pour une critique tenant compte du contexte. Nécessite un profil VRAM 16gb ou 24gb et `viewer.features.show_vlm_critique: true`. En générer une exige aussi une session d'édition ; sans elle, seule une critique déjà en cache est servie et `vlm_available` vaut `false`.
 
-Le prompt est un prompt à paliers configurable (`critique.vlm`) qui injecte la décomposition complète des règles, les pénalités et l'EXIF, et la réponse est restituée sous forme **Observation / Évaluation / Suggestions**. Le résultat est mis en cache par photo (`photos.vlm_critique`) et traduit à la demande, avec un bouton **Régénérer** pour le recalculer. Il s'exécute sur la vignette stockée, si bien que les fichiers RAW sont critiqués correctement au lieu d'échouer en silence.
+Le prompt est un prompt à paliers configurable (`critique.vlm`) qui injecte la décomposition du calcul actuel, les notes enregistrée et recalculée, les conditions détectées et l'EXIF, et la réponse est restituée sous forme **Observation / Évaluation / Suggestions**. Le résultat est mis en cache par photo (`photos.vlm_critique`) et traduit à la demande, avec un bouton **Régénérer** pour le recalculer. Il s'exécute sur la vignette stockée, si bien que les fichiers RAW sont critiqués correctement au lieu d'échouer en silence.
 
 API : voir la section [Points d'accès API](#points-daccès-api) ci-dessous.
 

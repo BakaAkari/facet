@@ -8,6 +8,7 @@ import { ApiService } from '../../core/services/api.service';
 import { AuthService } from '../../core/services/auth.service';
 import { Album, AlbumService } from '../../core/services/album.service';
 import { I18nService } from '../../core/services/i18n.service';
+import { I18N } from '../../core/i18n/keys';
 import {
   GalleryStore,
   DEFAULT_FILTERS,
@@ -383,6 +384,33 @@ describe('GalleryStore', () => {
       expect(store.loadError()).toBe(true);
       expect(store.loading()).toBe(false);
     });
+
+    it('keeps a translated no-visual-features reason visible and clears it on retry', async () => {
+      store.filters.set({ ...DEFAULT_FILTERS, similar_to: '/a.jpg', min_similarity: '0' });
+      apiGet.mockReturnValue(of({ similar: [], total: 0, has_more: false, message: 'no_visual_features' }));
+      await store.loadPhotos();
+      expect(store.loadError()).toBe(true);
+      expect(store.loadErrorKey()).toBe(I18N.similar.no_visual_features);
+      expect(apiGet).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ min_similarity: '0' }));
+      apiGet.mockReturnValue(of({ similar: [makePhoto()], total: 1, has_more: false }));
+      await store.loadPhotos();
+      expect(store.loadError()).toBe(false);
+      expect(store.loadErrorKey()).toBeUndefined();
+      expect(store.photos()).toHaveLength(1);
+    });
+
+    for (const [mode, code, key] of [
+      ['color', 'no_histogram', I18N.similar.no_histogram],
+      ['person', 'no_faces', I18N.similar.no_faces],
+    ] as const) {
+      it(`shows the translated reason for ${code} in ${mode} mode`, async () => {
+        store.filters.set({ ...DEFAULT_FILTERS, similar_to: '/a.jpg', similarity_mode: mode });
+        apiGet.mockReturnValue(of({ similar: [], total: 0, has_more: false, message: code }));
+        await store.loadPhotos();
+        expect(store.loadError()).toBe(true);
+        expect(store.loadErrorKey()).toBe(key);
+      });
+    }
 
     it('should surface the error when the semantic-search branch fails', async () => {
       store.filters.set({ ...DEFAULT_FILTERS, semanticQuery: 'sunset' });

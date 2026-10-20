@@ -783,13 +783,14 @@ def export_sidecars(conn, root: str | None = None, *, embed_original: bool = Fal
 # (rather than relying on select_in_chunks's default) so a test can shrink it
 # to force the chunk loop below the SQLite variable limit.
 _MANIFEST_PATH_CHUNK = 900
+_MANIFEST_EXTENDED_QUALITY = ('qrealign_score', 'aesthetic_v25', 'deqa_score')
 
 
 def build_manifest(db_path, root=None, paths=None, score_to_rating=None, user=None) -> dict:
     """Build the compact JSON manifest fed to an external tool (Lightroom plug-in).
 
     Used identically by ``facet.py --export-manifest`` and the viewer's
-    ``GET /api/lightroom/manifest`` route, so the two callers cannot drift
+    ``POST /api/lightroom/manifest`` route, so the two callers cannot drift
     apart (CLAUDE.md: one writer, one source of truth).
 
     Scope is either ``root`` (a path-subtree prefix, the CLI's own idiom, via
@@ -813,6 +814,9 @@ def build_manifest(db_path, root=None, paths=None, score_to_rating=None, user=No
     Returns the same dict shape the CLI has always written (``version``,
     ``generated_at``, ``photos[...]``) plus ``pending_corrections`` (an int,
     counting *groups* -- see ``db.sequence_overrides.count_pending_groups``).
+    Extended quality columns present in the database are included in ``scores``
+    verbatim: NULL means uncomputed, while zero is a measured score. Columns
+    absent from older schemas are omitted, not fabricated as NULL or zero.
     """
     from db.connection import get_connection
     from db.sequence_overrides import count_pending_groups
@@ -838,8 +842,6 @@ def build_manifest(db_path, root=None, paths=None, score_to_rating=None, user=No
                tech_sharpness, exposure_score, color_score, tags,
                camera_model, lens_model, {ratings.columns}, is_burst_lead,
                burst_group_id, sequence_kind, sequence_group_id
-        FROM photos
-        {ratings.join}
     """
 
     def row_to_photo(row):
@@ -856,6 +858,7 @@ def build_manifest(db_path, root=None, paths=None, score_to_rating=None, user=No
                 'tech_sharpness': row['tech_sharpness'],
                 'exposure_score': row['exposure_score'],
                 'color_score': row['color_score'],
+                **{column: row[column] for column in extended_quality},
             },
             'tags': row['tags'],
             'camera_model': row['camera_model'],
@@ -874,6 +877,11 @@ def build_manifest(db_path, root=None, paths=None, score_to_rating=None, user=No
         }
 
     with get_connection(db_path) as conn:
+        existing = {row[1] for row in conn.execute('PRAGMA table_info(photos)')}
+        extended_quality = [column for column in _MANIFEST_EXTENDED_QUALITY if column in existing]
+        if extended_quality:
+            select += ', ' + ', '.join(extended_quality)
+        select += f' FROM photos {ratings.join}'
         photos: list[dict] = []
         if paths:
             # Chunked at the same _SQLITE_VAR_LIMIT the caller uses to expand

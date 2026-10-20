@@ -126,6 +126,12 @@ python database.py --migrate-user-preferences --user alice
 
 ## Filtering Options
 
+Gallery text search preserves Unicode words and treats filename punctuation as
+word boundaries. For example, `IMG_0042.JPG` searches for the prefixes `IMG`,
+`0042`, and `JPG` together. Cyrillic and CJK terms are searchable; FTS operators
+such as `OR` are treated as literal words. Matching follows SQLite's existing
+tokenizer rules, including its Unicode normalization limitations.
+
 <details><summary>Full filter sidebar — every section expanded (click to view)</summary>
 <p align="center"><img src="screenshots/filter-sidebar-full.jpg" alt="Filter sidebar with every section expanded" width="360"></p>
 </details>
@@ -158,7 +164,7 @@ python database.py --migrate-user-preferences --user alice
 | **Content** | Tags, monochrome toggle |
 | **Moments** | Narrative moment confidence (0–1 range slider: `min_moment_confidence` / `max_moment_confidence`) |
 
-Range filters on Aesthetic IAA, Face Quality IQA, LIQE and Aesthetic V2.5 match only photos that have a score. A photo a model could not score is stored as NULL (it used to carry a neutral 5.0), so even a filter that starts at 0 excludes it, and an ascending sort on Aesthetic (IAA), Face Quality (IQA) or LIQE lists it last, in the gallery and in albums (smart and shared included). See [Supplementary IQA Dimensions](SCORING.md#supplementary-iqa-dimensions).
+Range filters on Aesthetic IAA, Face Quality IQA, LIQE, Aesthetic V2.5, Q-ReAlign and DeQA match only photos that have a score. A photo a model could not score is stored as NULL (it used to carry a neutral 5.0), so even a filter that starts at 0 excludes it, and an ascending sort on Aesthetic (IAA), Face Quality (IQA), LIQE, Aesthetic V2.5, Q-ReAlign or DeQA lists it last, in the gallery and in albums (smart and shared included). See [Supplementary IQA Dimensions](SCORING.md#supplementary-iqa-dimensions).
 
 Range filters on Subject Sharpness, Subject Placement, Background Separation and Power Points likewise match only photos with a measurement: a photo with no detectable subject stores NULL in those columns (it used to carry a neutral 5.0), so even a filter that starts at 0 excludes it, and the detail panel and tooltip omit the row. Subject Prominence is 0.0 for such a photo. See [SCORING.md](SCORING.md).
 
@@ -171,11 +177,17 @@ Filter by SAMP-Net detected patterns (the model emits exactly these 8, from
 
 ## Sorting
 
+Shutter speeds sort by exposure duration in seconds, including decimal and
+rational EXIF values: `1/250` and `0.004` are equal. Missing, malformed, zero,
+negative, and nonfinite values appear last in either direction. Equal values
+retain the path tie-break. This also applies to album ordering and smart-album
+covers; stored EXIF text is unchanged.
+
 Sortable columns grouped by category (from `viewer.sort_options`):
 
 | Group | Columns |
 |-------|---------|
-| **General** | Aggregate Score, Aesthetic, Quality Score, Date Taken, Star Rating, Aesthetic (IAA), LIQE Score |
+| **General** | Aggregate Score, Aesthetic, Quality Score, Date Taken, Star Rating, Aesthetic (IAA), LIQE Score, Q-ReAlign (Aesthetic), DeQA, Aesthetic v2.5 (each of the last three listed only once at least one photo has that score) |
 | **Face Metrics** | Face Quality, Face Quality (IQA), Eye Sharpness, Face Sharpness, Face Ratio, Face Count |
 | **Technical** | Tech Sharpness, Contrast, Noise Level |
 | **Color** | Color Score, Saturation |
@@ -192,7 +204,7 @@ Controlled by `viewer.features.show_my_taste` (default: `true`). Ranker status i
 
 ### Metrics hidden in commercial mode
 
-With `licensing.mode` set to `commercial`, the viewer hides the metrics whose models cannot be used commercially: the LIQE, Aesthetic IAA and (unless OFIQ is installed) Face Quality IQA range filters, their filter chips and their sort options. `/api/config` lists them in `unavailable_metrics`. On the Weight Tuning page their sliders stay visible but disabled, with a tooltip; the weights are kept, because scoring drops and renormalises them. Restart the viewer after changing the licensing mode.
+With `licensing.mode` set to `commercial`, the viewer hides the metrics whose models cannot be used commercially — LIQE, Aesthetic IAA, Face Quality IQA (unless OFIQ is installed), DeQA (unless `licensing.allow_unclear` is set) and Aesthetic V2.5: their range filters, filter chips and sort options. `/api/config` lists them in `unavailable_metrics`. On the Weight Tuning page their sliders stay visible but disabled, with a tooltip; the weights are kept, because scoring drops and renormalises them. Restart the viewer after changing the licensing mode.
 
 ## Gallery Features
 
@@ -277,7 +289,7 @@ Unlike Cull to folder, which leaves the database row alone until a rescan, Delet
 
 Click the "Similar" button on any photo to choose a similarity mode:
 
-- **Visual** (default) — pHash hamming distance (70%) + CLIP/SigLIP cosine similarity (30%). Falls back to CLIP-only when no pHash is available.
+- **Visual** (default) — compares only the evidence both photos carry: pHash similarity (70%) + CLIP/SigLIP cosine similarity (30%) when both photos have both; when they share only one of the two (no pHash, or a missing, unreadable or different-dimension embedding), that one counts at full weight; a photo sharing neither is never listed, even at 0%. Every match above the threshold is returned, page by page, rather than the first 500, and the ranking is kept for two minutes (or until the database changes) so further pages load without a rescan of the library. If the photo itself has neither a pHash nor an embedding, the gallery says so and suggests rescanning it with `--force` (a plain `python facet.py <dir>` skips files already processed). The API answers `422` for a `limit` outside 1–500, a negative `offset` or a `min_similarity` outside 0–1.
 - **Color** — Histogram intersection (70%) + saturation distance (10%) + luminance distance (10%) + monochrome bonus (10%). Pre-filters by monochrome flag and saturation range.
 - **Person** — Finds photos containing the same person(s). Uses `person_id` when available (fast), otherwise falls back to face embedding cosine similarity.
 
@@ -492,7 +504,7 @@ Breaks down a photo's scores into strengths, weaknesses, and suggestions.
 
 ### Rule-Based Critique
 
-Available on all VRAM profiles. Analyzes stored metrics (aesthetic, composition, sharpness, face quality, etc.) and generates a structured explanation of the score.
+Available on all VRAM profiles. Recomputes the photo's score with the native scorer, from its stored metrics and the current configuration, and explains that calculation. The category shown is the one the current formula assigns (a category override and the scoring context are honoured), which can differ from the stored category until the next `--recompute-average`. Each breakdown row is the effective 0–10 input the scorer weights, not the raw measurement — noise and dynamic range read as quality, higher is better — with its weight and contribution. A **Net adjustments and rounding** row (bonus, blink multiplier, clipping, noise and oversaturation penalties, clamping) reconciles the rows with the **Current calculation** total, shown beside the **Stored score** with a note when the two differ. Sharpness, color and eye sharpness are normalized with the percentile snapshot the last `--recompute-average` saved; a library that has only been scanned has none, and the stored values are read as the scan scored them. When the inputs cannot be recomputed (a malformed snapshot, an older schema, a malformed stored value) only the stored score is shown, never an invented breakdown. Blink and a skin-tone cast are listed as **Detected conditions**; noise and clipping are no longer listed as separate penalties, since their native penalties are part of the net adjustment. When the calculation is unavailable, the dialog names the reason and the remedy: an outdated schema (`python database.py`), an unavailable normalization snapshot (retry, then `python facet.py --recompute-average` if it persists), or invalid stored metrics (rescan with `--force`). It also distinguishes a photo that is *not scored yet* (no stored score) from one whose *stored score is unusable*, and states whether the breakdown used the saved percentile normalization or raw stored metrics.
 
 The breakdown also surfaces the explainable **form and color-harmony** rows (symmetry, balance, edge-orientation entropy, fractal complexity, Matsuda color harmony — populated by `--recompute-form`), **distortion-attribute chips** for any likely defects (motion blur, color cast, oversharpening, … — from `--recompute-distortions`), and a **skin-tone note** for portraits whose skin chroma drifts off-natural (`--recompute-skin-tone`). All three are advisory — they explain the photo, they do not change the aggregate — and each row shows only when its underlying column is populated.
 
@@ -500,7 +512,7 @@ The breakdown also surfaces the explainable **form and color-harmony** rows (sym
 
 Uses the configured VLM (Qwen3.5-2B or Qwen3.5-4B) for a context-aware critique. Requires 16gb or 24gb VRAM profile and `viewer.features.show_vlm_critique: true`. Generating one also requires an edition session; without it only an already cached critique is served and `vlm_available` is `false`.
 
-The prompt is a configurable ladder (`critique.vlm`) that injects the full rule breakdown, penalties and EXIF, and the reply is rendered as **Observation / Assessment / Suggestions**. The result is cached per photo (`photos.vlm_critique`) and translated on demand, with a **Regenerate** button to recompute it. It runs against the stored thumbnail, so RAW files critique correctly instead of failing silently.
+The prompt is a configurable ladder (`critique.vlm`) that injects the current-calculation breakdown, the stored and recalculated scores, the detected conditions and EXIF, and the reply is rendered as **Observation / Assessment / Suggestions**. The result is cached per photo (`photos.vlm_critique`) and translated on demand, with a **Regenerate** button to recompute it. It runs against the stored thumbnail, so RAW files critique correctly instead of failing silently.
 
 API: see the [API Endpoints](#api-endpoints) section below.
 

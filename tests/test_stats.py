@@ -455,6 +455,25 @@ class TestSettings:
         assert "100" in iso_labels and "3200" in iso_labels
         assert sum(b["count"] for b in data["score_distribution"]) == 2
 
+    def test_shutter_buckets_read_rational_and_decimal_and_skip_invalid(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        values = ["1/250", "0.004", " 1 / 250 ", "1/4000", "1/60", "1/50", "0.0125", "30", "2.5",
+                  "1-2", "1.2.3", "1/0", "0", "garbage", "", None]
+        _make_stats_db(db_path, [
+            _photo(f"/s{i}.jpg", shutter_speed=v) for i, v in enumerate(values)
+        ])
+        with _stats_mocks(db_path):
+            resp = TestClient(_create_app_no_auth()).get("/api/stats/settings")
+        assert resp.status_code == 200
+        shutter = {b["label"]: b["count"] for b in resp.json()["shutter_speed"]}
+        assert shutter == {
+            "1/4000-1/2000": 1,   # 1/4000
+            "1/250-1/125": 3,     # 1/250, 0.004, ' 1 / 250 '
+            "1/125-1/60": 2,      # 0.0125, 1/60 (0.016667 < the 0.0167 edge)
+            "1/60-1/30": 1,       # 1/50
+            "1/4s+": 2,           # 30, 2.5
+        }
+
 
 class TestTimeline:
 

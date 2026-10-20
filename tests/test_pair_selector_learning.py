@@ -1,11 +1,13 @@
 """Tests for the learning-value pair selection strategy (comparison/pair_selector.py)."""
 
+import contextlib
 import random
 import sqlite3
 
 import numpy as np
 import pytest
 
+import comparison.pair_selector as pair_selector_module
 from comparison.pair_selector import PairSelector
 from db.schema import init_database
 from utils.embedding import embedding_to_bytes
@@ -42,6 +44,35 @@ def db(tmp_path):
     return p
 
 
+@pytest.fixture()
+def seeded_sampling(monkeypatch):
+    """Pin BOTH sources of randomness the learning selector draws from.
+
+    It shuffles its candidate pool in SQL (``ORDER BY RANDOM()``), which
+    ``random.seed`` cannot reach, and then samples pairs through the global
+    ``random`` module. Seeding only the latter left the candidate ORDER free,
+    and the same seeded draws then landed on different pairs: a probabilistic
+    count assertion failed in about 2% of runs. SQLite lets an application
+    function override the built-in ``random()``, so the selector's connections
+    get one fed by a seeded generator; the global ``random`` state is restored
+    afterwards so no later test inherits the seed.
+    """
+    real_get_connection = pair_selector_module.get_connection
+    sql_rng = random.Random(0)
+
+    @contextlib.contextmanager
+    def _seeded_connection(*args, **kwargs):
+        with real_get_connection(*args, **kwargs) as conn:
+            conn.create_function('random', 0, lambda: sql_rng.getrandbits(63))
+            yield conn
+
+    monkeypatch.setattr(pair_selector_module, 'get_connection', _seeded_connection)
+    saved_state = random.getstate()
+    random.seed(0)
+    yield
+    random.setstate(saved_state)
+
+
 def _emb(*vals):
     return np.array(vals, dtype=np.float32)
 
@@ -59,7 +90,7 @@ class TestLearningValueSelector:
         assert pair['a'] != pair['b']
         assert {pair['a'], pair['b']}.issubset({'/a.jpg', '/b.jpg', '/c.jpg'})
 
-    def test_cold_start_prefers_embedding_distant_pairs(self, db):
+    def test_cold_start_prefers_embedding_distant_pairs(self, db, seeded_sampling):
         # Two near-duplicate embeddings (close) and one far-apart pair. Cold
         # start should overwhelmingly pick the distant pair.
         _seed(db, [
@@ -114,7 +145,7 @@ class TestLearningValueSelector:
         assert pair is not None
         assert pair['a'] != pair['b']
 
-    def test_warm_prefers_rank_disagreement(self, db):
+    def test_warm_prefers_rank_disagreement(self, db, seeded_sampling):
         # {x,y} flips between aggregate and learned ordering (disagree); {p,q}
         # agrees on both. With equal embedding distances, the disagreement pair
         # carries more weight, so it is selected more often than the agreeing one.
@@ -129,7 +160,6 @@ class TestLearningValueSelector:
             learned={'/x.jpg': 6.0, '/y.jpg': 9.0, '/p.jpg': 9.0, '/q.jpg': 6.0},
         )
         sel = PairSelector(db)
-        random.seed(0)  # PairSelector samples via the global random module; pin it so this probabilistic assertion can't flake
         disagree_hits = agree_hits = 0
         for _ in range(120):
             pair = sel.get_next_pair(strategy='learning', exclude_compared=False)

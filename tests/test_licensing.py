@@ -106,10 +106,13 @@ class TestPolicy:
         real = importlib.util.find_spec
         monkeypatch.setattr(licensing.importlib.util, 'find_spec',
                             lambda name, *a: None if name == 'ofiq' else real(name, *a))
-        assert licensing.unavailable_metrics() == {'liqe', 'aesthetic_iaa', 'face_quality_iqa'}
+        assert licensing.unavailable_metrics() == {'liqe', 'aesthetic_iaa', 'face_quality_iqa', 'deqa',
+                                                'aesthetic_v25'}
         monkeypatch.setattr(licensing.importlib.util, 'find_spec',
                             lambda name, *a: object() if name == 'ofiq' else real(name, *a))
-        assert licensing.unavailable_metrics() == {'liqe', 'aesthetic_iaa'}
+        assert licensing.unavailable_metrics() == {'liqe', 'aesthetic_iaa', 'deqa', 'aesthetic_v25'}
+        licensing.set_policy('commercial', allow_unclear=True)
+        assert licensing.unavailable_metrics() == {'liqe', 'aesthetic_iaa', 'aesthetic_v25'}
 
 
 class TestRenderMarkdown:

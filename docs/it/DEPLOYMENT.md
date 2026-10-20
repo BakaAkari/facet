@@ -110,6 +110,8 @@ Se vuoi che i file cestinati finiscano in un posto scelto da te, invece che in u
 
 Lo stesso confine di UID si applica anche a `/config/scoring_config.json`. Facet prende possesso solo di una configurazione che ha creato lui stesso; un file già esistente mantiene il proprietario e i permessi che gli hai dato, e le scritture di configurazione proprie di Facet ora cercano di preservarlo invece di cedere il file all'uid con cui gira il container. Vedi [Installazione — Proprietà del file nel container](INSTALLATION.md#proprietà-del-file-nel-container) per ciò che è garantito, l'unico caso in cui Facet ne prende comunque possesso (una configurazione preesistente che l'utente `facet` del container non può leggere), e la ricetta per far sì che una configurazione montata sotto Podman rootless resti sia tua sia scrivibile dal container.
 
+Con `group_add` di compose (vedi [Condivisioni foto leggibili solo tramite un gruppo](#condivisioni-foto-leggibili-solo-tramite-un-gruppo-group_add)) il controllo di leggibilità viene eseguito con gli stessi gruppi supplementari, quindi una configurazione leggibile solo tramite un tale gruppo non attiva più questa presa di proprietà. Se la chiamata `setpriv` del controllo fallisce, il file è considerato illeggibile (presa di proprietà, con l'avviso su stderr).
+
 ## Compilazione del client Angular
 
 Il server FastAPI serve la SPA precompilata da `client/dist/client/browser/`. Compilala prima del deployment:
@@ -316,6 +318,21 @@ services:
       - /volume1/Photos:/volume1/Photos:ro  # Mount photos for downloads
     restart: always
 ```
+
+### Condivisioni foto leggibili solo tramite un gruppo (`group_add`)
+
+Su un NAS la condivisione delle foto è spesso leggibile solo tramite un gruppo supplementare (su Synology, tipicamente `users`, gid 100) e non dall'uid `facet` del container. Assegnate quel gruppo al container con `group_add` di compose, usando il gid numerico restituito da `id <vostro-utente>` sul NAS:
+
+```yaml
+services:
+  facet:
+    group_add:
+      - "100"
+```
+
+L'entrypoint parte come root e passa a `facet` con `setpriv`, mantenendo i gid di `group_add` (prima usava `gosu`, che li scartava, per cui lo scanner non poteva leggere la condivisione). Verificate con `docker compose exec facet grep Groups /proc/1/status`: l'output elenca `1000` più i vostri gid.
+
+Alternativa: eseguire senza privilegi con `user: "1000:1000"` più `group_add`. Questo salta del tutto il ramo root dell'entrypoint, che quindi non esegue chown né inizializza `/config`; tutti i mount devono già essere scrivibili dall'uid 1000 e il runtime applica `group_add` in modo nativo.
 
 ## Limiti di memoria del container
 

@@ -712,10 +712,12 @@ class ScoringConfig:
         """Get directory scanning settings.
 
         Returns settings for directory traversal during photo scanning,
-        including whether to skip hidden directories.
+        including whether to skip hidden directories and which directory
+        names (fnmatch globs, e.g. Synology's ``@eaDir``) to prune.
         """
         return self.config.get('scanning', {
-            'skip_hidden_directories': True
+            'skip_hidden_directories': True,
+            'skip_directories': ['@eaDir', '#recycle', '#snapshot', '@Recycle']
         })
 
     def get_exif_adjustments(self):

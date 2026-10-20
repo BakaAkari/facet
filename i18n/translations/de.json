@@ -85,6 +85,7 @@
     "end_of_results": "Ende der Ergebnisse"
   },
   "tooltip": {
+    "not_computed": "Nicht berechnet",
     "category": "Kategorie",
     "aggregate": "Gesamtwertung",
     "quality_section": "Qualität",
@@ -409,6 +410,7 @@
   "sort_options": {
     "aggregate": "Gesamtwertung",
     "aesthetic": "Ästhetik",
+    "qrealign_score": "Q-ReAlign (Ästhetik)",
     "date_taken": "Aufnahmedatum",
     "star_rating": "Sternebewertung",
     "face_quality": "Gesichtsqualität",
@@ -433,7 +435,9 @@
     "focal_length": "Brennweite",
     "shutter_speed": "Verschlusszeit",
     "quality_score": "Qualitätswert",
+    "deqa_score": "DeQA",
     "aesthetic_iaa": "Ästhetik (IAA)",
+    "aesthetic_v25": "Ästhetik v2.5",
     "liqe_score": "LIQE-Wert",
     "face_quality_iqa": "Gesichtsqualität (IQA)",
     "composition_pattern": "Kompositionsmuster",
@@ -530,7 +534,8 @@
     "mode_color": "Farbpalette",
     "mode_person": "Gleiche Person",
     "no_faces": "Keine Gesichter auf diesem Foto erkannt",
-    "no_histogram": "Keine Farbdaten für dieses Foto verfügbar"
+    "no_histogram": "Keine Farbdaten für dieses Foto verfügbar",
+    "no_visual_features": "Visuelle Ähnlichkeit ist nicht verfügbar: Dieses Foto hat keinen gültigen visuellen Fingerabdruck und kein gültiges Embedding. Scanne es mit --force erneut, um sie zu berechnen."
   },
   "merge_suggestions": {
     "title": "Zusammenführungsvorschläge",
@@ -1716,7 +1721,6 @@
     "strengths": "Starken",
     "weaknesses": "Schwachen",
     "suggestions": "Vorschlage",
-    "penalties": "Strafen",
     "distortions": "Erkannte Verzerrungen",
     "vlm_title": "KI-Kritik",
     "vlm_loading": "KI-Kritik wird erstellt...",
@@ -1733,7 +1737,7 @@
       "color_score": "Farbe",
       "contrast_score": "Kontrast",
       "isolation_bonus": "Motivfreistelling",
-      "noise_sigma": "Rauschpegel",
+      "noise_sigma": "Rauschqualität",
       "dynamic_range_stops": "Dynamikumfang",
       "leading_lines_score": "Fuhrungslinien",
       "power_point_score": "Kraftpunkte",
@@ -1750,7 +1754,10 @@
       "form_balance": "Visuelle Balance",
       "form_edge_entropy": "Kantenentropie",
       "form_fractal": "Fraktale Komplexitat",
-      "color_harmony": "Farbharmonie"
+      "color_harmony": "Farbharmonie",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "Streben Sie eine starkere visuelle Wirkung durch bessere Beleuchtung oder Motivwahl an",
@@ -1838,14 +1845,34 @@
         "f_stop_min": "Blende {actual} < {required}",
         "f_stop_max": "Blende {actual} > {required}",
         "no_value": "Daten nicht verfügbar"
-      }
+      },
+      "override": "Kategorie überschrieben: {category}"
     },
     "penalty": {
       "blink": "Blinzeln erkannt",
-      "noise": "Rauschen: {value}",
-      "highlight_clipping": "Lichter-Clipping: {value}",
-      "shadow_clipping": "Schatten-Clipping: {value}",
       "skin_tone": "Hautton-Farbstich: {cast} (ΔE {delta})"
+    },
+    "current_formula": "Aktuelle Berechnung",
+    "stored_score": "Gespeicherte Bewertung",
+    "calculation_note": "Aktuelle Einstellungen und gespeicherte Normalisierung bestimmen diese Qualitätswerte. Höher ist besser; fehlende Werte verwenden die Standardwerte der Bewertung.",
+    "adjustments": "Nettoanpassungen und Rundung",
+    "different_score": "Die gespeicherte Bewertung weicht von dieser Berechnung ab.",
+    "calculation_unavailable": "Der vollständige Bewertungskontext fehlt. Die gespeicherte Bewertung wird weiterhin angezeigt.",
+    "advisories": "Erkannte Bedingungen",
+    "cached_commentary": "Gespeicherte Kommentare haben keinen verifizierten Bewertungskontext.",
+    "stored_unavailable": "Keine gültige gespeicherte Bewertung",
+    "stored_state": {
+      "missing": "Noch nicht bewertet",
+      "invalid": "Die gespeicherte Bewertung ist unbrauchbar. Führen Sie python facet.py --recompute-average aus, um sie neu zu erstellen."
+    },
+    "unavailable_reason": {
+      "missing_scoring_inputs": "In der Datenbank fehlen Bewertungsspalten, daher ist die Berechnung nicht möglich. Führen Sie python database.py aus, um das Schema zu aktualisieren.",
+      "normalization_snapshot_unavailable": "Der gespeicherte Normalisierungs-Snapshot der Bibliothek ist nicht verfügbar. Versuchen Sie es erneut; falls das Problem bestehen bleibt, führen Sie python facet.py --recompute-average aus, um ihn neu zu erstellen.",
+      "invalid_scoring_inputs": "Die gespeicherten Metriken dieses Fotos sind ungültig. Scannen Sie es mit --force erneut, um sie zu ersetzen."
+    },
+    "normalization_basis": {
+      "persisted_percentiles": "Normalisiert anhand des gespeicherten Perzentil-Snapshots der Bibliothek.",
+      "stored_metrics": "Es werden die rohen gespeicherten Metrikwerte ohne Perzentil-Normalisierung verwendet."
     }
   },
   "culling": {

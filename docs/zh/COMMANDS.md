@@ -69,7 +69,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py /path --dry-run --dry-run-count 20` | 对 20 张样本照片评分 |
 | `python facet.py --export-csv` | 把全部评分导出为带时间戳的 CSV（`tags` 列只含 AI 标签，不包含[手动标签](VIEWER.md#手动标签)） |
 | `python facet.py --export-csv output.csv` | 导出到指定的 CSV 文件 |
-| `python facet.py --export-json` | 把全部评分导出为带时间戳的 JSON（`tags` 只含 AI 标签，与 CSV 相同） |
+| `python facet.py --export-json` | 导出为带时间戳的 JSON；每张照片的 `scores` 对象包含全部已存储的指标列（NULL、非有限数字与 BLOB 均为 `null`；旧版架构没有的列会被省略）。`tags` 只含 AI 标签，与 CSV 相同。输出路径若是数据库本身或其 `-wal`／`-shm`／`-journal`，则会被拒绝 |
 | `python facet.py --export-json output.json` | 导出到指定的 JSON 文件 |
 | `python facet.py --export-manifest` | 导出紧凑的 JSON 清单（路径、类别、评分、标签、星级评分、收藏／淘汰、连拍代表帧）到 `facet_manifest.json`，供 Lightroom Classic 插件等外部工具使用（`tags` = AI 标签 + 手动标签） |
 | _清单版本 2_ | 为每张照片新增 `burst_group_id`、`sequence_kind`、`sequence_group_id` 和 `score_stars`（综合评分经 `xmp_export.score_to_rating` 换算得到），供 Facet 增效工具新增的连拍留用／淘汰与星级兜底选项使用——见 [docs/INTEROP.md](INTEROP.md#facet-增效工具星级留用旗标元数据字段与关键字)。为此版本构建的增效工具会拒绝更早版本的清单，并要求重新导出 |
@@ -149,7 +149,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py --backfill-clipping` | 从已存储的直方图推导各通道的溢出百分比。仅使用数据库（不解码图像）且可续跑；直方图早于 RGB 格式的照片保持未知（NULL） |
 | `python facet.py --recompute-silhouette` | 用基于人脸的规则（参见 [SCORING.md](SCORING.md)），根据已存储的缩略图和人脸框重新推导 `is_silhouette`。仅操作数据库（不解码原图）、可续跑（分批提交），并且只重写这一列；遵守全局 `--dry-run`（报告会改变什么，不写入任何内容）。报告按照片已存储的人脸框与缩略图的对应情况对照片分组（`exact`、`scaled`、`count_mismatch`、`other`；`count_mismatch` 所用的匹配方式尚未经过验证）。无法把人脸框定位到缩略图上的照片写为 0（不是剪影），没有人脸的照片也一样。`face_count` 为 NULL，或有人脸但没有已存储缩略图的照片保留其标志，并计为 `skipped_face_count_null` / `skipped_no_thumbnail`。之后运行 `--recompute-average`，让评分和类别跟上新的标志 |
 | `python facet.py --repair-int-columns` | 修复 `photos` 表中实际存储为 REAL 的 INTEGER 列——SQLite 的类型亲和性并非约束，因此外部工具写入的小数 ISO 会原样保留为 REAL。就地对每个值取整（SQLite 无法以整数保存的值——非有限值，或超过 2^53——置为 NULL），其余一概不动。仅使用数据库（不解码图像）。API 在读取时会对未修复的行取整，因此图库无需本命令即可正常显示；但筛选和排序比较的是实际存储的值，运行本命令可避免显示为 ISO 63 的照片被 ISO 区间筛选漏掉 |
-| `python facet.py --repair-neutral-iqa` | 清除 1.20 之前的版本为模型无法评分的照片写入 `aesthetic_iaa`、`face_quality_iqa` 和 `liqe_score` 的中性 5.0：这三列中所有恰好等于 5.0 的值在同一个事务中置为 NULL，并丢弃缓存的图库取值范围。按列打印数量。不会改动 `aesthetic`、`topiq_score`、`aesthetic_v25` 或 `quality_score`（这些列里真实的 5.00 无法与假值区分，而且在 `legacy`/`8gb` 上 `aesthetic` 就是 CLIP+MLP 的列）。恰好四舍五入为 5.00 的真实值也会被清除，之后由 `--recompute-iqa` 根据已存储的缩略图回填，因此回填的值可能略有不同。之后运行 `--recompute-iqa` 重新填充各列，再运行 `--recompute-average`；修复本身不会改变任何综合评分，因为 NULL 按中性计算。正在运行的查看器在修复后的最长一小时内，或直到重启之前，可能仍显示过期的筛选范围，仍把已清除的 5.0 计算在内。仅使用数据库（不解码图像）；与 `--dry-run` 同用会被拒绝（退出码 2）；不在任何 `--upgrade-db` 链中 |
+| `python facet.py --repair-neutral-iqa` | 清除 1.20 之前的版本为模型无法评分的照片写入 `aesthetic_iaa`、`face_quality_iqa` 和 `liqe_score` 的中性 5.0：这三列中所有恰好等于 5.0 的值在同一个事务中置为 NULL，并丢弃缓存的图库取值范围。按列打印数量。不会改动 `aesthetic`、`topiq_score`、`aesthetic_v25` 或 `quality_score`（这些列里真实的 5.00 无法与假值区分，而且在 `legacy`/`8gb` 上 `aesthetic` 就是 CLIP+MLP 的列）。恰好四舍五入为 5.00 的真实值也会被清除，之后由 `--recompute-iqa` 根据已存储的缩略图回填，因此回填的值可能略有不同。之后运行 `--recompute-iqa` 重新填充各列，再运行 `--recompute-average`；修复本身不会改变任何综合评分，因为 NULL 按中性计算。正在运行的查看器从下一个请求起即提供新的筛选范围，无需重启；已打开的图库页面会保留旧的范围（仍把已清除的 5.0 计算在内），直到重新加载该页面。仅使用数据库（不解码图像）；与 `--dry-run` 同用会被拒绝（退出码 2）；不在任何 `--upgrade-db` 链中 |
 | `python facet.py --compute-recommendations` | 分析数据库并显示评分摘要 |
 | `python facet.py --compute-recommendations --verbose` | 显示详细统计信息 |
 | `python facet.py --compute-recommendations --apply-recommendations` | 自动应用评分修正 |
@@ -395,7 +395,7 @@ python /opt/facet/viewer.py      # 仍然读取 /opt/facet/scoring_config.json�
 | `python database.py --export-viewer-db` | 导出轻量版图库数据库（剥离 BLOB，缩小缩略图；若输出已存在则增量导出） |
 | `python database.py --export-viewer-db --force-export` | 强制完整重新导出，即使图库数据库已存在 |
 | `python database.py --cleanup-orphaned-persons` | 删除没有关联人脸的人物 |
-| `python database.py --cleanup-missing-photos` | 从数据库中删除磁盘上已不存在的照片（级联删除会清理标签、检测到的人脸等；同时清除相册归属和向量索引，并使统计缓存失效） |
+| `python database.py --cleanup-missing-photos` | 从数据库中删除磁盘上已不存在的照片（级联删除会清理标签、检测到的人脸等；同时清除相册归属和向量索引，并使统计缓存失效，但保留其中的图库状态——百分位快照、Immich 同步状态、已训练的保留照片排序头与排序器指标，以及缩略图刷新和修复标记；自动重新训练的比较计数会被清零） |
 | `python database.py --cleanup-missing-photos --dry-run` | 预览缺失的文件但不删除 |
 | `python database.py --cleanup-missing-photos --force` | 即使全部照片看起来都缺失也继续执行（用于防止卷未挂载时把一切删光） |
 | `python database.py --migrate-storage-fs` | 把缩略图和特征向量从数据库 BLOB 迁移到文件系统 |

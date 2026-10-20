@@ -30,6 +30,8 @@ import threading
 
 import numpy as np
 
+from metric_columns import FORM_METRIC_COLUMNS
+
 logger = logging.getLogger("facet.form_facet")
 
 # sklearn KMeans lazily initializes OpenMP/BLAS thread pools (via threadpoolctl /
@@ -39,11 +41,6 @@ logger = logging.getLogger("facet.form_facet")
 # happen single-threaded before any worker pool starts.
 _KM_LOCK = threading.Lock()
 _WARMED = False
-
-FORM_METRIC_COLUMNS = (
-    'form_symmetry', 'form_balance', 'form_edge_entropy', 'form_fractal',
-    'color_harmony',
-)
 
 # Fixed working size (long side, px). Both the scan path (full decode) and the
 # backfill path (640px thumbnail) resize to this before computing anything, so

@@ -13,14 +13,15 @@ class CompositionAnalyzer:
 
     @staticmethod
     def detect_subject_region(img_cv):
-        """Detect the main subject region using multiple strategies.
+        """Detect the main subject region with adaptive Canny edge detection.
 
-        Uses a cascading approach:
-        1. Adaptive Canny edge detection with relaxed thresholds
-        2. Saliency-based detection using spectral residual
+        Contours above a relaxed minimum area are scored by area and proximity
+        to rule-of-thirds points. BiRefNet provides the real subject saliency;
+        this is only the cheap rule-based estimate.
 
         Returns:
-            Bounding box [x1, y1, x2, y2] of detected subject, or None if none found.
+            Bounding box [x1, y1, x2, y2] of detected subject, or None when no
+            contour qualifies.
         """
         if img_cv is None:
             return None
@@ -28,7 +29,7 @@ class CompositionAnalyzer:
         h, w = img_cv.shape[:2]
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
-        # Strategy 1: Adaptive Canny with relaxed thresholds
+        # Adaptive Canny with relaxed thresholds
         median_val = np.median(gray)
         lower = int(max(0, 0.5 * median_val))
         upper = int(min(255, 1.5 * median_val))
@@ -72,22 +73,6 @@ class CompositionAnalyzer:
             if best_contour is not None:
                 x, y, bw, bh = cv2.boundingRect(best_contour)
                 return [x, y, x + bw, y + bh]
-
-        # Strategy 2: Saliency-based detection
-        try:
-            saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
-            success, saliency_map = saliency.computeSaliency(img_cv)
-            if success:
-                saliency_map = (saliency_map * 255).astype(np.uint8)
-                _, thresh = cv2.threshold(saliency_map, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                sal_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if sal_contours:
-                    largest = max(sal_contours, key=cv2.contourArea)
-                    x, y, bw, bh = cv2.boundingRect(largest)
-                    return [x, y, x + bw, y + bh]
-        except (cv2.error, AttributeError):
-            # Saliency module may not be available in all OpenCV builds
-            pass
 
         return None
 

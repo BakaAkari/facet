@@ -11,19 +11,18 @@ Real album rows and photo rows go into the SHARED session database (via
 ``seed_photos_prefix``); the auth-overridden ``edition_client`` drives the endpoints.
 """
 
-import json
 import sqlite3
 
 import pytest
 
 from api.routers.albums import _compute_smart_album_cover
 from api.types import VALID_SORT_COLS
-from tests.conftest import _TEST_DB_FILE
+from tests.conftest import _TEST_DB_FILE, photo_names as _names
 
 PREFIX = "/album-null-sort/"
-OWNER = "test"  # the user_id the edition_client fixture authenticates as
 TOKEN = "null-sort-share-token"
-NULLABLE_SORT_COLUMNS = ("aesthetic_iaa", "liqe_score", "face_quality_iqa")
+NULLABLE_SORT_COLUMNS = ("aesthetic_iaa", "liqe_score", "face_quality_iqa", "qrealign_score",
+                         "deqa_score", "aesthetic_v25")
 
 
 def _rows(column):
@@ -35,37 +34,8 @@ def _rows(column):
 
 
 @pytest.fixture()
-def make_album():
-    """Insert an album row into the shared DB; every one is deleted on teardown."""
-    ids = []
-
-    def make(*, smart_filter=None, member_names=()):
-        with sqlite3.connect(_TEST_DB_FILE.name) as conn:
-            cur = conn.execute(
-                "INSERT INTO albums (user_id, name, is_smart, smart_filter_json, share_token) "
-                "VALUES (?, 'null sort', ?, ?, ?)",
-                (OWNER, 1 if smart_filter is not None else 0,
-                 json.dumps(smart_filter) if smart_filter is not None else None, TOKEN),
-            )
-            album_id = cur.lastrowid
-            ids.append(album_id)
-            for pos, name in enumerate(member_names):
-                conn.execute(
-                    "INSERT INTO album_photos (album_id, photo_path, position) VALUES (?, ?, ?)",
-                    (album_id, PREFIX + name, pos),
-                )
-        return album_id
-
-    yield make
-    with sqlite3.connect(_TEST_DB_FILE.name) as conn:
-        for album_id in ids:
-            conn.execute("DELETE FROM album_photos WHERE album_id = ?", (album_id,))
-            conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
-
-
-def _names(resp):
-    assert resp.status_code == 200, resp.text
-    return [p["path"].rsplit("/", 1)[1] for p in resp.json()["photos"]]
+def make_album(album_factory):
+    return album_factory(PREFIX, TOKEN, "null sort")
 
 
 @pytest.mark.parametrize("column", NULLABLE_SORT_COLUMNS)

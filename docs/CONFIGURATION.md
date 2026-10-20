@@ -190,7 +190,8 @@ Controls directory scanning behavior.
 ```json
 {
   "scanning": {
-    "skip_hidden_directories": true
+    "skip_hidden_directories": true,
+    "skip_directories": ["@eaDir", "#recycle", "#snapshot", "@Recycle"]
   }
 }
 ```
@@ -198,6 +199,7 @@ Controls directory scanning behavior.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `skip_hidden_directories` | `true` | Skip directories starting with `.` during photo scanning |
+| `skip_directories` | `["@eaDir", "#recycle", "#snapshot", "@Recycle"]` | Directory-name globs (`fnmatch`, case-sensitive, matched on the folder name at any depth) pruned from the scan: Synology `@eaDir` (its `SYNOPHOTO_THUMB_*.jpg` thumbnails are not photos), `#recycle`, `#snapshot`, QNAP `@Recycle`. Your list replaces the default entirely; `[]` disables name pruning. The scan root itself is never pruned. Photos already indexed from these folders stay in the database |
 
 ---
 
@@ -1293,10 +1295,10 @@ Heavy/experimental quality scorers that add supplementary columns; **never a rep
 
 | Setting | Default | Accepted values | Column | Description |
 |---------|---------|-----------------|--------|-------------|
-| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B LLM-based IQA (native `transformers` loader, no pyiqa; Apache-2.0 weights, ~2-3GB VRAM/RAM). `"auto"` turns it on for the `8gb`/`16gb`/`24gb` profiles and off for `legacy`/CPU; `true`/`false` override the profile default explicitly. |
+| `qrealign` | `"auto"` | `"auto"` · `true` · `false` | `qrealign_score` | Q-ReAlign-Mini 0.8B LLM-based IQA (native `transformers` loader, no pyiqa; Apache-2.0 weights, ~2-3GB VRAM/RAM). `"auto"` turns it on for the `8gb`/`16gb`/`24gb` profiles and off for `legacy`/CPU; `true`/`false` override the profile default explicitly. Sortable in the viewer as **Q-ReAlign (Aesthetic)**; the option only appears once at least one photo has a Q-ReAlign score, and unscored photos sort last in either direction. This column contains the aesthetic task; quality uses `quality_score`. |
 | `qrealign_size` | `"mini"` | `"mini"` · `"lite"` | - | Q-ReAlign size the native scorer loads: `mini` (0.8B) or `lite` (4B). Used by the `qrealign` column and, in `licensing.mode: "commercial"`, as the primary aesthetic and quality model. |
-| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (SigLIP head, ~2GB). Requires the `aesthetic-predictor-v2-5` package. **Deprecated:** AGPL-3.0-licensed and unmaintained upstream since 2024-12-18 — prefer `qrealign`. |
-| `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score VLM IQA (16GB+ GPU; skipped & left NULL otherwise). |
+| `aesthetic_v25` | `false` | `true` / `false` | `aesthetic_v25` | Aesthetic Predictor V2.5 (SigLIP head, ~2GB). Requires the `aesthetic-predictor-v2-5` package. **Deprecated:** AGPL-3.0-licensed and unmaintained upstream since 2024-12-18 — prefer `qrealign`. Sortable in the viewer as **Aesthetic v2.5** (the option appears once at least one photo has an Aesthetic v2.5 score), with unscored photos last in either direction. |
+| `deqa` | `false` | `true` / `false` | `deqa_score` | DeQA-Score VLM IQA (16GB+ GPU; skipped & left NULL otherwise). Sortable in the viewer as **DeQA** (the option appears once at least one photo has a DeQA score), with unscored photos last in either direction. |
 
 **Install the optional dependencies** for whatever you enable: `pip install -e .[iqa-extended]` (adds `aesthetic-predictor-v2-5`), or uncomment the matching line in `requirements.txt`. DeQA-Score downloads via `transformers`.
 
@@ -1323,7 +1325,7 @@ Controls which model components Facet may load. See [THIRD_PARTY_MODELS.md](THIR
 
 | Setting | Default | Accepted values | Description |
 |---------|---------|-----------------|-------------|
-| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` loads every model (shipped behaviour). `"commercial"` never imports, queues or downloads components whose licence is not commercial-safe: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) and InsightFace are refused at every layer. Aesthetic and quality come from the native Q-ReAlign scorer, composition from the rule-based analyser, and faces from the permissive face pipeline (YuNet detection, SFace 128-d embeddings, optional MediaPipe eyes/smile and OFIQ face quality). `liqe` and `aesthetic_iaa` have no replacement and stay `NULL`. |
+| `mode` | `"default"` | `"default"` · `"commercial"` | `"default"` loads every model (shipped behaviour). `"commercial"` never imports, queues or downloads components whose licence is not commercial-safe: `pyiqa` (TOPIQ, HyperIQA, LIQE, ...) and InsightFace are refused at every layer. Aesthetic and quality come from the native Q-ReAlign scorer, composition from the rule-based analyser, and faces from the permissive face pipeline (YuNet detection, SFace 128-d embeddings, optional MediaPipe eyes/smile and OFIQ face quality). `liqe` and `aesthetic_iaa` have no replacement and stay `NULL`; `deqa` (licence *unclear*) is unavailable unless `allow_unclear` is set, and `aesthetic_v25` (AGPL) is always unavailable. |
 | `allow_unclear` | `false` | `true` / `false` | In commercial mode, also allow components whose licence is *unclear* (SAMP-Net, U2-Net-P, the LAION CLIP-MLP aesthetic head). Components with a non-commercial licence stay refused. It must be a JSON boolean; any other value is an error that stops startup. |
 
 A refused component raises a `LicenceError` that names the component and its replacement; every handler that could absorb it re-raises it (a test enforces this), so a refusal stops the scan at startup instead of turning into per-photo failures or a silent fallback. Commands that depend only on a refused component (`--score-topiq`, `--recompute-iqa` for pyiqa models, `--recompute-composition-gpu`) exit with that message in commercial mode. The mode is read from the resolved config at startup. The viewer passes `FACET_LICENSING_MODE=commercial` in the environment of every `facet.py` process it spawns (scans, recomputes), so a child never re-resolves to default mode from a different working directory. Nothing here is legal advice.
@@ -1695,7 +1697,8 @@ Web gallery display and behavior.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `default_category` | `""` | Default category filter |
-| `edition_password` | `""` | Password to unlock edition mode (empty = every edit is refused; the install is read-only) |
+| `edition_password` | `""` | Password to unlock edition mode (empty = every edit is refused; the install is read-only, except to a direct local browser under `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Grant edition rights, without an edition password, to a browser on the same computer reaching the viewer directly over loopback. Applies only while BOTH `password` and `edition_password` are empty on a single-user install; covers every edition-gated route except the scan trigger. **Never enable behind a reverse proxy on the same host.** See [Trusted Local Editing](#trusted-local-editing) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Minimum number of decisive comparisons (one photo won; ties do not count) in the category before weights are suggested |
 | `pair_selection_strategy` | `"learning"` | Pair strategy: `learning` (embedding-diversity cold-start + rank-disagreement once trained), `uncertainty`, `boundary`, `active`, `random` |
@@ -1952,6 +1955,31 @@ Optional password protection for the viewer:
 ```
 
 When set, users must authenticate before accessing the viewer.
+
+### Trusted Local Editing
+
+A single-user viewer used only from a browser on the same computer can edit without an edition password, by opting in:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+The opt-in applies only while **both** `viewer.password` and `viewer.edition_password` are empty, multi-user mode is off and the configuration loaded cleanly. Setting an edition password turns it off: an operator who set one expects it to be asked for, so the opt-in never bypasses it. It does not set or reveal a password, change tokens, or enable multi-user administration.
+
+Access is decided per request, never from a token claim. A request is trusted only when all of these hold; anything else is treated as if the option were off, GET requests included:
+
+- the TCP peer is a loopback address (an IPv4-mapped peer such as `::ffff:127.0.0.1` counts by its IPv4 address);
+- there is exactly one `Host` header, and it is `localhost`, `127.0.0.1` or `[::1]`, with an optional port;
+- the request carries no `Forwarded`, `Via`, `X-Real-IP`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Original-Forwarded-For` or `X-Forwarded-*` header;
+- an `Origin` or `Referer`, when present, names the exact scheme, host and port the request was sent to, without credentials (an `Origin` with a path, query or fragment is refused), and a `Sec-Fetch-Site`, when present, is `same-origin` or `none`.
+
+A trusted request holds full edition rights: every route that otherwise needs an edition session, not only ratings. That covers ratings, favorites and rejects, comparison mode, culling (including **Cull to folder**, which moves or trashes files, and per-photo delete), albums, person and face management, weight, priority and scoring-context changes, metadata embedding and exports, the fixed-argument recompute and panorama-detection jobs, and on-demand caption and critique generation. The scan trigger is the one exception: it still requires `viewer.edition_password`, which can never be set while this option applies, so it stays refused.
+
+> **Warning:** the loopback peer is the only real boundary. `Host`, `Origin`, `Referer` and `Sec-Fetch-Site` are set by the client and can only refuse a request, and a reverse proxy, tunnel or port forward on the same host that adds none of the headers above is indistinguishable from your browser. Never enable this option behind any reverse proxy on the same host. Every local process and every account on the computer can edit while it is on.
 
 ### Viewer Performance
 
@@ -2294,7 +2322,8 @@ The idle window matters: the retrain rewrites one row per photo, and SQLite allo
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2303,6 +2332,7 @@ The idle window matters: the retrain rewrites one row per photo, and SQLite allo
 |---------|---------|-------------|
 | `threshold` | `25` | New comparisons a user must accumulate before a retrain is armed. Raise it if you rate very large batches and want the (CPU, seconds-to-minutes) training amortized over more signal |
 | `idle_seconds` | `60` | Seconds of no rating/culling activity required before the armed retrain actually starts. Every new action pushes the timer back. `0` dispatches immediately (the pre-1.7.3 behaviour) |
+| `backend` | `"native"` | `"native"` trains the personal ranker, keeper head and learned weights locally. `"external"` only retains preferences and pending-comparison counts and never trains or evaluates a learned head locally; see [External learning backend](#external-learning-backend) |
 
 Both are overridable at runtime by environment variables, which take precedence over the JSON values — useful for Docker, where the config is often baked into the image:
 
@@ -2315,9 +2345,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-An unparseable value falls back to the JSON setting, and a missing or malformed block falls back to the built-in defaults, so a typo degrades to the shipped behaviour instead of disabling auto-retrain. Both values are read once at startup — changing them needs a restart.
+An unparseable `threshold` or `idle_seconds` falls back to the JSON setting, and a missing or malformed block falls back to the built-in defaults, so a typo degrades to the shipped behaviour instead of disabling auto-retrain. `backend` is the exception: an unreadable or invalid value fails closed to `"external"` (see below). `threshold` and `idle_seconds` are read once at startup — changing them needs a restart.
 
 The retrain keeps its held-out cross-validation gate: a run that fails to beat the current baseline writes nothing.
+
+### External learning backend
+
+The default `auto_retrain.backend` is `"native"`, preserving the local personal-ranker and keeper-head behaviour. Set `"backend": "external"` to retain preferences and pending comparison counts without starting local personal learning or evaluating learned heads on the CPU.
+
+This is a dispatch policy, not an external job service. It does not launch an external GPU worker or claim that a personal model has been trained. A separate operator-controlled training workflow must authenticate observations, qualify its model and publish the resulting scores. Existing ratings and comparisons remain available for that workflow.
+
+In external mode, notifications increment the existing durable counters without consuming them or scheduling a training thread. Queued workers recheck the policy and return their consumed pending count when deferred. Manual personal-ranker, keeper-head and weight-learning entry points return an explicit deferred result. Keeper probabilities are unavailable; the Compare learned-weights and confidence responses report `available: false` with an explanatory message.
+
+A malformed or unreadable backend policy (a non-object `auto_retrain` block, a `backend` other than `"native"` or `"external"`, an unreadable config) fails closed to external mode and logs a warning. A valid configuration with no `backend` key uses native mode. The viewer reads its already resolved server configuration path; CLI calls honor their explicit configuration. This option does not disable ordinary deterministic photo scoring or erase votes.
 
 ## Genre-Aware Culling Profiles
 

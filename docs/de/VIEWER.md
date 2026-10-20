@@ -123,6 +123,13 @@ python database.py --migrate-user-preferences --user alice
 
 ## Filteroptionen
 
+Die Textsuche der Galerie behält Unicode-Wörter bei und behandelt Satzzeichen in
+Dateinamen als Wortgrenzen. So sucht `IMG_0042.JPG` gemeinsam nach den Präfixen
+`IMG`, `0042` und `JPG`. Kyrillische und CJK-Begriffe sind durchsuchbar;
+FTS-Operatoren wie `OR` werden als wörtliche Begriffe behandelt. Der Abgleich folgt
+den bestehenden Tokenizer-Regeln von SQLite, einschließlich ihrer Grenzen bei der
+Unicode-Normalisierung.
+
 <details><summary>Filter-Seitenleiste — alle Abschnitte aufgeklappt (zum Anzeigen klicken)</summary>
 <p align="center"><img src="screenshots/filter-sidebar-full.jpg" alt="Filter-Seitenleiste mit allen aufgeklappten Abschnitten" width="360"></p>
 </details>
@@ -155,7 +162,7 @@ python database.py --migrate-user-preferences --user alice
 | **Inhalt** | Tags, Monochrom-Umschalter |
 | **Momente** | Narrative-Moment-Konfidenz (0–1-Bereichsregler: `min_moment_confidence` / `max_moment_confidence`) |
 
-Bereichsfilter auf Ästhetik IAA, Gesichtsqualität IQA, LIQE und Aesthetic V2.5 treffen nur auf Fotos mit einem Wert zu. Ein Foto, das ein Modell nicht bewerten konnte, wird als NULL gespeichert (früher trug es eine neutrale 5,0) und daher selbst von einem Filter, der bei 0 beginnt, ausgeschlossen; eine aufsteigende Sortierung nach Ästhetik (IAA), Gesichtsqualität (IQA) oder LIQE stellt es in der Galerie und in Alben (auch intelligenten und geteilten) ans Ende. Siehe [Ergänzende IQA-Dimensionen](SCORING.md#ergänzende-iqa-dimensionen).
+Bereichsfilter auf Ästhetik IAA, Gesichtsqualität IQA, LIQE, Aesthetic V2.5, Q-ReAlign und DeQA treffen nur auf Fotos mit einem Wert zu. Ein Foto, das ein Modell nicht bewerten konnte, wird als NULL gespeichert (früher trug es eine neutrale 5,0) und daher selbst von einem Filter, der bei 0 beginnt, ausgeschlossen; eine aufsteigende Sortierung nach Ästhetik (IAA), Gesichtsqualität (IQA), LIQE, Aesthetic V2.5, Q-ReAlign oder DeQA stellt es in der Galerie und in Alben (auch intelligenten und geteilten) ans Ende. Siehe [Ergänzende IQA-Dimensionen](SCORING.md#ergänzende-iqa-dimensionen).
 
 Bereichsfilter auf Motivschärfe, Motivplatzierung, Hintergrundtrennung und Power-Points treffen ebenso nur auf Fotos mit einem Messwert zu: Ein Foto ohne erkennbares Motiv speichert in diesen Spalten NULL (früher ein neutrales 5.0), sodass es selbst ein Filter ausschließt, der bei 0 beginnt; Detailbereich und Tooltip lassen die Zeile weg. Die Motivprominenz ist für ein solches Foto 0.0. Siehe [SCORING.md](SCORING.md).
 
@@ -168,11 +175,18 @@ Nach von SAMP-Net erkannten Mustern filtern (das Modell liefert genau diese 8, a
 
 ## Sortierung
 
+Verschlusszeiten werden nach Belichtungsdauer in Sekunden sortiert, einschließlich
+dezimaler und rationaler EXIF-Werte: `1/250` und `0.004` sind gleich. Fehlende,
+fehlerhafte, null, negative und nicht endliche Werte erscheinen in beiden
+Richtungen zuletzt. Gleiche Werte behalten die Pfad-Reihenfolge als Tie-Break. Das
+gilt auch für die Album-Sortierung und die Cover intelligenter Alben; der
+gespeicherte EXIF-Text bleibt unverändert.
+
 Sortierbare Spalten nach Kategorie gruppiert (aus `viewer.sort_options`):
 
 | Gruppe | Spalten |
 |-------|---------|
-| **Allgemein** | Gesamtwertung, Ästhetik, Qualitätswert, Aufnahmedatum, Sternebewertung, Ästhetik (IAA), LIQE-Wert |
+| **Allgemein** | Gesamtwertung, Ästhetik, Qualitätswert, Aufnahmedatum, Sternebewertung, Ästhetik (IAA), LIQE-Wert, Q-ReAlign (Ästhetik), DeQA, Ästhetik v2.5 (die letzten drei erscheinen nur, wenn mindestens ein Foto diesen Wert hat) |
 | **Gesichtsmetriken** | Gesichtsqualität, Gesichtsqualität (IQA), Augenschärfe, Gesichtsschärfe, Gesichtsanteil, Gesichteranzahl |
 | **Technik** | Techn. Schärfe, Kontrast, Rauschniveau |
 | **Farbe** | Farbwert, Sättigung |
@@ -189,7 +203,7 @@ Gesteuert über `viewer.features.show_my_taste` (Standard: `true`). Der Ranker-S
 
 ### Im kommerziellen Modus ausgeblendete Metriken
 
-Ist `licensing.mode` auf `commercial` gesetzt, blendet der Viewer die Metriken aus, deren Modelle nicht kommerziell genutzt werden dürfen: die Bereichsfilter für LIQE, Aesthetic IAA und (sofern OFIQ nicht installiert ist) Face Quality IQA, deren Filter-Chips und Sortieroptionen. `/api/config` listet sie in `unavailable_metrics`. In der Gewichtungsseite bleiben ihre Regler sichtbar, sind aber deaktiviert und mit einem Tooltip versehen; die Gewichte bleiben erhalten, da die Bewertung sie auslässt und neu normalisiert. Den Viewer nach einer Änderung des Lizenzmodus neu starten.
+Ist `licensing.mode` auf `commercial` gesetzt, blendet der Viewer die Metriken aus, deren Modelle nicht kommerziell genutzt werden dürfen: LIQE, Aesthetic IAA, Face Quality IQA (sofern OFIQ nicht installiert ist), DeQA (sofern `licensing.allow_unclear` nicht gesetzt ist) und Aesthetic V2.5: ihre Bereichsfilter, Filter-Chips und Sortieroptionen. `/api/config` listet sie in `unavailable_metrics`. In der Gewichtungsseite bleiben ihre Regler sichtbar, sind aber deaktiviert und mit einem Tooltip versehen; die Gewichte bleiben erhalten, da die Bewertung sie auslässt und neu normalisiert. Den Viewer nach einer Änderung des Lizenzmodus neu starten.
 
 ## Galeriefunktionen
 
@@ -275,7 +289,7 @@ Anders als „In Ordner aussortieren“, das die Datenbankzeile bis zu einem ern
 
 Klicken Sie bei einem beliebigen Foto auf die Schaltfläche „Ähnliche", um einen Ähnlichkeitsmodus zu wählen:
 
-- **Visuell** (Standard) — pHash-Hamming-Distanz (70%) + CLIP/SigLIP-Kosinusähnlichkeit (30%). Greift auf CLIP allein zurück, wenn kein pHash verfügbar ist.
+- **Visuell** (Standard) — vergleicht nur die Merkmale, die beide Fotos besitzen: pHash-Ähnlichkeit (70%) + CLIP/SigLIP-Kosinusähnlichkeit (30%), wenn beide Fotos beides haben; teilen sie nur eines davon (kein pHash oder ein fehlendes, unlesbares oder anders dimensioniertes Embedding), zählt dieses voll; ein Foto, das keines teilt, wird nie aufgeführt, auch nicht bei 0%. Alle Treffer über dem Schwellenwert werden seitenweise geliefert statt nur der ersten 500, und die Rangfolge bleibt zwei Minuten (oder bis zur nächsten Datenbankänderung) erhalten, sodass weitere Seiten ohne erneuten Durchlauf der Bibliothek laden. Hat das Foto selbst weder pHash noch Embedding, sagt die Galerie das und empfiehlt, es mit `--force` erneut zu scannen (ein einfaches `python facet.py <dir>` überspringt bereits verarbeitete Dateien). Die API antwortet mit `422` bei einem `limit` außerhalb von 1–500, einem negativen `offset` oder einem `min_similarity` außerhalb von 0–1.
 - **Farbe** — Histogrammschnittmenge (70%) + Sättigungsdistanz (10%) + Helligkeitsdistanz (10%) + Monochrom-Bonus (10%). Vorfilterung nach Monochrom-Flag und Sättigungsbereich.
 - **Person** — Findet Fotos mit derselben Person/denselben Personen. Verwendet `person_id`, wenn verfügbar (schnell), andernfalls Rückgriff auf die Kosinusähnlichkeit der Gesichts-Embeddings.
 
@@ -422,7 +436,7 @@ Schlüsselt die Wertungen eines Fotos in Stärken, Schwächen und Vorschläge au
 
 ### Regelbasierte Kritik
 
-Auf allen VRAM-Profilen verfügbar. Analysiert gespeicherte Metriken (Ästhetik, Komposition, Schärfe, Gesichtsqualität usw.) und erzeugt eine strukturierte Erläuterung der Wertung.
+Auf allen VRAM-Profilen verfügbar. Berechnet die Wertung des Fotos mit dem nativen Scorer aus seinen gespeicherten Metriken und der aktuellen Konfiguration neu und erläutert diese Berechnung. Die angezeigte Kategorie ist die, die die aktuelle Formel vergibt (eine Kategorie-Überschreibung und der Bewertungskontext werden berücksichtigt); sie kann bis zum nächsten `--recompute-average` von der gespeicherten Kategorie abweichen. Jede Zeile der Aufschlüsselung ist der effektive 0–10-Eingangswert, den der Scorer gewichtet, nicht der Rohmesswert — Rauschen und Dynamikumfang lesen sich als Qualität, höher ist besser — mit Gewicht und Beitrag. Eine Zeile **Nettoanpassungen und Rundung** (Bonus, Blinzel-Multiplikator, Abzüge für Clipping, Rauschen und Übersättigung, Begrenzung) gleicht die Zeilen mit der Summe der **Aktuellen Berechnung** ab, die neben der **Gespeicherten Bewertung** steht, mit einem Hinweis, wenn beide abweichen. Schärfe, Farbe und Augenschärfe werden mit dem Perzentil-Snapshot normalisiert, den das letzte `--recompute-average` gespeichert hat; eine nur gescannte Bibliothek hat keinen, und die gespeicherten Werte werden so gelesen, wie der Scan sie bewertet hat. Lassen sich die Eingangswerte nicht neu berechnen (fehlerhafter Snapshot, älteres Schema, fehlerhafter gespeicherter Wert), wird nur die gespeicherte Bewertung angezeigt, nie eine erfundene Aufschlüsselung. Blinzeln und ein Hautton-Farbstich erscheinen als **Erkannte Bedingungen**; Rauschen und Clipping werden nicht mehr als eigene Abzüge aufgeführt, da ihre nativen Abzüge Teil der Nettoanpassung sind. Ist die Berechnung nicht verfügbar, nennt der Dialog den Grund und die Abhilfe: ein veraltetes Schema (`python database.py`), ein nicht verfügbarer Normalisierungs-Snapshot (erneut versuchen, bei anhaltendem Problem `python facet.py --recompute-average`) oder ungültige gespeicherte Metriken (erneut scannen mit `--force`). Außerdem unterscheidet er ein Foto, das *noch nicht bewertet* ist (keine gespeicherte Wertung), von einem mit *unbrauchbarer gespeicherter Wertung*, und gibt an, ob die Aufschlüsselung die gespeicherte Perzentil-Normalisierung oder rohe gespeicherte Metriken verwendet hat.
 
 Die Aufschlüsselung zeigt außerdem die erklärbaren **Form- und Farbharmonie**-Zeilen (Symmetrie, Balance, Kantenorientierungs-Entropie, Fraktalkomplexität, Matsuda-Farbharmonie — befüllt durch `--recompute-form`), **Verzerrungsattribut-Chips** für alle wahrscheinlichen Defekte (Bewegungsunschärfe, Farbstich, Überschärfung, … — aus `--recompute-distortions`) und einen **Hautton-Hinweis** für Porträts, deren Haut-Chroma ins Unnatürliche driftet (`--recompute-skin-tone`). Alle drei sind beratend — sie erläutern das Foto, sie ändern das Aggregat nicht — und jede Zeile wird nur angezeigt, wenn ihre zugrunde liegende Spalte befüllt ist.
 
@@ -430,7 +444,7 @@ Die Aufschlüsselung zeigt außerdem die erklärbaren **Form- und Farbharmonie**
 
 Verwendet das konfigurierte VLM (Qwen3.5-2B oder Qwen3.5-4B) für eine kontextbewusste Kritik. Erfordert das 16gb- oder 24gb-VRAM-Profil und `viewer.features.show_vlm_critique: true`. Das Erzeugen einer Kritik erfordert zusätzlich eine Edition-Sitzung; ohne sie wird nur eine bereits zwischengespeicherte Kritik geliefert und `vlm_available` ist `false`.
 
-Der Prompt ist eine konfigurierbare Leiter (`critique.vlm`), die die vollständige Regelaufschlüsselung, Strafen und EXIF einfügt, und die Antwort wird als **Observation / Assessment / Suggestions** gerendert. Das Ergebnis wird pro Foto zwischengespeichert (`photos.vlm_critique`) und bei Bedarf übersetzt, mit einer **Regenerieren**-Schaltfläche zum Neuberechnen. Es läuft gegen das gespeicherte Thumbnail, sodass RAW-Dateien korrekt kritisiert werden, statt still zu scheitern.
+Der Prompt ist eine konfigurierbare Leiter (`critique.vlm`), die die Aufschlüsselung der aktuellen Berechnung, die gespeicherte und die neu berechnete Wertung, die erkannten Bedingungen und EXIF einfügt, und die Antwort wird als **Observation / Assessment / Suggestions** gerendert. Das Ergebnis wird pro Foto zwischengespeichert (`photos.vlm_critique`) und bei Bedarf übersetzt, mit einer **Regenerieren**-Schaltfläche zum Neuberechnen. Es läuft gegen das gespeicherte Thumbnail, sodass RAW-Dateien korrekt kritisiert werden, statt still zu scheitern.
 
 API: siehe den Abschnitt [API-Endpunkte](#api-endpunkte) weiter unten.
 

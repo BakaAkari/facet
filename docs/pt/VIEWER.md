@@ -123,6 +123,13 @@ python database.py --migrate-user-preferences --user alice
 
 ## Opções de Filtragem
 
+A pesquisa de texto da galeria preserva palavras Unicode e trata a pontuação dos
+nomes de arquivo como separadores de palavras. Por exemplo, `IMG_0042.JPG` pesquisa
+os prefixos `IMG`, `0042` e `JPG` em conjunto. Termos em cirílico e CJK são
+pesquisáveis; operadores FTS como `OR` são tratados como palavras literais. A
+correspondência segue as regras do tokenizador SQLite existente, incluindo suas
+limitações de normalização Unicode.
+
 <details><summary>Barra lateral de filtros completa — todas as seções expandidas (clique para ver)</summary>
 <p align="center"><img src="screenshots/filter-sidebar-full.jpg" alt="Filter sidebar with every section expanded" width="360"></p>
 </details>
@@ -155,7 +162,7 @@ python database.py --migrate-user-preferences --user alice
 | **Conteúdo** | Tags, alternância de monocromático |
 | **Momentos** | Confiança do momento narrativo (controle deslizante de faixa 0–1: `min_moment_confidence` / `max_moment_confidence`) |
 
-Os filtros de intervalo de Estética IAA, Qualidade do rosto IQA, LIQE e Aesthetic V2.5 incluem apenas fotos que têm pontuação. Uma foto que um modelo não conseguiu pontuar é gravada como NULL (antes trazia um 5,0 neutro), portanto até um filtro que começa em 0 a exclui, e uma ordenação crescente por Estética (IAA), Qualidade do rosto (IQA) ou LIQE a coloca por último, na galeria e nos álbuns (inteligentes e compartilhados incluídos). Veja [Dimensões Suplementares de IQA](SCORING.md#dimensões-suplementares-de-iqa).
+Os filtros de intervalo de Estética IAA, Qualidade do rosto IQA, LIQE, Aesthetic V2.5, Q-ReAlign e DeQA incluem apenas fotos que têm pontuação. Uma foto que um modelo não conseguiu pontuar é gravada como NULL (antes trazia um 5,0 neutro), portanto até um filtro que começa em 0 a exclui, e uma ordenação crescente por Estética (IAA), Qualidade do rosto (IQA), LIQE, Aesthetic V2.5, Q-ReAlign ou DeQA a coloca por último, na galeria e nos álbuns (inteligentes e compartilhados incluídos). Veja [Dimensões Suplementares de IQA](SCORING.md#dimensões-suplementares-de-iqa).
 
 Os filtros de intervalo de Nitidez do sujeito, Posicionamento do sujeito, Separação do fundo e Pontos de força também só retornam fotos com uma medição: uma foto sem sujeito detectável armazena NULL nessas colunas (antes levava um 5.0 neutro), então até um filtro que começa em 0 a exclui, e o painel de detalhes e a dica omitem a linha. A proeminência do sujeito é 0.0 para uma foto assim. Veja [SCORING.md](SCORING.md).
 
@@ -168,11 +175,18 @@ em `models/samp_net.py`):
 
 ## Ordenação
 
+As velocidades do obturador são ordenadas pela duração da exposição em segundos,
+incluindo valores EXIF decimais e racionais: `1/250` e `0.004` são iguais. Valores
+ausentes, malformados, zero, negativos e não finitos aparecem por último em ambas
+as direções. Valores iguais mantêm o desempate por caminho. Isso também se aplica
+à ordenação de álbuns e às capas de álbuns inteligentes; o texto EXIF armazenado
+não é alterado.
+
 Colunas ordenáveis agrupadas por categoria (de `viewer.sort_options`):
 
 | Grupo | Colunas |
 |-------|---------|
-| **Geral** | Pontuação Agregada, Estética, Pontuação de Qualidade, Data de Captura, Avaliação por Estrelas, Estética (IAA), Pontuação LIQE |
+| **Geral** | Pontuação Agregada, Estética, Pontuação de Qualidade, Data de Captura, Avaliação por Estrelas, Estética (IAA), Pontuação LIQE, Q-ReAlign (estética), DeQA, Estética v2.5 (as três últimas só aparecem quando pelo menos uma foto tem essa pontuação) |
 | **Métricas de Rosto** | Qualidade do Rosto, Qualidade do Rosto (IQA), Nitidez dos Olhos, Nitidez do Rosto, Proporção do Rosto, Contagem de Rostos |
 | **Técnica** | Nitidez Técnica, Contraste, Nível de Ruído |
 | **Cor** | Pontuação de Cor, Saturação |
@@ -189,7 +203,7 @@ Controlado por `viewer.features.show_my_taste` (padrão: `true`). O status do ra
 
 ### Métricas ocultas no modo comercial
 
-Com `licensing.mode` definido como `commercial`, o visualizador oculta as métricas cujos modelos não podem ser usados comercialmente: os filtros de intervalo de LIQE, Aesthetic IAA e (a menos que o OFIQ esteja instalado) Face Quality IQA, os respetivos chips de filtro e as opções de ordenação. `/api/config` lista-as em `unavailable_metrics`. Na página de ajuste de pesos os controlos continuam visíveis mas desativados, com uma dica; os pesos são mantidos, porque a pontuação os descarta e renormaliza. Reinicie o visualizador depois de alterar o modo de licença.
+Com `licensing.mode` definido como `commercial`, o visualizador oculta as métricas cujos modelos não podem ser usados comercialmente: LIQE, Aesthetic IAA, Face Quality IQA (a menos que o OFIQ esteja instalado), DeQA (a menos que `licensing.allow_unclear` esteja definido) e Aesthetic V2.5: os respetivos filtros de intervalo, chips de filtro e opções de ordenação. `/api/config` lista-as em `unavailable_metrics`. Na página de ajuste de pesos os controlos continuam visíveis mas desativados, com uma dica; os pesos são mantidos, porque a pontuação os descarta e renormaliza. Reinicie o visualizador depois de alterar o modo de licença.
 
 ## Recursos da Galeria
 
@@ -274,7 +288,7 @@ Diferente de Selecionar para pasta, que deixa a linha do banco de dados intacta 
 
 Clique no botão "Semelhantes" em qualquer foto para escolher um modo de similaridade:
 
-- **Visual** (padrão) — distância de Hamming do pHash (70%) + similaridade de cosseno CLIP/SigLIP (30%). Recorre apenas ao CLIP quando nenhum pHash está disponível.
+- **Visual** (padrão) — compara apenas os indícios que as duas fotos têm: similaridade pHash (70%) + similaridade de cosseno CLIP/SigLIP (30%) quando as duas fotos têm ambos; quando partilham apenas um (sem pHash, ou com um embedding ausente, ilegível ou de outra dimensão), esse conta com o peso total; uma foto que não partilha nenhum nunca é listada, nem mesmo a 0%. Todas as correspondências acima do limiar são devolvidas, página a página, em vez das 500 primeiras, e a classificação é mantida durante dois minutos (ou até a base de dados mudar) para que as páginas seguintes carreguem sem percorrer a biblioteca de novo. Se a própria foto não tiver pHash nem embedding, a galeria indica-o e sugere digitalizá-la novamente com `--force` (um simples `python facet.py <dir>` ignora os arquivos já processados). A API responde `422` a um `limit` fora de 1–500, um `offset` negativo ou um `min_similarity` fora de 0–1.
 - **Cor** — Interseção de histograma (70%) + distância de saturação (10%) + distância de luminância (10%) + bônus monocromático (10%). Pré-filtra pela marcação monocromática e faixa de saturação.
 - **Pessoa** — Encontra fotos contendo a(s) mesma(s) pessoa(s). Usa `person_id` quando disponível (rápido), caso contrário recorre à similaridade de cosseno do embedding facial.
 
@@ -421,7 +435,7 @@ Decompõe as pontuações de uma foto em pontos fortes, pontos fracos e sugestõ
 
 ### Crítica Baseada em Regras
 
-Disponível em todos os perfis de VRAM. Analisa métricas armazenadas (estética, composição, nitidez, qualidade do rosto, etc.) e gera uma explicação estruturada da pontuação.
+Disponível em todos os perfis de VRAM. Recalcula a pontuação da foto com o pontuador nativo, a partir das métricas armazenadas e da configuração atual, e explica esse cálculo. A categoria mostrada é a que a fórmula atual atribui (uma categoria forçada e o contexto de pontuação são respeitados), que pode diferir da armazenada até o próximo `--recompute-average`. Cada linha do detalhamento é o valor efetivo 0–10 que o pontuador pondera, não a medida bruta — ruído e faixa dinâmica leem-se como qualidade, mais alto é melhor — com o seu peso e a sua contribuição. Uma linha **Ajustes líquidos e arredondamento** (bônus, multiplicador de piscada, penalidades de recorte, ruído e sobressaturação, limitação) reconcilia as linhas com o total do **Cálculo atual**, mostrado ao lado da **Pontuação guardada** com um aviso quando os dois diferem. Nitidez, cor e nitidez dos olhos são normalizadas com o instantâneo de percentis salvo pelo último `--recompute-average`; uma biblioteca apenas escaneada não tem nenhum, e os valores armazenados são lidos tal como o escaneamento os pontuou. Quando as entradas não podem ser recalculadas (instantâneo malformado, esquema mais antigo, valor armazenado malformado) só a pontuação guardada é mostrada, nunca um detalhamento inventado. Piscada e uma dominante no tom de pele são listadas como **Condições detetadas**; ruído e recorte já não são listados como penalidades separadas, porque as suas penalidades nativas fazem parte do ajuste líquido. Quando o cálculo não está disponível, o diálogo indica o motivo e a solução: esquema desatualizado (`python database.py`), instantâneo de normalização indisponível (tentar novamente e, se persistir, `python facet.py --recompute-average`) ou métricas guardadas inválidas (analisar de novo com `--force`). Também distingue uma foto *ainda sem pontuação* (sem pontuação guardada) de uma cuja *pontuação guardada é inutilizável*, e indica se o detalhe usou a normalização por percentis guardada ou as métricas brutas guardadas.
 
 O detalhamento também exibe as linhas explicáveis de **forma e harmonia de cores** (simetria, equilíbrio, entropia de orientação de bordas, complexidade fractal, harmonia de cores de Matsuda — preenchidas por `--recompute-form`), **chips de atributos de distorção** para quaisquer defeitos prováveis (desfoque de movimento, dominante de cor, nitidez excessiva, … — de `--recompute-distortions`) e uma **nota de tom de pele** para retratos cujo croma de pele desvia do natural (`--recompute-skin-tone`). Os três são informativos — explicam a foto, não alteram o agregado — e cada linha só aparece quando sua coluna subjacente está preenchida.
 
@@ -429,7 +443,7 @@ O detalhamento também exibe as linhas explicáveis de **forma e harmonia de cor
 
 Usa o VLM configurado (Qwen3.5-2B ou Qwen3.5-4B) para uma crítica contextual. Requer o perfil de VRAM 16gb ou 24gb e `viewer.features.show_vlm_critique: true`. Gerá-la também exige uma sessão de edição; sem ela só uma crítica já em cache é servida e `vlm_available` é `false`.
 
-O prompt é uma escada configurável (`critique.vlm`) que injeta o detalhamento completo de regras, penalidades e EXIF, e a resposta é apresentada como **Observação / Avaliação / Sugestões**. O resultado é armazenado em cache por foto (`photos.vlm_critique`) e traduzido sob demanda, com um botão **Regenerar** para recomputá-lo. Ele roda sobre a miniatura armazenada, então arquivos RAW são criticados corretamente em vez de falharem silenciosamente.
+O prompt é uma escada configurável (`critique.vlm`) que injeta o detalhamento do cálculo atual, as pontuações guardada e recalculada, as condições detetadas e o EXIF, e a resposta é apresentada como **Observação / Avaliação / Sugestões**. O resultado é armazenado em cache por foto (`photos.vlm_critique`) e traduzido sob demanda, com um botão **Regenerar** para recomputá-lo. Ele roda sobre a miniatura armazenada, então arquivos RAW são criticados corretamente em vez de falharem silenciosamente.
 
 API: veja a seção [Endpoints da API](#endpoints-da-api) abaixo.
 
