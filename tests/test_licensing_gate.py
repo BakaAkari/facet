@@ -777,6 +777,9 @@ class TestNullHonestFaces:
 # landscape +0.135 (q = 0.03, aes 5.5), default +0.126 (q = 0.06, aes 3.1), the multi-pass
 # no_face row +0.186 (q = 0.03, aes 7.2). Every category with no quality weight (portrait,
 # group_portrait) keeps its pre-change value to the last digit.
+# Numeric-domain correction: ISO 6400 now reaches the existing compensation,
+# +0.5*log2(6400/800) = +1.5 sharpness at weight .04, so the default
+# sample gains .06. Other sample values/categories and strict equality remain.
 GOLDEN_SAMPLES = [
     dict(aesthetic=7.2, face_count=1, face_quality=6.5, eye_sharpness=7.0, face_sharpness=6.0,
          face_ratio=0.22, is_group_portrait=0, is_blink=0, isolation_bonus=1.4, comp=6.1,
@@ -789,7 +792,7 @@ GOLDEN_SAMPLES = [
          tags='group,people', iso=800, f_stop=4.0, want=(3.6820000000000004, 'group_portrait')),
     dict(aesthetic=3.1, face_count=0, face_quality=0, eye_sharpness=0, face_sharpness=0,
          face_ratio=0, is_group_portrait=0, is_blink=0, isolation_bonus=1.0, comp=4.2,
-         tags='', iso=6400, f_stop=None, want=(3.8689133333333325, 'default')),
+         tags='', iso=6400, f_stop=None, want=(3.928913333333333, 'default')),
     dict(aesthetic=9.4, face_count=2, face_quality=8.2, eye_sharpness=8.5, face_sharpness=7.7,
          face_ratio=0.08, is_group_portrait=0, is_blink=0, isolation_bonus=2.1, comp=8.0,
          tags='street,city', iso=400, f_stop=2.0, want=(8.395, 'portrait')),
@@ -826,7 +829,7 @@ def golden_facet():
 
 class TestDefaultModeGoldens:
     @pytest.mark.parametrize('sample', GOLDEN_SAMPLES, ids=lambda s: s['want'][1] + str(s['iso']))
-    def test_aggregate_and_category_are_unchanged(self, golden_facet, sample):
+    def test_aggregate_and_category_match_goldens(self, golden_facet, sample):
         agg, cat = golden_facet.calculate_aggregate_logic(_metrics(golden_facet, sample))
         assert (agg, cat) == sample['want']
 

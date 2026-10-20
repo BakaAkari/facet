@@ -84,6 +84,7 @@
     "end_of_results": "已显示全部结果"
   },
   "tooltip": {
+    "not_computed": "未计算",
     "category": "类别",
     "aggregate": "综合评分",
     "quality_section": "画质",
@@ -532,7 +533,8 @@
     "mode_color": "配色",
     "mode_person": "同一人物",
     "no_faces": "这张照片中未检测到人脸",
-    "no_histogram": "这张照片没有色彩数据"
+    "no_histogram": "这张照片没有色彩数据",
+    "no_visual_features": "视觉相似度不可用：这张照片没有有效的视觉指纹或嵌入向量。请使用 --force 重新扫描以计算它们。"
   },
   "merge_suggestions": {
     "title": "人物合并建议",
@@ -1718,7 +1720,6 @@
     "strengths": "优点",
     "weaknesses": "不足",
     "suggestions": "建议",
-    "penalties": "扣分项",
     "distortions": "检测到的成像缺陷",
     "vlm_title": "AI 点评",
     "vlm_loading": "正在生成 AI 点评…",
@@ -1735,7 +1736,7 @@
       "color_score": "色彩",
       "contrast_score": "对比度",
       "isolation_bonus": "主体分离度",
-      "noise_sigma": "噪点水平",
+      "noise_sigma": "噪声质量",
       "dynamic_range_stops": "动态范围",
       "leading_lines_score": "引导线",
       "power_point_score": "构图交点",
@@ -1752,7 +1753,10 @@
       "form_balance": "视觉平衡",
       "form_edge_entropy": "边缘信息熵",
       "form_fractal": "分形复杂度",
-      "color_harmony": "色彩和谐度"
+      "color_harmony": "色彩和谐度",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "可尝试改善光线或选择更有表现力的主体，增强视觉冲击力",
@@ -1840,15 +1844,22 @@
         "f_stop_min": "光圈值 {actual} < {required}",
         "f_stop_max": "光圈值 {actual} > {required}",
         "no_value": "数据不可用"
-      }
+      },
+      "override": "手动指定类别：{category}"
     },
     "penalty": {
       "blink": "检测到闭眼",
-      "noise": "噪点：{value}",
-      "highlight_clipping": "高光溢出：{value}",
-      "shadow_clipping": "阴影溢出：{value}",
       "skin_tone": "肤色偏色：{cast}（ΔE {delta}）"
-    }
+    },
+    "current_formula": "当前计算",
+    "stored_score": "已保存评分",
+    "calculation_note": "这些质量输入由当前设置和已保存的归一化数据确定。数值越高越好；缺失值使用评分公式的默认值。",
+    "adjustments": "净调整与舍入",
+    "different_score": "已保存评分与当前计算不同。",
+    "calculation_unavailable": "完整的评分上下文不可用，仍显示已保存评分。",
+    "advisories": "检测到的情况",
+    "cached_commentary": "缓存评论没有经过验证的评分上下文。",
+    "stored_unavailable": "没有有效的已保存评分"
   },
   "culling": {
     "compare": {

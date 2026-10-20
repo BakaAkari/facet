@@ -26,4 +26,6 @@ export type LightroomImportResponse = components['schemas']['LightroomImportResp
 
 export type LightroomManifest = components['schemas']['LightroomManifest'];
 
+export type MediaCritiqueResponse = components['schemas']['MediaCritiqueResponse'];
+
 export type MergeSuggestionsResponse = components['schemas']['MergeSuggestionsResponse'];

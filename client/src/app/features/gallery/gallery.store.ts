@@ -9,6 +9,7 @@ import { AlbumService, Album } from '../../core/services/album.service';
 import { I18nService } from '../../core/services/i18n.service';
 import { Photo, KeeperHint, normalisePhotoFlagsAll } from '../../shared/models/photo.model';
 import { I18N } from '../../core/i18n/keys';
+import type { components } from '../../core/api/schema';
 import {
   type GalleryFilters, type GalleryMode, type TooltipMode, type PanelActivation, type DisplayOptions,
   type ViewFilterParams,
@@ -180,6 +181,8 @@ export interface ViewerConfig {
   sort_options_grouped: Record<string, SortOption[]> | null;
   /** Photos-column names of metrics hidden by the licensing policy (commercial mode). */
   unavailable_metrics?: string[];
+  /** Extended-IQA score columns at least one photo carries (their model has run). */
+  populated_scores?: string[];
   /** Default merge-suggestion threshold of the active face-recognition model. */
   face_merge_threshold?: number;
   features: {
@@ -242,6 +245,19 @@ export interface ViewerConfig {
   [key: string]: unknown;
 }
 
+/** One page of `/api/similar_photos`; `message` is a machine code from
+ *  `SimilarPhotosResponse` (`no_visual_features`, `no_histogram`, `no_faces`). */
+type SimilarPage = Pick<components['schemas']['SimilarPhotosResponse'], 'total' | 'has_more' | 'message'> & {
+  similar: Photo[];
+};
+
+/** Machine code from /similar_photos -> the translated reason shown instead of an empty grid. */
+const SIMILAR_REASON_KEYS = {
+  no_visual_features: I18N.similar.no_visual_features,
+  no_histogram: I18N.similar.no_histogram,
+  no_faces: I18N.similar.no_faces,
+} as const;
+
 @Injectable({ providedIn: 'root' })
 export class GalleryStore {
   private api = inject(ApiService);
@@ -264,6 +280,9 @@ export class GalleryStore {
   /** Set when the current photo request failed; the grid stays empty rather than
    *  silently reinstating the previous view's photos. Cleared on every new load. */
   readonly loadError = signal(false);
+  /** i18n key explaining a load error the server diagnosed (e.g. a source photo
+   *  with nothing to compare), shown instead of the generic failure message. */
+  readonly loadErrorKey = signal<string | undefined>(undefined);
   private _loadSeq = 0;
   readonly hasMore = signal(false);
   readonly config = signal<ViewerConfig | null>(null);
@@ -701,6 +720,7 @@ export class GalleryStore {
     const seq = ++this._loadSeq;
     this.photos.set([]);
     this.loadError.set(false);
+    this.loadErrorKey.set(undefined);
     this.loading.set(true);
     try {
       const f = this.filters();
@@ -711,6 +731,11 @@ export class GalleryStore {
         this.photos.set(normalisePhotoFlagsAll(res.similar ?? []));
         this.total.set(res.total);
         this.hasMore.set(res.has_more);
+        const reasonKey = res.message ? SIMILAR_REASON_KEYS[res.message] : undefined;
+        if (reasonKey) {
+          this.loadErrorKey.set(reasonKey);
+          this.loadError.set(true);
+        }
         return;
       }
 
@@ -1501,10 +1526,10 @@ export class GalleryStore {
   }
 
   /** Fetch a page of similar photos from the API */
-  private fetchSimilarPage(f: GalleryFilters, offset: number): Promise<{ similar: Photo[]; total: number; has_more: boolean }> {
+  private fetchSimilarPage(f: GalleryFilters, offset: number): Promise<SimilarPage> {
     const minSim = (parseInt(f.min_similarity || '70', 10) / 100).toString();
     return firstValueFrom(
-      this.api.get<{ similar: Photo[]; total: number; has_more: boolean }>(
+      this.api.get<SimilarPage>(
         `/similar_photos/${encodeURIComponent(f.similar_to)}`,
         { limit: f.per_page, offset, min_similarity: minSim, mode: f.similarity_mode || 'visual', full: 1 },
       ),
