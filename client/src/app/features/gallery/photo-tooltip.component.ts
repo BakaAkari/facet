@@ -3,6 +3,7 @@ import { TitleCasePipe } from '@angular/common';
 import { Router } from '@angular/router';
 import { MatIconModule } from '@angular/material/icon';
 import { catchError, of } from 'rxjs';
+import { ExtendedQualityComponent } from '../../shared/components/extended-quality/extended-quality.component';
 import { Photo, PhotoSet } from '../../shared/models/photo.model';
 import { ApiService } from '../../core/services/api.service';
 import { FixedPipe } from '../../shared/pipes/fixed.pipe';
@@ -14,6 +15,7 @@ import { PhotoSetKindIconPipe, PhotoSetKindLabelPipe } from '../../shared/pipes/
 import { EvOffsetPipe } from './burst-culling.pipes';
 import { MomentLabelPipe } from '../scenes/scenes.pipes';
 import { aspectOf } from './gallery-rows.util';
+import { GalleryStore } from './gallery.store';
 import { HistogramComponent, HISTOGRAM_TOOLTIP_HEIGHT } from '../../shared/components/histogram/histogram.component';
 import { HistogramMode } from '../../shared/utils/histogram';
 
@@ -42,6 +44,7 @@ export class CategoryLabelPipe implements PipeTransform {
 @Component({
   selector: 'app-photo-tooltip',
   imports: [
+    ExtendedQualityComponent,
     MatIconModule, FixedPipe, ShutterSpeedPipe, TranslatePipe, ThumbnailUrlPipe, PersonThumbnailUrlPipe,
     CategoryLabelPipe, IsLensNamePipe, PhotoSetKindIconPipe, PhotoSetKindLabelPipe, EvOffsetPipe,
     MomentLabelPipe, HistogramComponent,
@@ -165,6 +168,7 @@ export class CategoryLabelPipe implements PipeTransform {
                   @if (p.liqe_score !== null) {
                     <div class="flex justify-between"><span class="text-[var(--facet-tooltip-text-secondary)]">{{ 'tooltip.liqe_score' | translate }}</span><span class="text-[var(--mat-sys-primary)] font-medium">{{ p.liqe_score | fixed:1 }}</span></div>
                   }
+                  <app-extended-quality [photo]="p" [tooltip]="true" [populated]="store.config()?.populated_scores" />
                 </div>
               </div>
 
@@ -487,6 +491,7 @@ export class PhotoTooltipComponent {
   protected readonly showInteractiveControls = computed(() => this.docked() || this.pinned());
 
   private readonly api = inject(ApiService);
+  protected readonly store = inject(GalleryStore);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
   private destroyed = false;

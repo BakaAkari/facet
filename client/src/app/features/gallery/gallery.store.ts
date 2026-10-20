@@ -180,6 +180,8 @@ export interface ViewerConfig {
   sort_options_grouped: Record<string, SortOption[]> | null;
   /** Photos-column names of metrics hidden by the licensing policy (commercial mode). */
   unavailable_metrics?: string[];
+  /** Extended-IQA score columns at least one photo carries (their model has run). */
+  populated_scores?: string[];
   /** Default merge-suggestion threshold of the active face-recognition model. */
   face_merge_threshold?: number;
   features: {
