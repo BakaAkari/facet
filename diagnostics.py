@@ -617,7 +617,7 @@ def check_fast_paths(db_path):
             try:
                 row = conn.execute(
                     "SELECT COUNT(*), MAX(strftime('%s','now') - strftime('%s', updated_at)) "
-                    "FROM stats_cache"
+                    "FROM stats_cache WHERE value IS NOT NULL"
                 ).fetchone()
                 if row and row[0]:
                     n, max_age = row[0], row[1] or 0
