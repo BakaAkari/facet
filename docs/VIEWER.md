@@ -289,7 +289,7 @@ Unlike Cull to folder, which leaves the database row alone until a rescan, Delet
 
 Click the "Similar" button on any photo to choose a similarity mode:
 
-- **Visual** (default) — pHash hamming distance (70%) + CLIP/SigLIP cosine similarity (30%). Falls back to CLIP-only when no pHash is available.
+- **Visual** (default) — compares only the evidence both photos carry: pHash similarity (70%) + CLIP/SigLIP cosine similarity (30%) when both photos have both; when they share only one of the two (no pHash, or a missing, unreadable or different-dimension embedding), that one counts at full weight; a photo sharing neither is never listed, even at 0%. Every match above the threshold is returned, page by page, rather than the first 500, and the ranking is kept for two minutes (or until the database changes) so further pages load without a rescan of the library. If the photo itself has neither a pHash nor an embedding, the gallery says so and suggests rescanning it with `--force` (a plain `python facet.py <dir>` skips files already processed). The API answers `422` for a `limit` outside 1–500, a negative `offset` or a `min_similarity` outside 0–1.
 - **Color** — Histogram intersection (70%) + saturation distance (10%) + luminance distance (10%) + monochrome bonus (10%). Pre-filters by monochrome flag and saturation range.
 - **Person** — Finds photos containing the same person(s). Uses `person_id` when available (fast), otherwise falls back to face embedding cosine similarity.
 
@@ -504,7 +504,7 @@ Breaks down a photo's scores into strengths, weaknesses, and suggestions.
 
 ### Rule-Based Critique
 
-Available on all VRAM profiles. Analyzes stored metrics (aesthetic, composition, sharpness, face quality, etc.) and generates a structured explanation of the score.
+Available on all VRAM profiles. Recomputes the photo's score with the native scorer, from its stored metrics and the current configuration, and explains that calculation. The category shown is the one the current formula assigns (a category override and the scoring context are honoured), which can differ from the stored category until the next `--recompute-average`. Each breakdown row is the effective 0–10 input the scorer weights, not the raw measurement — noise and dynamic range read as quality, higher is better — with its weight and contribution. A **Net adjustments and rounding** row (bonus, blink multiplier, clipping, noise and oversaturation penalties, clamping) reconciles the rows with the **Current calculation** total, shown beside the **Stored score** with a note when the two differ. Sharpness, color and eye sharpness are normalized with the percentile snapshot the last `--recompute-average` saved; a library that has only been scanned has none, and the stored values are read as the scan scored them. When the inputs cannot be recomputed (a malformed snapshot, an older schema, a malformed stored value) only the stored score is shown, never an invented breakdown. Blink and a skin-tone cast are listed as **Detected conditions**; noise and clipping are no longer listed as separate penalties, since their native penalties are part of the net adjustment.
 
 The breakdown also surfaces the explainable **form and color-harmony** rows (symmetry, balance, edge-orientation entropy, fractal complexity, Matsuda color harmony — populated by `--recompute-form`), **distortion-attribute chips** for any likely defects (motion blur, color cast, oversharpening, … — from `--recompute-distortions`), and a **skin-tone note** for portraits whose skin chroma drifts off-natural (`--recompute-skin-tone`). All three are advisory — they explain the photo, they do not change the aggregate — and each row shows only when its underlying column is populated.
 
@@ -512,7 +512,7 @@ The breakdown also surfaces the explainable **form and color-harmony** rows (sym
 
 Uses the configured VLM (Qwen3.5-2B or Qwen3.5-4B) for a context-aware critique. Requires 16gb or 24gb VRAM profile and `viewer.features.show_vlm_critique: true`. Generating one also requires an edition session; without it only an already cached critique is served and `vlm_available` is `false`.
 
-The prompt is a configurable ladder (`critique.vlm`) that injects the full rule breakdown, penalties and EXIF, and the reply is rendered as **Observation / Assessment / Suggestions**. The result is cached per photo (`photos.vlm_critique`) and translated on demand, with a **Regenerate** button to recompute it. It runs against the stored thumbnail, so RAW files critique correctly instead of failing silently.
+The prompt is a configurable ladder (`critique.vlm`) that injects the current-calculation breakdown, the stored and recalculated scores, the detected conditions and EXIF, and the reply is rendered as **Observation / Assessment / Suggestions**. The result is cached per photo (`photos.vlm_critique`) and translated on demand, with a **Regenerate** button to recompute it. It runs against the stored thumbnail, so RAW files critique correctly instead of failing silently.
 
 API: see the [API Endpoints](#api-endpoints) section below.
 

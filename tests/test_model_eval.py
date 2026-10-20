@@ -375,13 +375,14 @@ def test_end_to_end_applies_persisted_percentile_snapshot(eval_db):
     """update_all_aggregates normalizes tech_sharpness in memory only; the recompute must too."""
     from config import ScoringConfig
     from config.percentile_normalizer import PercentileNormalizer
+    from db.stats_cache import PERCENTILES_SNAPSHOT_KEY
     from processing.scorer import Facet
     conn = sqlite3.connect(eval_db)
     conn.execute("UPDATE photos SET raw_sharpness_variance = 400.0, tech_sharpness = 1.0")
     snapshot = {'percentiles': {'raw_sharpness_variance': 200.0}, 'category_percentiles': {},
                 'target_percentile': 90, 'photo_count': 6, 'computed_at': 0}
     conn.execute("INSERT INTO stats_cache (key, value, updated_at) VALUES (?, ?, 0)",
-                 (PercentileNormalizer.PERSIST_KEY, json.dumps(snapshot)))
+                 (PERCENTILES_SNAPSHOT_KEY, json.dumps(snapshot)))
     conn.commit()
     conn.close()
     scorer = Facet.__new__(Facet)

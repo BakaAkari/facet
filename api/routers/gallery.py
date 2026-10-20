@@ -13,10 +13,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
 
 from api.auth import CurrentUser, get_optional_user
+from api import database as _database
+from api.change_token import db_change_token
 from api.config import VIEWER_CONFIG, _FULL_CONFIG, cull_allow_trash
 from api.database import get_async_db, get_db
 from api.models.gallery import (
     GalleryParams, Photo, PhotoCountResponse, PhotoPathsResponse, PhotosResponse,
+    SimilarPhotosResponse,
 )
 from api.models.discovery import PhotoSetResponse, PhotoTypeCountsResponse, ViewerConfigResponse
 from api.db_helpers import (
@@ -35,6 +38,7 @@ from api.types import (
     JUNK_ANY, JUNK_NOT_JUNK,
     SEQUENCE_OVERRIDE_FORCED, SEQUENCE_OVERRIDE_SUPPRESSED, SEQUENCE_OVERRIDE_VALUES,
 )
+from api.visual_similarity import find_visual_page
 from utils.histogram import unpack_histogram
 from utils.sequence import BRACKET as BRACKET_KIND
 
@@ -1250,182 +1254,19 @@ def _similar_result(row, similarity):
     }
 
 
-def _vec_knn_similar(conn, source_embedding, photo_path, min_similarity, vis_sql, vis_params):
-    """CLIP-only similar search via sqlite-vec vec0 KNN (sync, runs inside to_thread).
+def _find_similar_visual(conn, source, photo_path, min_similarity, vis_sql, vis_params, offset, limit,
+                         change_token):
+    """One page of the full visual ranking, as ``(page, total, message)``.
 
-    Replaces the brute-force full-table NumPy cosine scan in the no-pHash-candidate
-    branch of ``_find_similar_visual`` with an indexed vec0 KNN against ``photos_vec``.
-    ``distance_metric=cosine`` makes ``1 - distance`` the cosine similarity, matching
-    the NumPy dot product of L2-normalized embeddings — so top-K ordering is identical.
-
-    Returns the result list (``[:500]``) on success, or ``None`` to signal the caller
-    to fall back to the NumPy scan (sqlite-vec unavailable, ``photos_vec`` missing/empty,
-    or no source embedding). An empty match set returns ``[]`` (a valid result), not
-    ``None`` — that is a successful query that found nothing.
+    See ``api.visual_similarity`` for the shared-evidence scoring. The ranking
+    is cached briefly under the database's change token, so a "load more"
+    page slices it instead of rescanning the library.
     """
-    import numpy as np
-    from db.connection import HAS_SQLITE_VEC
-
-    if not HAS_SQLITE_VEC or source_embedding is None:
-        return None
-
-    # Availability guard (plan Topic 2 step 2): photos_vec may be absent or empty.
-    # Catch OperationalError (table missing / extension not loaded) → NumPy fallback.
-    try:
-        if conn.execute("SELECT 1 FROM photos_vec LIMIT 1").fetchone() is None:
-            return None
-    except sqlite3.OperationalError:
-        return None
-
-    # vec0 MATCH cannot carry a WHERE clause, so over-fetch (k large) then post-filter
-    # by visibility/self. k≥2000 keeps the top-500 most-similar even after filtering.
-    k = 2000
-    query_bytes = np.asarray(source_embedding, dtype=np.float32).tobytes()
-    try:
-        knn_rows = conn.execute(
-            "SELECT path, distance FROM photos_vec WHERE embedding MATCH ? AND k = ?",
-            [query_bytes, k],
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return None
-
-    if not knn_rows:
-        return []
-
-    dist_by_path = {}
-    ordered_paths = []
-    for r in knn_rows:
-        p = r['path']
-        if p == photo_path or p in dist_by_path:
-            continue
-        dist_by_path[p] = r['distance']
-        ordered_paths.append(p)
-
-    if not ordered_paths:
-        return []
-
-    # Fetch display columns + apply visibility in one pass, chunked to stay under
-    # SQLite's variable limit on older builds.
-    meta_by_path = {}
-    for start in range(0, len(ordered_paths), 500):
-        chunk = ordered_paths[start:start + 500]
-        placeholders = ','.join('?' * len(chunk))
-        meta_rows = conn.execute(
-            f"""SELECT path, filename, date_taken, aggregate, aesthetic
-                FROM photos WHERE path IN ({placeholders}) AND {vis_sql}""",
-            chunk + vis_params,
-        ).fetchall()
-        for mr in meta_rows:
-            meta_by_path[mr['path']] = dict(mr)
-
-    results = []
-    for p in ordered_paths:
-        row = meta_by_path.get(p)
-        if row is None:
-            continue
-        sim = max(0.0, 1.0 - dist_by_path[p])
-        if sim >= min_similarity:
-            results.append(_similar_result(row, sim))
-
-    results.sort(key=lambda x: x['similarity'], reverse=True)
-    return results[:500]
-
-
-def _find_similar_visual(conn, source, photo_path, min_similarity, vis_sql, vis_params):
-    """Find visually similar photos using pHash hamming distance (primary) + CLIP cosine (secondary)."""
-    import numpy as np
-    from utils.duplicate import _POPCOUNT_TABLE
-    from utils.embedding import bytes_to_normalized_embedding
-    PHASH_W = 0.7
-    CLIP_W = 0.3
-
-    source_phash = np.uint64(int(source['phash'], 16)) if source.get('phash') else None
-
-    source_embedding = bytes_to_normalized_embedding(source.get('clip_embedding'))
-
-    if source_phash is None and source_embedding is None:
-        return [], None
-
-    rows = conn.execute(f"""
-        SELECT path, filename, phash, date_taken, aggregate, aesthetic
-        FROM photos
-        WHERE path != ? AND phash IS NOT NULL AND {vis_sql}
-    """, [photo_path] + vis_params).fetchall()
-    rows = [dict(r) for r in rows]
-
-    if not rows:
-        # CLIP-only fallback (no pHash candidates). Prefer the indexed vec0 KNN
-        # path; _vec_knn_similar returns None when sqlite-vec is unavailable, in
-        # which case we keep the original brute-force NumPy scan below unchanged.
-        vec_results = _vec_knn_similar(conn, source_embedding, photo_path, min_similarity, vis_sql, vis_params)
-        if vec_results is not None:
-            return vec_results, None
-        clip_rows = conn.execute(f"""
-            SELECT path, filename, clip_embedding, date_taken, aggregate, aesthetic
-            FROM photos
-            WHERE path != ? AND clip_embedding IS NOT NULL AND {vis_sql}
-            LIMIT 5000
-        """, [photo_path] + vis_params).fetchall()
-        rows = [dict(r) for r in clip_rows]
-        if not rows or source_embedding is None:
-            return [], None
-        results = []
-        for r in rows:
-            e = bytes_to_normalized_embedding(r['clip_embedding'])
-            if e is None:
-                continue
-            sim = max(0.0, float(np.dot(source_embedding, e)))
-            if sim >= min_similarity:
-                results.append(_similar_result(r, sim))
-        results.sort(key=lambda x: x['similarity'], reverse=True)
-        return results[:500], None
-
-    hashes = np.array([int(r['phash'], 16) for r in rows], dtype=np.uint64)
-    xor = np.bitwise_xor(hashes, source_phash)
-    hamming = np.zeros(len(rows), dtype=np.int32)
-    for byte_idx in range(8):
-        shift = np.uint64(byte_idx * 8)
-        byte_vals = ((xor >> shift) & np.uint64(0xFF)).astype(np.int32)
-        hamming += _POPCOUNT_TABLE[byte_vals]
-    phash_sims = 1.0 - hamming / 64.0
-
-    if source_embedding is not None:
-        phash_floor = max(0.0, (min_similarity - CLIP_W) / PHASH_W)
-    else:
-        phash_floor = min_similarity
-    candidate_indices = np.where(phash_sims >= phash_floor)[0]
-
-    clip_by_path: dict = {}
-    if source_embedding is not None and len(candidate_indices) > 0:
-        cand_paths = [rows[i]['path'] for i in candidate_indices]
-        for start in range(0, len(cand_paths), 500):
-            chunk = cand_paths[start:start + 500]
-            placeholders = ','.join('?' * len(chunk))
-            clip_rows = conn.execute(
-                f"SELECT path, clip_embedding FROM photos "
-                f"WHERE path IN ({placeholders}) AND clip_embedding IS NOT NULL",
-                chunk,
-            ).fetchall()
-            for cr in clip_rows:
-                e = bytes_to_normalized_embedding(cr['clip_embedding'])
-                if e is not None:
-                    clip_by_path[cr['path']] = e
-
-    results = []
-    for i in candidate_indices:
-        row = rows[i]
-        phash_sim = float(phash_sims[i])
-        cand_clip = clip_by_path.get(row['path'])
-        if source_embedding is not None and cand_clip is not None:
-            clip_sim = max(0.0, float(np.dot(source_embedding, cand_clip)))
-            sim = phash_sim * PHASH_W + clip_sim * CLIP_W
-        else:
-            sim = phash_sim * PHASH_W
-        if sim >= min_similarity:
-            results.append(_similar_result(row, sim))
-
-    results.sort(key=lambda x: x['similarity'], reverse=True)
-    return results[:500], None
+    db_path = str(_database.DEFAULT_DB_PATH)
+    return find_visual_page(
+        conn, source, photo_path, min_similarity, vis_sql, vis_params, offset, limit,
+        _similar_result, cache_scope=(db_path, change_token),
+    )
 
 
 def _find_similar_color(conn, source, photo_path, min_similarity, vis_sql, vis_params):
@@ -1583,22 +1424,29 @@ _MODE_DEFAULT_MIN_SIM = {
 }
 
 
-@router.get("/api/similar_photos/{photo_path:path}")
+@router.get("/api/similar_photos/{photo_path:path}", response_model=SimilarPhotosResponse,
+            response_model_exclude_unset=True)
 async def api_similar_photos(
     photo_path: str,
     mode: str = Query("visual"),
-    limit: int = Query(20),
-    offset: int = Query(0),
-    min_similarity: Optional[float] = Query(None),
+    limit: int = Query(20, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0, allow_inf_nan=False),
     full: int = Query(0),
     user: Optional[CurrentUser] = Depends(get_optional_user),
 ):
     """Find similar photos using different similarity modes (async).
 
     Modes:
-      - visual: pHash hamming distance (70%) + CLIP cosine (30%)
+      - visual: scored on the features both photos carry -- pHash similarity
+        (70%) + CLIP/SigLIP cosine (30%) when both are shared, the one shared
+        feature at full weight otherwise; a photo sharing neither is never
+        listed. ``total`` counts the complete thresholded set.
       - color: histogram intersection + saturation/luminance distance
       - person: same person_id or face embedding cosine similarity
+
+    ``message`` is a machine code set when the source photo cannot be compared
+    at all: ``no_visual_features``, ``no_histogram`` or ``no_faces``.
 
     The heavy numpy + DB scan inside _find_similar_* runs in a worker thread via
     asyncio.to_thread, keeping the event loop free.  Source loading and result
@@ -1614,6 +1462,9 @@ async def api_similar_photos(
     user_id = user.user_id if user else None
     vis_sql, vis_params = get_visibility_clause(user_id)
 
+    # Read before the source SELECT: a commit landing between the two then
+    # invalidates the cached ranking instead of being hidden behind it.
+    change_token = db_change_token(str(_database.DEFAULT_DB_PATH))
     try:
         async with get_async_db() as conn:
             cur = await conn.execute(f"""
@@ -1632,17 +1483,15 @@ async def api_similar_photos(
             def _run_similarity():
                 with get_db() as sync_conn:
                     if mode == 'visual':
-                        return _find_similar_visual(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params)
+                        return _find_similar_visual(sync_conn, source, photo_path, effective_min_sim,
+                                                    vis_sql, vis_params, offset, limit, change_token)
                     if mode == 'color':
-                        return _find_similar_color(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params)
-                    if mode == 'person':
-                        return _find_similar_person(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params, user_id=user_id)
-                    return [], None
+                        results, message = _find_similar_color(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params)
+                    else:
+                        results, message = _find_similar_person(sync_conn, source, photo_path, effective_min_sim, vis_sql, vis_params, user_id=user_id)
+                    return results[offset:offset + limit], len(results), message
 
-            results, message = await asyncio.to_thread(_run_similarity)
-
-            total_count = len(results)
-            page_results = results[offset:offset + limit]
+            page_results, total_count, message = await asyncio.to_thread(_run_similarity)
 
             if full:
                 page_results = await _enrich_similar_with_full_rows_async(page_results, conn, user_id)
@@ -1732,7 +1581,8 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
 
     features = dict(VIEWER_CONFIG.get('features', {}))
     with get_db() as conn:
-        sort_options, sort_options_grouped = available_sort_options(populated_gated_cols(conn))
+        populated_scores = populated_gated_cols(conn)
+        sort_options, sort_options_grouped = available_sort_options(populated_scores)
         has_embeddings = conn.execute(
             "SELECT 1 FROM photos WHERE clip_embedding IS NOT NULL LIMIT 1"
         ).fetchone() is not None
@@ -1760,6 +1610,7 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
         'sort_options': sort_options,
         'sort_options_grouped': sort_options_grouped,
         'unavailable_metrics': unavailable_columns(),
+        'populated_scores': sorted(populated_scores),
         'quality_levels': QUALITY_LEVELS,
         'type_labels': TYPE_LABELS,
         'defaults': VIEWER_CONFIG['defaults'],

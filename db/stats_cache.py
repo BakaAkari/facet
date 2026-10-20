@@ -17,8 +17,14 @@ from db.schema import _build_create_table_sql, STATS_CACHE_COLUMNS
 
 PENDING_RENDER_KEY = 'pending_render_count'
 # The persisted gallery metric ranges. Defined here so the viewer endpoint, the
-# offline refresh and the neutral-IQA repair all name one key.
+# offline refresh and the neutral-IQA repair all name one key. Its evictors write
+# a tombstone (see invalidate_metric_ranges) instead of deleting the row.
 METRIC_RANGES_KEY = 'metric_ranges'
+# The percentile distribution the last --recompute-average / --recompute-category
+# normalized every stored aggregate with (PercentileNormalizer.save_to_stats_cache).
+# Library data rather than a derived count, so the stats_cache invalidations that
+# follow a photo delete keep it. Defined here because db cannot import config.
+PERCENTILES_SNAPSHOT_KEY = 'percentiles_snapshot'
 
 # The count only moves when a scan or a --refresh-thumbnails run writes, and the
 # banner it drives is advisory. An hour keeps the scan off every SPA startup
@@ -341,6 +347,52 @@ def best_effort_write(conn, write, what="cache rows"):
         conn.execute(f"PRAGMA busy_timeout = {int(previous)}")
 
 
+def invalidate_metric_ranges(conn):
+    """Mark the persisted metric ranges stale, inside the caller's transaction.
+
+    The row is overwritten with a tombstone -- ``value`` NULL and an
+    ``updated_at`` strictly later than the row it replaces -- rather than
+    deleted. The viewer computes the ranges outside any write lock and persists
+    them with a compare-and-set against the row it read first
+    (``cache_stat_if_unchanged``); a DELETE would turn "absent, then evicted"
+    back into "absent", so a compute begun before the eviction would repopulate
+    the pre-eviction ranges. Every reader treats a NULL value as a miss.
+    """
+    conn.execute(
+        "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, NULL, "
+        "MAX(?, COALESCE((SELECT updated_at FROM stats_cache WHERE key = ?), 0) + 0.001))",
+        (METRIC_RANGES_KEY, time_module.time(), METRIC_RANGES_KEY))
+
+
+def cache_stat_if_unchanged(conn, key, value, seen):
+    """Best-effort write of one ``stats_cache`` row, only if it is still ``seen``.
+
+    ``seen`` is the ``(value, updated_at)`` pair read before the value was
+    computed, or None when the row was absent. Any writer that touched the row
+    since -- an eviction tombstone, an offline refresh, another viewer process --
+    wins, and this write is dropped; commits to OTHER rows or tables do not
+    matter, unlike a read-to-write upgrade of the snapshot the value was computed
+    in. Returns True when the row was written, False when it had changed since
+    ``seen``, and None when the write was skipped because the database was busy.
+    """
+    landed = []
+
+    def write(c):
+        now = time_module.time()
+        if seen is None:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
+                (key, value, now))
+        else:
+            cur = c.execute(
+                "UPDATE stats_cache SET value = ?, updated_at = ? "
+                "WHERE key = ? AND value IS ? AND updated_at IS ?",
+                (value, now, key, seen[0], seen[1]))
+        landed.append(cur.rowcount == 1)
+
+    return landed[0] if best_effort_write(conn, write, key) else None
+
+
 def cache_stats_best_effort(conn, entries):
     """``best_effort_write`` of ``(key, value)`` rows into ``stats_cache``."""
     def write(c):
@@ -372,7 +424,7 @@ def get_cached_stat(db_path='photo_scores_pro.db', key=None, max_age_seconds=300
                     (key,)
                 ).fetchone()
 
-                if row is None:
+                if row is None or row['value'] is None:  # absent, or an eviction tombstone
                     return None, False
 
                 value = row['value']
@@ -389,7 +441,9 @@ def get_cached_stat(db_path='photo_scores_pro.db', key=None, max_age_seconds=300
                 return value, is_fresh
 
             else:
-                rows = conn.execute("SELECT key, value, updated_at FROM stats_cache").fetchall()
+                rows = conn.execute(
+                    "SELECT key, value, updated_at FROM stats_cache WHERE value IS NOT NULL"
+                ).fetchall()
 
                 result = {}
                 for row in rows:
@@ -422,7 +476,7 @@ def get_stats_cache_info(db_path='photo_scores_pro.db'):
 
         try:
             rows = conn.execute(
-                "SELECT key, updated_at FROM stats_cache ORDER BY key"
+                "SELECT key, updated_at FROM stats_cache WHERE value IS NOT NULL ORDER BY key"
             ).fetchall()
             info = {}
             for row in rows:

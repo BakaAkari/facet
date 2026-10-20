@@ -53,6 +53,7 @@ describe('GalleryComponent', () => {
       total: signal(0),
       loading: signal(false),
       loadError: signal(false),
+      loadErrorKey: signal<string | undefined>(undefined),
       hasMore: signal(false),
       cameras: signal([]),
       lenses: signal([]),
@@ -174,6 +175,26 @@ describe('GalleryComponent', () => {
       ],
     });
     component = TestBed.runInInjectionContext(() => new GalleryComponent());
+  });
+
+  it('renders the translated reason a similar search cannot run instead of a silent empty gallery', () => {
+    mockStore.loadError.set(true);
+    mockStore.loadErrorKey.set(I18N.similar.no_visual_features);
+    const fixture = TestBed.createComponent(GalleryComponent);
+    fixture.detectChanges();
+    const alerts = fixture.nativeElement.querySelectorAll('[role="alert"]');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toContain(I18N.similar.no_visual_features);
+    expect(alerts[0].textContent).not.toContain(I18N.gallery.load_error.message);
+    fixture.destroy();
+  });
+
+  it('falls back to the generic load-error message when the server gave no reason', () => {
+    mockStore.loadError.set(true);
+    const fixture = TestBed.createComponent(GalleryComponent);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('[role="alert"]')?.textContent).toContain(I18N.gallery.load_error.message);
+    fixture.destroy();
   });
 
   // Shared by every cursor describe below. The component is built without a

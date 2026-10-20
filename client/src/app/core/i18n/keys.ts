@@ -98,6 +98,7 @@ export const I18N = {
     end_of_results: "pagination.end_of_results",
   },
   tooltip: {
+    not_computed: "tooltip.not_computed",
     category: "tooltip.category",
     aggregate: "tooltip.aggregate",
     quality_section: "tooltip.quality_section",
@@ -547,6 +548,7 @@ export const I18N = {
     mode_person: "similar.mode_person",
     no_faces: "similar.no_faces",
     no_histogram: "similar.no_histogram",
+    no_visual_features: "similar.no_visual_features",
   },
   merge_suggestions: {
     title: "merge_suggestions.title",
@@ -1732,7 +1734,6 @@ export const I18N = {
     strengths: "critique.strengths",
     weaknesses: "critique.weaknesses",
     suggestions: "critique.suggestions",
-    penalties: "critique.penalties",
     distortions: "critique.distortions",
     vlm_title: "critique.vlm_title",
     vlm_loading: "critique.vlm_loading",
@@ -1767,6 +1768,9 @@ export const I18N = {
       form_edge_entropy: "critique.metrics.form_edge_entropy",
       form_fractal: "critique.metrics.form_fractal",
       color_harmony: "critique.metrics.color_harmony",
+      aesthetic_v25: "critique.metrics.aesthetic_v25",
+      qrealign_score: "critique.metrics.qrealign_score",
+      deqa_score: "critique.metrics.deqa_score",
     },
     suggestion: {
       aesthetic: "critique.suggestion.aesthetic",
@@ -1855,14 +1859,21 @@ export const I18N = {
         f_stop_max: "critique.reason.mismatch.f_stop_max",
         no_value: "critique.reason.mismatch.no_value",
       },
+      override: "critique.reason.override",
     },
     penalty: {
       blink: "critique.penalty.blink",
-      noise: "critique.penalty.noise",
-      highlight_clipping: "critique.penalty.highlight_clipping",
-      shadow_clipping: "critique.penalty.shadow_clipping",
       skin_tone: "critique.penalty.skin_tone",
     },
+    current_formula: "critique.current_formula",
+    stored_score: "critique.stored_score",
+    calculation_note: "critique.calculation_note",
+    adjustments: "critique.adjustments",
+    different_score: "critique.different_score",
+    calculation_unavailable: "critique.calculation_unavailable",
+    advisories: "critique.advisories",
+    cached_commentary: "critique.cached_commentary",
+    stored_unavailable: "critique.stored_unavailable",
   },
   culling: {
     compare: {
