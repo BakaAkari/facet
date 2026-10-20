@@ -836,7 +836,40 @@ class TestBuildVlmPrompt:
 
         assert prompt.startswith("Critique this portrait photo scored 6.4/10:")
         assert prompt.count("not verified historical publication provenance") == 1
-        assert prompt.rstrip().endswith("Net adjustments and rounding: -0.25.")
+        assert prompt.endswith(
+            "\nThese inputs describe a current-formula recalculation, not verified "
+            "historical publication provenance. Stored score: 5.00. Current formula: "
+            "6.40. Net adjustments and rounding: -0.25.\n")
+
+    def test_custom_template_without_penalties_states_an_unavailable_explanation(self):
+        from api.routers import critique
+
+        rule = critique._unavailable_critique(
+            {"aggregate": 6.3, "is_blink": 1, "category": "portrait"},
+            "normalization_snapshot_unavailable",
+        )
+        template = "Critique this {category} photo scored {aggregate}/10:\n{breakdown}\n{exif}"
+        with mock.patch.object(critique, "_FULL_CONFIG",
+                               {"critique": {"vlm": {"prompt_template": template}}}):
+            prompt = critique._build_vlm_prompt(rule, _make_photo())
+
+        assert "None" not in prompt
+        assert prompt.endswith(
+            "\nStored score: 6.30. No current-formula breakdown is available.\n")
+
+    @pytest.mark.parametrize("field", ["{penalties[0]}", "{penalties:.5}"])
+    def test_custom_template_that_cuts_penalties_short_still_states_the_scope_once(self, field):
+        """A template naming {penalties} but rendering only part of it must not
+        drop the scope statement, nor repeat it."""
+        from api.routers import critique
+
+        template = "Critique this {category} photo scored {aggregate}/10:\n" + field
+        with mock.patch.object(critique, "_FULL_CONFIG",
+                               {"critique": {"vlm": {"prompt_template": template}}}):
+            prompt = critique._build_vlm_prompt(self._current_rule(), _make_photo())
+
+        assert prompt.count("not verified historical publication provenance") == 1
+        assert prompt.endswith("Net adjustments and rounding: -0.25.\n")
 
     def test_unavailable_explanation_falls_back_to_the_stored_score(self):
         from api.routers.critique import _build_vlm_prompt, _unavailable_critique

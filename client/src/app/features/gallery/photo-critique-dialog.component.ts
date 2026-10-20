@@ -21,69 +21,19 @@ interface FaceMarker {
   is_blink: boolean;
 }
 
-interface CritiqueBreakdown {
-  metric: string;
-  metric_key: string;
-  value: number;
-  weight: number;
-  contribution: number;
-}
+type CategoryReason = MediaCritiqueResponse['category_reason'];
 
-interface CritiqueMetricRef {
-  metric_key: string;
-  value: number;
-}
-
-interface CategoryReasonDetail {
-  key: string;
-  value?: number;
-  threshold?: number;
-  tags?: string[];
-}
-
-interface CategoryMismatch {
-  key: string;
-  required?: unknown;
-  actual?: unknown;
-}
-
-interface RejectedCategory {
-  category: string;
-  mismatch: CategoryMismatch;
-}
-
-interface CategoryReason {
-  reason_key: string;
-  category: string;
-  details: CategoryReasonDetail[];
-  rejected?: RejectedCategory[];
-}
+type CategoryMismatch = NonNullable<CategoryReason['rejected']>[number]['mismatch'];
 
 interface SkinTonePenalty {
   cast: string;
   delta: number;
 }
 
-interface CritiqueResponse {
-  category: string;
-  category_reason: CategoryReason;
-  aggregate: number | null;
-  score_basis?: MediaCritiqueResponse['score_basis'];
-  current_formula_score?: number | null;
-  native_adjustment?: number | null;
-  stored_score_matches_current_formula?: boolean | null;
-  explanation_unavailable_reason?: MediaCritiqueResponse['explanation_unavailable_reason'];
-  breakdown: CritiqueBreakdown[];
-  strengths: CritiqueMetricRef[];
-  weaknesses: CritiqueMetricRef[];
-  suggestions: string[];
+/** The generated response, with the advisory map the schema leaves open narrowed to the two flags the server sends. */
+type CritiqueResponse = Omit<MediaCritiqueResponse, 'penalties'> & {
   penalties: { blink?: boolean; skin_tone?: SkinTonePenalty };
-  distortions?: string[];
-  vlm_critique?: string;
-  vlm_source?: string;
-  vlm_available?: boolean;
-  caption?: string;
-}
+};
 
 @Pipe({ name: 'contributionColor', standalone: true })
 export class ContributionColorPipe implements PipeTransform {
@@ -109,16 +59,16 @@ export class CategoryReasonPipe implements PipeTransform {
     if (reason.reason_key === 'default') {
       return this.i18n.t(I18N.critique.reason.default);
     }
-    if (reason.details.length === 0) {
+    if (!reason.details?.length) {
       return this.i18n.t(I18N.critique.reason.matched_generic);
     }
     const details = reason.details.map(d => {
       if (d.key === 'tags') {
-        return this.i18n.t(I18N.critique.reason.tags, { tags: d.tags!.join(', ') });
+        return this.i18n.t(I18N.critique.reason.tags, { tags: (d.tags ?? []).join(', ') });
       }
       return this.i18n.t(`critique.reason.${d.key}`, {
-        value: d.value ?? '',
-        threshold: d.threshold ?? '',
+        value: String(d.value ?? ''),
+        threshold: String(d.threshold ?? ''),
       });
     });
     return `${this.i18n.t(I18N.critique.reason.classified_as, { category: reason.category })}: ${details.join('; ')}`;
@@ -289,10 +239,10 @@ export class DistortionLabelPipe implements PipeTransform {
         </table>
 
         <!-- Strengths & Weaknesses side by side -->
-        @if (c.strengths.length || c.weaknesses.length) {
+        @if (c.strengths?.length || c.weaknesses?.length) {
           <div class="grid grid-cols-2 gap-4 mb-3">
             <div>
-              @if (c.strengths.length) {
+              @if (c.strengths?.length) {
                 <div class="text-xs uppercase tracking-wider text-green-400 mb-1">{{ I18N.critique.strengths | translate }}</div>
                 <ul class="text-sm space-y-0.5">
                   @for (s of c.strengths; track s.metric_key) {
@@ -305,7 +255,7 @@ export class DistortionLabelPipe implements PipeTransform {
               }
             </div>
             <div>
-              @if (c.weaknesses.length) {
+              @if (c.weaknesses?.length) {
                 <div class="text-xs uppercase tracking-wider text-red-400 mb-1">{{ I18N.critique.weaknesses | translate }}</div>
                 <ul class="text-sm space-y-0.5">
                   @for (w of c.weaknesses; track w.metric_key) {
@@ -336,7 +286,7 @@ export class DistortionLabelPipe implements PipeTransform {
         }
 
         <!-- Suggestions -->
-        @if (c.suggestions.length) {
+        @if (c.suggestions?.length) {
           <div class="mb-3">
             <div class="text-xs uppercase tracking-wider opacity-50 mb-1">{{ I18N.critique.suggestions | translate }}</div>
             <ul class="text-sm space-y-0.5">

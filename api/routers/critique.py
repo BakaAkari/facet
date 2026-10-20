@@ -9,7 +9,6 @@ import json
 import logging
 import math
 import sqlite3
-import string
 
 from typing import Optional
 
@@ -414,23 +413,28 @@ def _usable_snapshot(snapshot):
 def _snapshot_malformed(conn):
     """True when a percentile snapshot is persisted but cannot be scored with.
 
-    An ABSENT snapshot is not malformed. Only ``--recompute-average`` persists
-    one; a scan scores every photo from its stored metrics with no normalizer,
-    and ``PercentileNormalizer.from_snapshot`` answers None in that case so the
+    An ABSENT snapshot is not malformed. Only ``--recompute-average`` and
+    ``--recompute-category`` persist one (and a photo delete keeps it); a scan
+    scores every photo from its stored metrics with no normalizer, and
+    ``PercentileNormalizer.from_snapshot`` answers None in that case so the
     explanation reads the stored metrics exactly as the scan did.
-    ``load_persisted`` also answers None for a row that does not parse, so the
-    row is probed to tell that apart from an absent one.
+    ``load_persisted`` also answers None for a row that does not parse, or for
+    any read error, so the row is probed to tell those apart from an absent
+    one. Only a missing ``stats_cache`` table counts as absent; any other read
+    error (a locked database) reports the snapshot unavailable rather than
+    explaining a normalized library un-normalized.
     """
     from config.percentile_normalizer import PercentileNormalizer
+    from db.stats_cache import PERCENTILES_SNAPSHOT_KEY
 
     snapshot = PercentileNormalizer.load_persisted(conn)
     if snapshot is not None:
         return not _usable_snapshot(snapshot)
     try:
         row = conn.execute("SELECT 1 FROM stats_cache WHERE key = ?",
-                           (PercentileNormalizer.PERSIST_KEY,)).fetchone()
-    except sqlite3.OperationalError:
-        return False
+                           (PERCENTILES_SNAPSHOT_KEY,)).fetchone()
+    except sqlite3.OperationalError as ex:
+        return 'no such table' not in str(ex)
     return row is not None
 
 
@@ -631,8 +635,9 @@ def _build_vlm_prompt(rule_critique, photo):
         exif=exif,
     )
 
-    # A custom template that omits {penalties} must still carry the scope statement.
-    if 'penalties' not in {field for _, field, _, _ in string.Formatter().parse(template)}:
+    # A custom template that omits {penalties}, or renders only part of it
+    # ({penalties[0]}, {penalties:.20}), must still carry the scope statement.
+    if scope not in prompt:
         prompt += "\n" + scope
     return prompt
 

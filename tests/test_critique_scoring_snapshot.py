@@ -133,27 +133,43 @@ def test_snapshot_and_photo_are_not_mixed_across_external_commit(snapshot):
 
 
 def test_absent_snapshot_explains_the_stored_metrics_the_scan_scored(snapshot):
-    """Only --recompute-average persists a snapshot, so a scan-only library has
-    none under the default percentile method; the scan scored the stored
-    metrics with no normalizer, and the explanation must do the same."""
-    from processing.scorer import Facet
+    """A scan-only library has no snapshot under the default percentile method.
+    The scan scored the photo through build_scoring_metrics and
+    calculate_aggregate_logic with no normalizer; the explanation of the row it
+    stored must reproduce that stored aggregate."""
+    from processing.scorer import Facet, build_scoring_metrics
 
     path, config, queries, client = snapshot
     assert config.get_normalization_settings()["method"] == "percentile"
+    metrics = build_scoring_metrics(
+        aesthetic=6.0, face_count=0, face_quality=None, eye_sharpness=None,
+        face_sharpness=None, face_ratio=0.0, is_group_portrait=0, is_blink=0,
+        isolation_bonus=None, sharpness_data={"normalized": 3.7},
+        color_data={"normalized": 5.5}, histogram_data={"exposure_score": 6.0},
+        mono_data={}, noise_data={}, contrast_data={}, comp_score=5.0,
+        power_point_score=5.0, leading_lines_score=0, is_silhouette=0, tags="",
+        iso=None, f_stop=None,
+    )
+    scanner = Facet.__new__(Facet)
+    scanner.config = config
+    aggregate, category = scanner.calculate_aggregate_logic(metrics)
+    stored = round(aggregate, 2)  # what the scan writes to photos.aggregate
     with sqlite3.connect(path) as conn:
         conn.execute("DELETE FROM stats_cache")
-        conn.row_factory = sqlite3.Row
-        row = dict(conn.execute("SELECT * FROM photos").fetchone())
-    native = Facet.__new__(Facet)
-    native.config = config
-    expected, _ = native.calculate_aggregate_logic(
-        Facet.prepare_scoring_row(row, config, None)
-    )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(photos)")}
+        scanned = {key: value for key, value in metrics.items()
+                   if key in columns and value is not None}
+        scanned.update(aggregate=stored, category=category)
+        conn.execute(
+            f"UPDATE photos SET {', '.join(f'{key} = ?' for key in scanned)}",
+            list(scanned.values()),
+        )
     result = get(client)
     assert "explanation_unavailable_reason" not in result
     assert result["normalization_basis"] == "stored_metrics"
-    assert result["current_formula_score"] == round(expected, 2) == 1.0
-    assert [term["value"] for term in result["breakdown"]] == [1.0]
+    assert result["aggregate"] == stored == 3.7
+    assert result["current_formula_score"] == stored
+    assert result["stored_score_matches_current_formula"] is True
 
 
 def test_absent_stats_cache_table_explains_the_stored_metrics(snapshot):
@@ -163,6 +179,21 @@ def test_absent_stats_cache_table_explains_the_stored_metrics(snapshot):
     result = get(client)
     assert result["normalization_basis"] == "stored_metrics"
     assert result["current_formula_score"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "message, malformed",
+    [("no such table: stats_cache", False), ("database is locked", True)],
+)
+def test_snapshot_probe_treats_only_a_missing_table_as_absent(message, malformed):
+    """A locked read must not pass for an absent snapshot: that would explain a
+    library the recompute normalized with un-normalized stored metrics."""
+
+    class FailingConnection:
+        def execute(self, sql, params=()):
+            raise sqlite3.OperationalError(message)
+
+    assert critique._snapshot_malformed(FailingConnection()) is malformed
 
 
 @pytest.mark.parametrize(
