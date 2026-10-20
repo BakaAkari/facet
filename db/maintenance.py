@@ -14,7 +14,7 @@ from io import BytesIO
 
 from int_affinity import storable_int
 from db.connection import apply_pragmas
-from db.stats_cache import METRIC_RANGES_KEY
+from db.stats_cache import PERCENTILES_SNAPSHOT_KEY, invalidate_metric_ranges
 
 logger = logging.getLogger("facet.db_maintenance")
 
@@ -244,7 +244,9 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
     stores that have no cascade of their own: ``album_photos`` membership,
     ``album_client_picks``, and the ``albums.cover_photo_path``
     back-reference. Refreshes ``persons.face_count`` afterward so the viewer
-    stays accurate, and invalidates ``stats_cache``.
+    stays accurate, and invalidates ``stats_cache`` -- all but the persisted
+    percentile snapshot, the distribution the last recompute normalized every
+    stored aggregate with, which deleting photos does not change.
 
     ``preserve_auto_retrain_counters`` (default off, ``cleanup_missing_photos``'s
     behaviour unchanged) scopes that invalidation to spare
@@ -299,9 +301,13 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
     # Invalidate stats cache since photo counts and details have changed.
     try:
         if preserve_auto_retrain_counters:
-            cursor.execute("DELETE FROM stats_cache WHERE key NOT LIKE 'auto_retrain_pending:%'")
+            cursor.execute("DELETE FROM stats_cache WHERE key != ? AND "
+                           "key NOT LIKE 'auto_retrain_pending:%'", (PERCENTILES_SNAPSHOT_KEY,))
         else:
-            cursor.execute("DELETE FROM stats_cache")
+            cursor.execute("DELETE FROM stats_cache WHERE key != ?", (PERCENTILES_SNAPSHOT_KEY,))
+        # Tombstone rather than absence, so a viewer computing the ranges right
+        # now cannot write its pre-deletion result back (invalidate_metric_ranges).
+        invalidate_metric_ranges(cursor)
     except sqlite3.OperationalError:
         pass
 
@@ -841,6 +847,7 @@ def _incremental_update_viewer_db(source_db, output_path, thumbnail_size, verbos
     # --- Clear stats_cache (viewer regenerates on demand) ---
     if 'stats_cache' in dest_tables:
         dest_conn.execute("DELETE FROM main.stats_cache")
+        invalidate_metric_ranges(dest_conn)
         dest_conn.commit()
 
     # --- Finalize ---
@@ -1222,8 +1229,8 @@ def repair_neutral_iqa(db_path='photo_scores_pro.db', verbose=True):
     too; ``--recompute-iqa`` refills it with the same number. A NULL metric is scored
     as a neutral 5.0 at full weight in the aggregate, so no aggregate moves.
 
-    When anything changed, the cached gallery metric ranges are dropped in the same
-    transaction, since they are computed from these columns.
+    When anything changed, the cached gallery metric ranges are invalidated in the
+    same transaction, since they are computed from these columns.
 
     Returns ``{column: rows cleared}``.
     """
@@ -1235,7 +1242,7 @@ def repair_neutral_iqa(db_path='photo_scores_pro.db', verbose=True):
             cleared[col] = conn.execute(
                 f"UPDATE photos SET {col} = NULL WHERE {col} = 5.0").rowcount
         if sum(cleared.values()):
-            conn.execute("DELETE FROM stats_cache WHERE key = ?", (METRIC_RANGES_KEY,))
+            invalidate_metric_ranges(conn)
         conn.commit()
 
     if verbose:

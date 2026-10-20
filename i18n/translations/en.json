@@ -84,6 +84,7 @@
     "end_of_results": "End of results"
   },
   "tooltip": {
+    "not_computed": "Not computed",
     "category": "Category",
     "aggregate": "Aggregate",
     "quality_section": "Quality",
@@ -532,7 +533,8 @@
     "mode_color": "Color palette",
     "mode_person": "Same person",
     "no_faces": "No faces detected on this photo",
-    "no_histogram": "No color data available for this photo"
+    "no_histogram": "No color data available for this photo",
+    "no_visual_features": "Visual similarity is unavailable: this photo has no valid visual fingerprint or embedding. Rescan it with --force to compute them."
   },
   "merge_suggestions": {
     "title": "Merge Suggestions",
@@ -1718,7 +1720,6 @@
     "strengths": "Strengths",
     "weaknesses": "Weaknesses",
     "suggestions": "Suggestions",
-    "penalties": "Penalties",
     "distortions": "Detected Distortions",
     "vlm_title": "AI Critique",
     "vlm_loading": "Generating AI critique...",
@@ -1735,7 +1736,7 @@
       "color_score": "Color",
       "contrast_score": "Contrast",
       "isolation_bonus": "Subject Isolation",
-      "noise_sigma": "Noise Level",
+      "noise_sigma": "Noise quality",
       "dynamic_range_stops": "Dynamic Range",
       "leading_lines_score": "Leading Lines",
       "power_point_score": "Power Points",
@@ -1752,7 +1753,10 @@
       "form_balance": "Visual Balance",
       "form_edge_entropy": "Edge Entropy",
       "form_fractal": "Fractal Complexity",
-      "color_harmony": "Color Harmony"
+      "color_harmony": "Color Harmony",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "Consider stronger visual impact through better lighting or subject matter",
@@ -1840,15 +1844,22 @@
         "f_stop_min": "f-stop {actual} < {required}",
         "f_stop_max": "f-stop {actual} > {required}",
         "no_value": "data not available"
-      }
+      },
+      "override": "Category override: {category}"
     },
     "penalty": {
       "blink": "Blink detected",
-      "noise": "Noise: {value}",
-      "highlight_clipping": "Highlight clip: {value}",
-      "shadow_clipping": "Shadow clip: {value}",
       "skin_tone": "Skin tone cast: {cast} (ΔE {delta})"
-    }
+    },
+    "current_formula": "Current calculation",
+    "stored_score": "Stored score",
+    "calculation_note": "Current settings and saved normalization determine these quality inputs. Higher is better; missing values use native scoring defaults.",
+    "adjustments": "Net adjustments and rounding",
+    "different_score": "The stored score differs from this calculation.",
+    "calculation_unavailable": "A complete scoring context is unavailable. The stored score is still shown.",
+    "advisories": "Detected conditions",
+    "cached_commentary": "Cached commentary has no verified scoring context.",
+    "stored_unavailable": "No valid stored score"
   },
   "culling": {
     "compare": {

@@ -3778,9 +3778,15 @@ export interface paths {
          * @description Find similar photos using different similarity modes (async).
          *
          *     Modes:
-         *       - visual: pHash hamming distance (70%) + CLIP cosine (30%)
+         *       - visual: scored on the features both photos carry -- pHash similarity
+         *         (70%) + CLIP/SigLIP cosine (30%) when both are shared, the one shared
+         *         feature at full weight otherwise; a photo sharing neither is never
+         *         listed. ``total`` counts the complete thresholded set.
          *       - color: histogram intersection + saturation/luminance distance
          *       - person: same person_id or face embedding cosine similarity
+         *
+         *     ``message`` is a machine code set when the source photo cannot be compared
+         *     at all: ``no_visual_features``, ``no_histogram`` or ``no_faces``.
          *
          *     The heavy numpy + DB scan inside _find_similar_* runs in a worker thread via
          *     asyncio.to_thread, keeping the event loop free.  Source loading and result
@@ -5718,11 +5724,21 @@ export interface components {
             /** Category */
             category: string;
             category_reason: components["schemas"]["MediaCritiqueCategoryReason"];
+            /** Current Formula Score */
+            current_formula_score?: number | null;
             /**
              * Distortions
              * @default []
              */
             distortions?: string[];
+            /** Explanation Unavailable Reason */
+            explanation_unavailable_reason?: ("missing_scoring_inputs" | "normalization_snapshot_unavailable" | "invalid_scoring_inputs") | null;
+            /** Generation State */
+            generation_state?: "unknown" | null;
+            /** Native Adjustment */
+            native_adjustment?: number | null;
+            /** Normalization Basis */
+            normalization_basis?: ("persisted_percentiles" | "stored_metrics") | null;
             /**
              * Penalties
              * @default {}
@@ -5730,6 +5746,12 @@ export interface components {
             penalties?: {
                 [key: string]: unknown;
             };
+            /** Score Basis */
+            score_basis?: "current_formula" | null;
+            /** Stored Score Matches Current Formula */
+            stored_score_matches_current_formula?: boolean | null;
+            /** Stored Score State */
+            stored_score_state?: ("present" | "missing" | "invalid") | null;
             /**
              * Strengths
              * @default []
@@ -7008,6 +7030,36 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * SimilarPhotosResponse
+         * @description One page of ``GET /api/similar_photos/{path}``.
+         *
+         *     ``similar`` holds basic match rows, or full ``Photo`` rows plus
+         *     ``similarity`` under ``full=1``. ``total`` and ``has_more`` describe the
+         *     whole thresholded match set in visual mode; color and person modes rank
+         *     at most the top 500 matches, so they describe that capped ranking. ``message`` is a
+         *     machine code (translated by the client), present only when the source
+         *     photo cannot be compared at all.
+         */
+        SimilarPhotosResponse: {
+            /** Has More */
+            has_more: boolean;
+            /** Message */
+            message?: ("no_visual_features" | "no_histogram" | "no_faces") | null;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "visual" | "color" | "person";
+            /** Similar */
+            similar: {
+                [key: string]: unknown;
+            }[];
+            /** Source */
+            source: string;
+            /** Total */
+            total: number;
+        };
         /** SimilarSelectionBody */
         SimilarSelectionBody: {
             /** Keep Paths */
@@ -7551,6 +7603,11 @@ export interface components {
             pagination: {
                 [key: string]: unknown;
             };
+            /**
+             * Populated Scores
+             * @default []
+             */
+            populated_scores?: string[];
             /** Quality Levels */
             quality_levels: [
                 string,
@@ -12799,7 +12856,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SimilarPhotosResponse"];
                 };
             };
             /** @description Validation Error */

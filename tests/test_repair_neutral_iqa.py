@@ -146,8 +146,9 @@ class TestMetricRangesCache:
         conn.close()
 
     def _keys(self, path):
+        """Keys holding a value; an invalidated metric_ranges row is a NULL tombstone."""
         conn = sqlite3.connect(path)
-        keys = {r[0] for r in conn.execute("SELECT key FROM stats_cache")}
+        keys = {r[0] for r in conn.execute("SELECT key FROM stats_cache WHERE value IS NOT NULL")}
         conn.close()
         return keys
 
@@ -157,6 +158,10 @@ class TestMetricRangesCache:
         self._seed_cache(db_path)
         repair_neutral_iqa(db_path, verbose=False)
         assert self._keys(db_path) == {'other_key'}
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT value FROM stats_cache WHERE key='metric_ranges'").fetchone()
+        conn.close()
+        assert row == (None,)
 
     def test_keeps_the_cache_when_nothing_changed(self, db_path):
         _insert(db_path, '/r/a.jpg', liqe_score=6.0)

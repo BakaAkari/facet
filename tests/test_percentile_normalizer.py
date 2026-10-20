@@ -22,6 +22,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from db.stats_cache import PERCENTILES_SNAPSHOT_KEY
+
 _GROUP_READABLE_MODE = 0o664
 _OWNER_ONLY_MODE = 0o600
 
@@ -342,7 +344,7 @@ class TestPercentilePersistence:
         snapshot = PercentileNormalizer.load_persisted(conn)
         count = conn.execute(
             "SELECT COUNT(*) FROM stats_cache WHERE key = ?",
-            (PercentileNormalizer.PERSIST_KEY,)
+            (PERCENTILES_SNAPSHOT_KEY,)
         ).fetchone()[0]
         conn.close()
         assert count == 1
@@ -365,7 +367,7 @@ class TestPercentilePersistence:
         conn = self._add_stats_cache(percentile_db)
         conn.execute(
             "INSERT INTO stats_cache (key, value, updated_at) VALUES (?, ?, 0)",
-            (PercentileNormalizer.PERSIST_KEY, '{not json'),
+            (PERCENTILES_SNAPSHOT_KEY, '{not json'),
         )
         assert PercentileNormalizer.load_persisted(conn) is None
         conn.close()

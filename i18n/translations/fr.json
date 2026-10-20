@@ -84,6 +84,7 @@
     "end_of_results": "Fin des résultats"
   },
   "tooltip": {
+    "not_computed": "Non calculé",
     "category": "Catégorie",
     "aggregate": "Agrégat",
     "quality_section": "Qualité",
@@ -532,7 +533,8 @@
     "mode_color": "Palette de couleurs",
     "mode_person": "Même personne",
     "no_faces": "Aucun visage détecté sur cette photo",
-    "no_histogram": "Aucune donnée de couleur disponible pour cette photo"
+    "no_histogram": "Aucune donnée de couleur disponible pour cette photo",
+    "no_visual_features": "La similarité visuelle n'est pas disponible : cette photo n'a ni empreinte visuelle ni embedding valide. Scannez-la de nouveau avec --force pour les calculer."
   },
   "merge_suggestions": {
     "title": "Suggestions de fusion",
@@ -1718,7 +1720,6 @@
     "strengths": "Points forts",
     "weaknesses": "Points faibles",
     "suggestions": "Suggestions",
-    "penalties": "Pénalités",
     "distortions": "Distorsions détectées",
     "vlm_title": "Critique IA",
     "vlm_loading": "Génération de la critique IA...",
@@ -1735,7 +1736,7 @@
       "color_score": "Couleur",
       "contrast_score": "Contraste",
       "isolation_bonus": "Isolation du sujet",
-      "noise_sigma": "Niveau de bruit",
+      "noise_sigma": "Qualité du bruit",
       "dynamic_range_stops": "Plage dynamique",
       "leading_lines_score": "Lignes directrices",
       "power_point_score": "Points de force",
@@ -1752,7 +1753,10 @@
       "form_balance": "Équilibre visuel",
       "form_edge_entropy": "Entropie des contours",
       "form_fractal": "Complexité fractale",
-      "color_harmony": "Harmonie des couleurs"
+      "color_harmony": "Harmonie des couleurs",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "Cherchez un impact visuel plus fort avec un meilleur éclairage ou sujet",
@@ -1840,15 +1844,22 @@
         "f_stop_min": "ouverture {actual} < {required}",
         "f_stop_max": "ouverture {actual} > {required}",
         "no_value": "donnée non disponible"
-      }
+      },
+      "override": "Catégorie imposée : {category}"
     },
     "penalty": {
       "blink": "Clignement détecté",
-      "noise": "Bruit : {value}",
-      "highlight_clipping": "Écrêtage hautes lumières : {value}",
-      "shadow_clipping": "Écrêtage ombres : {value}",
       "skin_tone": "Teinte de peau : dominante {cast} (ΔE {delta})"
-    }
+    },
+    "current_formula": "Calcul actuel",
+    "stored_score": "Note enregistrée",
+    "calculation_note": "Les réglages actuels et la normalisation enregistrée déterminent ces valeurs de qualité. Une valeur élevée est meilleure ; les valeurs manquantes utilisent les valeurs par défaut du calcul.",
+    "adjustments": "Ajustements nets et arrondi",
+    "different_score": "La note enregistrée diffère de ce calcul.",
+    "calculation_unavailable": "Le contexte complet du calcul est indisponible. La note enregistrée reste affichée.",
+    "advisories": "Conditions détectées",
+    "cached_commentary": "Le commentaire enregistré n’a pas de contexte de notation vérifié.",
+    "stored_unavailable": "Aucune note enregistrée valide"
   },
   "culling": {
     "compare": {

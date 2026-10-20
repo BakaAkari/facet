@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import sqlite3
+import threading
 import time
 from typing import Optional
 from fastapi import APIRouter, Depends
@@ -25,7 +26,7 @@ from api.models.media import (
     MediaLocationNameResponse,
 )
 from db import person_not_hidden_clause
-from db.stats_cache import METRIC_RANGES_KEY, cache_stats_best_effort
+from db.stats_cache import METRIC_RANGES_KEY, cache_stat_if_unchanged, cache_stats_best_effort
 
 router = APIRouter(prefix="/api/filter_options", tags=["filter_options"])
 logger = logging.getLogger(__name__)
@@ -542,9 +543,10 @@ def location_name(
 
 # Sparkline resolution for the metric histograms in the filter sidebar.
 _METRIC_RANGE_BINS = 20
-# Freshness of the persisted result (its key is db.stats_cache.METRIC_RANGES_KEY). Matches the in-process stats TTL
-# and the scenes cache (api/routers/scenes.py), so the DB row only exists to
-# carry the work across a restart.
+# Freshness of the persisted result (its key is db.stats_cache.METRIC_RANGES_KEY),
+# the same as the scenes cache (api/routers/scenes.py). The row is the only cache:
+# nothing is kept in process memory, so a writer that invalidates it is seen on
+# the next request.
 _METRIC_RANGES_TTL_SECONDS = 3600
 
 
@@ -629,34 +631,99 @@ def compute_metric_ranges(conn):
     return result
 
 
-def _compute_metric_ranges():
-    """Serve the metric ranges from ``stats_cache``, recomputing when stale.
+class _MetricRangesFlight:
+    """One in-flight metric-ranges read, shared by the requests that arrive during it."""
 
-    The persisted row backs the in-process cache so a restart does not re-walk
-    every metric index; ``database.py --refresh-stats`` writes the same row
-    offline.
+    __slots__ = ('done', 'ranges', 'failed', 'lost')
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.ranges = None
+        self.failed = False
+        self.lost = False
+
+
+_metric_ranges_flight_lock = threading.Lock()
+_metric_ranges_flight = None
+
+
+def _load_or_compute_metric_ranges():
+    """Serve the persisted ranges, or compute and persist them: ``(ranges, lost)``.
+
+    The cache row, the bounds and the buckets are read in ONE snapshot, so a
+    result never mixes values from before and after a concurrent score update.
+    That read transaction is ended before the write, which is a compare-and-set
+    against the row as read (``cache_stat_if_unchanged``): a writer that
+    invalidated the ranges meanwhile wins, while a commit to anything else -- a
+    rating save, a scan batch -- does not stop the result from landing. ``lost``
+    is True when the write did not land -- the row had changed, or the write was
+    skipped as busy -- i.e. the result may predate an invalidation.
     """
     with get_db() as conn:
-        cached = conn.execute(
-            "SELECT value, updated_at FROM stats_cache WHERE key = ?",
-            (METRIC_RANGES_KEY,),
-        ).fetchone()
-        if cached and (time.time() - cached[1]) < _METRIC_RANGES_TTL_SECONDS:
-            try:
-                return json.loads(cached[0])
-            except (json.JSONDecodeError, TypeError):
-                pass
-        ranges = compute_metric_ranges(conn)
+        conn.execute("BEGIN")
+        try:
+            row = conn.execute(
+                "SELECT value, updated_at FROM stats_cache WHERE key = ?",
+                (METRIC_RANGES_KEY,),
+            ).fetchone()
+            # A NULL value is an eviction tombstone (invalidate_metric_ranges): a miss.
+            if (row is not None and row[0] is not None
+                    and (time.time() - row[1]) < _METRIC_RANGES_TTL_SECONDS):
+                try:
+                    return json.loads(row[0]), False
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            ranges = compute_metric_ranges(conn)
+        finally:
+            conn.rollback()
         # An unscanned library has nothing worth persisting, and pinning the
         # empty result would keep the sidebar blank for a whole TTL after the
         # first scan lands.
-        if ranges:
-            cache_stats_best_effort(conn, [(METRIC_RANGES_KEY, json.dumps(ranges))])
-        return ranges
+        if not ranges:
+            return ranges, False
+        seen = None if row is None else (row[0], row[1])
+        landed = cache_stat_if_unchanged(conn, METRIC_RANGES_KEY, json.dumps(ranges), seen)
+        return ranges, landed is not True
+
+
+def _compute_metric_ranges():
+    """Metric ranges from ``stats_cache``, computed at most once at a time per process.
+
+    Requests arriving while another one computes wait for it and take its
+    result instead of walking every metric index again -- unless that result
+    lost its write (compare-and-set failed or was skipped as busy), or the
+    leader failed: it may then predate an invalidation, so they go round again,
+    leading or joining a newer flight, and surface their own exception rather
+    than a shared one. After two rounds they compute un-coalesced. Nothing
+    outlives the in-flight computation.
+    """
+    global _metric_ranges_flight
+    for _ in range(2):
+        with _metric_ranges_flight_lock:
+            flight = _metric_ranges_flight
+            lead = flight is None
+            if lead:
+                flight = _metric_ranges_flight = _MetricRangesFlight()
+        if lead:
+            flight.failed = True
+            try:
+                flight.ranges, flight.lost = _load_or_compute_metric_ranges()
+                flight.failed = False
+            finally:
+                with _metric_ranges_flight_lock:
+                    _metric_ranges_flight = None
+                flight.done.set()
+            return flight.ranges
+        flight.done.wait()
+        if not flight.failed and not flight.lost:
+            return flight.ranges
+    return _load_or_compute_metric_ranges()[0]
 
 
 @router.get("/metric_ranges")
 def metric_ranges(user: CurrentUser = Depends(require_authenticated)):
     """Per-metric observed range and distribution for slider clamping + histograms."""
-    from api.config import _get_stats_cached
-    return {'ranges': _get_stats_cached(METRIC_RANGES_KEY, _compute_metric_ranges)}
+    from api.config import _sanitize_stats
+    # No process-local TTL here: score publishers invalidate the persisted row,
+    # and a cached copy in memory would hide that until its own expiry.
+    return {'ranges': _sanitize_stats(_compute_metric_ranges())}
