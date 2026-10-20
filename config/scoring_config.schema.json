@@ -46,9 +46,29 @@
         }
       }
     },
+    "auto_retrain": {
+      "type": "object",
+      "description": "Personal learning dispatch policy; external retains genuine comparisons and pending counts without local learned inference.",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "native",
+            "external"
+          ],
+          "default": "native"
+        }
+      },
+      "additionalProperties": true
+    },
     "viewer": {
       "type": "object",
       "properties": {
+        "trusted_local_editing": {
+          "type": "boolean",
+          "default": false,
+          "description": "Grant edition rights to a direct loopback same-origin browser on a single-user viewer with no browse password and no edition password; every edition route except the scan trigger. Forwarded requests are refused; never enable behind a reverse proxy on the same host."
+        },
         "cull": {
           "type": "object",
           "properties": {

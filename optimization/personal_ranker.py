@@ -28,6 +28,7 @@ import numpy as np
 from config.scoring_config import resolve_scoring_config_path
 from db import DEFAULT_DB_PATH, get_connection
 from models.piaa_prior import DEFAULT_MODELS_DIR, PiaaPrior
+from optimization.learning_policy import deferred_if_external
 from optimization.weight_optimizer import WeightOptimizer
 from utils.embedding import bytes_to_normalized_embedding
 
@@ -379,6 +380,9 @@ def train_ranker(db_path=DEFAULT_DB_PATH, category=None, user_id=None,
     nothing.
     """
     config_path = resolve_scoring_config_path(config_path)
+    deferred = deferred_if_external(config_path)
+    if deferred is not None:
+        return deferred
     piaa = _load_piaa_config(config_path)
     prior_enabled = bool(piaa.get('enabled', False))
     prior_models_dir = piaa.get('models_dir', DEFAULT_MODELS_DIR) if prior_enabled else None

@@ -1719,7 +1719,8 @@ Visualizzazione e comportamento della galleria web.
 | Impostazione | Predefinito | Descrizione |
 |---------|---------|-------------|
 | `default_category` | `""` | Filtro categoria predefinito |
-| `edition_password` | `""` | Password per sbloccare la modalità di modifica (vuoto = ogni modifica è rifiutata; l'installazione è in sola lettura) |
+| `edition_password` | `""` | Password per sbloccare la modalità di modifica (vuoto = ogni modifica è rifiutata; l'installazione è in sola lettura, tranne per un browser locale diretto con `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Concede i diritti di modifica, senza password di modifica, a un browser sullo stesso computer che raggiunge il viewer direttamente in loopback. Si applica solo quando `password` E `edition_password` sono entrambe vuote su un'installazione a utente singolo; copre ogni route soggetta a modifica tranne l'avvio della scansione. **Non abilitarla mai dietro un reverse proxy sullo stesso host.** Vedi [Modifica locale attendibile](#modifica-locale-attendibile) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Numero minimo di confronti decisivi (una foto ha vinto; i pareggi non contano) della categoria prima di suggerire dei pesi |
 | `pair_selection_strategy` | `"learning"` | Strategia di coppia: `learning` (avvio a freddo per diversità di embedding + disaccordo di rango una volta addestrato), `uncertainty`, `boundary`, `active`, `random` |
@@ -1977,6 +1978,31 @@ Protezione opzionale con password per il viewer:
 ```
 
 Quando impostata, gli utenti devono autenticarsi prima di accedere al viewer.
+
+### Modifica locale attendibile
+
+Un viewer a utente singolo usato solo da un browser sullo stesso computer può modificare senza password di modifica, previa attivazione esplicita:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+L'opzione si applica solo quando **sia** `viewer.password` **sia** `viewer.edition_password` sono vuote, la modalità multiutente è disattivata e la configurazione è stata caricata senza errori. Impostare una password di modifica la disattiva: chi ne ha impostata una si aspetta che venga richiesta, quindi l'opzione non la aggira mai. Non imposta né rivela alcuna password, non modifica i token e non abilita l'amministrazione multiutente.
+
+L'accesso viene deciso a ogni richiesta, mai in base a un claim del token. Una richiesta è attendibile solo se valgono tutte queste condizioni; in caso contrario è trattata come se l'opzione fosse disattivata, richieste GET comprese:
+
+- il peer TCP è un indirizzo di loopback (un peer IPv4 mappato come `::ffff:127.0.0.1` è valutato in base al suo indirizzo IPv4);
+- c'è esattamente un header `Host`, e vale `localhost`, `127.0.0.1` o `[::1]`, con una porta facoltativa;
+- la richiesta non porta alcun header `Forwarded`, `Via`, `X-Real-IP`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Original-Forwarded-For` o `X-Forwarded-*`;
+- un `Origin` o un `Referer`, se presente, indica esattamente schema, host e porta della richiesta, senza credenziali (un `Origin` con percorso, query o frammento è rifiutato), e un `Sec-Fetch-Site`, se presente, vale `same-origin` o `none`.
+
+Una richiesta attendibile ha pieni diritti di modifica: ogni route che altrimenti richiede una sessione di modifica, non solo le valutazioni. Ciò comprende valutazioni, preferiti e scarti, la modalità di confronto, la selezione (incluso **Scarta in cartella**, che sposta o cestina file, e l'eliminazione di una foto), gli album, la gestione di persone e volti, le modifiche a pesi, priorità e contesti di valutazione, l'incorporamento dei metadati e le esportazioni, i job a argomenti fissi di ricalcolo e di rilevamento panorami, e la generazione su richiesta di didascalie e critiche. L'avvio della scansione è l'unica eccezione: richiede sempre `viewer.edition_password`, che non può mai essere impostata mentre questa opzione si applica, quindi resta rifiutato.
+
+> **Attenzione:** il peer di loopback è l'unico vero confine. `Host`, `Origin`, `Referer` e `Sec-Fetch-Site` sono impostati dal client e possono solo rifiutare una richiesta, e un reverse proxy, un tunnel o un port forward sullo stesso host che non aggiunge nessuno degli header sopra è indistinguibile dal tuo browser. Non abilitare mai questa opzione dietro un reverse proxy sullo stesso host. Finché è attiva, qualsiasi processo locale e qualsiasi account del computer può modificare.
 
 ### Prestazioni del viewer
 
@@ -2319,7 +2345,8 @@ La finestra di inattività è cruciale: il riaddestramento riscrive una riga per
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2328,6 +2355,7 @@ La finestra di inattività è cruciale: il riaddestramento riscrive una riga per
 |---------|---------|-------------|
 | `threshold` | `25` | Nuovi confronti che un utente deve accumulare prima che un riaddestramento venga armato. Aumentalo se valuti lotti molto grandi e vuoi ammortizzare il costo dell'addestramento (CPU, da secondi a minuti) su più segnale |
 | `idle_seconds` | `60` | Secondi senza attività di valutazione/scarto necessari prima che il riaddestramento armato parta davvero. Ogni nuova azione posticipa il timer. `0` avvia immediatamente (comportamento precedente alla 1.7.3) |
+| `backend` | `"native"` | `"native"` addestra in locale il ranker personale, la testa di selezione e i pesi appresi. `"external"` conserva soltanto le preferenze e i contatori dei confronti in sospeso e non addestra né valuta mai in locale una testa appresa; vedi [Backend di apprendimento esterno](#backend-di-apprendimento-esterno) |
 
 Entrambi sono sovrascrivibili a runtime tramite variabili d'ambiente, che hanno la precedenza sui valori JSON — utile con Docker, dove la configurazione è spesso integrata nell'immagine:
 
@@ -2340,9 +2368,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-Un valore non interpretabile ricade sull'impostazione JSON, e un blocco assente o malformato ricade sui valori predefiniti integrati, così un errore di battitura degrada al comportamento di fabbrica invece di disattivare il riaddestramento automatico. Entrambi i valori vengono letti una sola volta all'avvio — modificarli richiede un riavvio.
+Un `threshold` o `idle_seconds` non interpretabile ricade sull'impostazione JSON, e un blocco assente o malformato ricade sui valori predefiniti integrati, così un errore di battitura degrada al comportamento di fabbrica invece di disattivare il riaddestramento automatico. `backend` fa eccezione: un valore illeggibile o non valido ricade per prudenza su `"external"` (vedi sotto). `threshold` e `idle_seconds` vengono letti una sola volta all'avvio — modificarli richiede un riavvio.
 
 Il riaddestramento mantiene il suo controllo di convalida incrociata su dati riservati: un'esecuzione che non batte il riferimento attuale non scrive nulla.
+
+### Backend di apprendimento esterno
+
+Il valore predefinito di `auto_retrain.backend` è `"native"`, che conserva il comportamento locale del ranker personale e della testa di selezione. Imposta `"backend": "external"` per conservare le preferenze e i contatori dei confronti in sospeso senza avviare l'apprendimento personale locale né valutare teste apprese sulla CPU.
+
+Si tratta di una politica di smistamento, non di un servizio di job esterno. Non avvia alcun worker GPU esterno e non sostiene che un modello personale sia stato addestrato. Un flusso di addestramento separato, controllato dall'operatore, deve autenticare le osservazioni, qualificare il proprio modello e pubblicare i punteggi risultanti. Le valutazioni e i confronti esistenti restano disponibili per quel flusso.
+
+In modalità esterna, le notifiche incrementano i contatori durevoli esistenti senza consumarli né pianificare un thread di addestramento. I worker in coda ricontrollano la politica e restituiscono il conteggio in sospeso che avevano consumato quando vengono rinviati. I punti di ingresso manuali del ranker personale, della testa di selezione e dell'apprendimento dei pesi restituiscono un risultato rinviato esplicito. Le probabilità di selezione non sono disponibili; le risposte di Confronta (pesi appresi e confidenza) riportano `available: false` con un messaggio esplicativo.
+
+Una politica di backend malformata o illeggibile (blocco `auto_retrain` che non è un oggetto, `backend` diverso da `"native"` o `"external"`, configurazione illeggibile) ricade per prudenza sulla modalità esterna e registra un avviso. Una configurazione valida senza chiave `backend` usa la modalità nativa. Il visualizzatore legge il percorso di configurazione del server già risolto; le chiamate CLI rispettano la propria configurazione esplicita. Questa opzione non disattiva il normale punteggio deterministico delle foto e non cancella i voti.
 
 ## Profili di scarto per genere
 

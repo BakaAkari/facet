@@ -40,6 +40,8 @@ import os
 import threading
 import time
 
+from optimization import learning_policy
+
 logger = logging.getLogger("facet.auto_retrain")
 
 # New comparisons (culling-derived + rating-derived) a user must accumulate
@@ -227,6 +229,10 @@ def _run_retrain(db_path, scope, pending=0):
     library_lock = None
     counter_returned = False
     try:
+        if learning_policy.learning_backend() != 'native':
+            _give_back_counter(db_path, scope, pending)
+            counter_returned = True
+            return
         library_lock = _hold_library_lock(db_path, scope)
         if library_lock is None:
             _give_back_counter(db_path, scope, pending)
@@ -234,6 +240,10 @@ def _run_retrain(db_path, scope, pending=0):
             return
         from optimization.personal_ranker import train_ranker
         result = train_ranker(db_path=db_path, user_id=scope)
+        if result.get('deferred'):
+            _give_back_counter(db_path, scope, pending)
+            counter_returned = True
+            return
         if result.get("error"):
             logger.info("Auto-retrain (scope=%s) skipped: %s", scope, result["error"])
         elif result.get("gated"):
@@ -249,6 +259,8 @@ def _run_retrain(db_path, scope, pending=0):
         # Culling confirms accumulate source='culling' pairs; refresh the keeper
         # head on the same trigger (best-effort — its own gate is intact).
         try:
+            if learning_policy.learning_backend() != 'native':
+                return
             from optimization.keeper_head import train_keeper_head
             kr = train_keeper_head(db_path=db_path, user_id=scope)
             if kr.get("error"):
@@ -298,6 +310,10 @@ def _dispatch(db_path, scope, threshold, firing_timer=None):
     Returns True when the worker thread started.
     """
     global _retrain_running
+    if learning_policy.learning_backend() != 'native':
+        with _retrain_lock:
+            _deregister_timer(scope, firing_timer)
+        return False
     import sqlite3
     conn = None
     claimed = False
@@ -439,6 +455,13 @@ def maybe_retrain(db_path, user_id, added: int = 1, threshold: int | None = None
                 conn.close()
     except sqlite3.Error:
         logger.warning("Auto-retrain counter update failed (scope=%s)", scope, exc_info=True)
+        return False
+
+    if learning_policy.learning_backend() != 'native':
+        with _retrain_lock:
+            existing = _pending_timers.pop(scope, None)
+        if existing is not None:
+            existing[0].cancel()
         return False
 
     with _retrain_lock:

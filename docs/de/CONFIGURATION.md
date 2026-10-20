@@ -1725,7 +1725,8 @@ Anzeige und Verhalten der Web-Galerie.
 | Einstellung | Standard | Beschreibung |
 |---------|---------|-------------|
 | `default_category` | `""` | Standard-Kategoriefilter |
-| `edition_password` | `""` | Passwort zum Freischalten des Editionsmodus (leer = jede Bearbeitung wird abgelehnt; die Installation ist schreibgeschützt) |
+| `edition_password` | `""` | Passwort zum Freischalten des Editionsmodus (leer = jede Bearbeitung wird abgelehnt; die Installation ist schreibgeschützt, außer für einen direkten lokalen Browser mit `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Gewährt einem Browser auf demselben Rechner, der den Viewer direkt über Loopback erreicht, Editionsrechte ohne Editionspasswort. Gilt nur, solange `password` UND `edition_password` auf einer Einzelbenutzer-Installation leer sind; umfasst jede editionspflichtige Route außer dem Scan-Auslöser. **Niemals hinter einem Reverse-Proxy auf demselben Rechner aktivieren.** Siehe [Vertrauenswürdige lokale Bearbeitung](#vertrauenswürdige-lokale-bearbeitung) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Mindestanzahl entscheidender Vergleiche (ein Foto hat gewonnen; Gleichstände zählen nicht) in der Kategorie, bevor Gewichte vorgeschlagen werden |
 | `pair_selection_strategy` | `"learning"` | Paarstrategie: `learning` (Embedding-Diversität für den Kaltstart + Rang-Uneinigkeit nach dem Training), `uncertainty`, `boundary`, `active`, `random` |
@@ -1982,6 +1983,31 @@ Optionaler Passwortschutz für den Viewer:
 ```
 
 Wenn gesetzt, müssen sich Benutzer authentifizieren, bevor sie auf den Viewer zugreifen können.
+
+### Vertrauenswürdige lokale Bearbeitung
+
+Ein Einzelbenutzer-Viewer, der nur von einem Browser auf demselben Rechner genutzt wird, kann nach ausdrücklicher Aktivierung ohne Editionspasswort bearbeiten:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+Die Option gilt nur, solange **sowohl** `viewer.password` als auch `viewer.edition_password` leer sind, der Mehrbenutzermodus aus ist und die Konfiguration fehlerfrei geladen wurde. Ein gesetztes Editionspasswort schaltet sie ab: Wer eines gesetzt hat, erwartet, dass es abgefragt wird, daher umgeht die Option es nie. Sie setzt oder verrät kein Passwort, ändert keine Tokens und aktiviert keine Mehrbenutzer-Verwaltung.
+
+Der Zugriff wird pro Anfrage entschieden, nie anhand eines Token-Claims. Eine Anfrage gilt nur als vertrauenswürdig, wenn alle folgenden Bedingungen erfüllt sind; andernfalls wird sie behandelt, als wäre die Option aus, GET-Anfragen eingeschlossen:
+
+- der TCP-Peer ist eine Loopback-Adresse (ein IPv4-gemappter Peer wie `::ffff:127.0.0.1` zählt nach seiner IPv4-Adresse);
+- es gibt genau einen `Host`-Header, und er lautet `localhost`, `127.0.0.1` oder `[::1]`, mit optionalem Port;
+- die Anfrage trägt keinen `Forwarded`-, `Via`-, `X-Real-IP`-, `X-Client-IP`-, `True-Client-IP`-, `CF-Connecting-IP`-, `X-Original-Forwarded-For`- oder `X-Forwarded-*`-Header;
+- ein vorhandener `Origin` oder `Referer` nennt genau Schema, Host und Port der Anfrage, ohne Zugangsdaten (ein `Origin` mit Pfad, Query oder Fragment wird abgelehnt), und ein vorhandener `Sec-Fetch-Site` lautet `same-origin` oder `none`.
+
+Eine vertrauenswürdige Anfrage hat volle Editionsrechte: jede Route, die sonst eine Editionssitzung verlangt, nicht nur Bewertungen. Das umfasst Bewertungen, Favoriten und Ablehnungen, den Vergleichsmodus, das Aussortieren (einschließlich **In Ordner aussortieren**, das Dateien verschiebt oder in den Papierkorb legt, und das Löschen einzelner Fotos), Alben, Personen- und Gesichtsverwaltung, Änderungen an Gewichten, Prioritäten und Bewertungskontexten, das Einbetten von Metadaten und Exporte, die Neuberechnungs- und Panoramaerkennungs-Jobs mit festen Argumenten sowie die Erzeugung von Bildbeschreibungen und Kritiken auf Anfrage. Einzige Ausnahme ist der Scan-Auslöser: Er verlangt weiterhin `viewer.edition_password`, das nie gesetzt sein kann, während diese Option gilt, und bleibt daher abgelehnt.
+
+> **Warnung:** Der Loopback-Peer ist die einzige echte Grenze. `Host`, `Origin`, `Referer` und `Sec-Fetch-Site` setzt der Client, sie können eine Anfrage nur ablehnen, und ein Reverse-Proxy, Tunnel oder Port-Forward auf demselben Rechner, der keinen der obigen Header hinzufügt, ist von Ihrem Browser nicht zu unterscheiden. Aktivieren Sie diese Option nie hinter einem Reverse-Proxy auf demselben Rechner. Solange sie aktiv ist, kann jeder lokale Prozess und jedes Konto auf dem Rechner bearbeiten.
 
 ### Viewer-Performance
 
@@ -2324,7 +2350,8 @@ Das Leerlauffenster ist entscheidend: Das Nachtrainieren schreibt eine Zeile pro
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2333,6 +2360,7 @@ Das Leerlauffenster ist entscheidend: Das Nachtrainieren schreibt eine Zeile pro
 |---------|---------|-------------|
 | `threshold` | `25` | Anzahl neuer Vergleiche, die ein Benutzer sammeln muss, bevor ein Nachtrainieren bewaffnet wird. Erhöhen Sie den Wert, wenn Sie sehr große Stapel bewerten und die (CPU-, Sekunden- bis Minuten-)Trainingskosten über mehr Signal amortisieren möchten |
 | `idle_seconds` | `60` | Sekunden ohne Bewertungs-/Aussortier-Aktivität, die erforderlich sind, bevor das bewaffnete Nachtrainieren tatsächlich startet. Jede neue Aktion verschiebt den Timer. `0` startet sofort (Verhalten vor 1.7.3) |
+| `backend` | `"native"` | `"native"` trainiert den persönlichen Ranker, den Keeper-Head und die gelernten Gewichte lokal. `"external"` behält nur Präferenzen und ausstehende Vergleichszähler und trainiert oder bewertet lokal nie einen gelernten Head; siehe [Externes Lern-Backend](#externes-lern-backend) |
 
 Beide sind zur Laufzeit über Umgebungsvariablen überschreibbar, die Vorrang vor den JSON-Werten haben — nützlich unter Docker, wo die Konfiguration oft ins Image eingebacken ist:
 
@@ -2345,9 +2373,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-Ein nicht lesbarer Wert fällt auf die JSON-Einstellung zurück, ein fehlender oder fehlerhafter Block auf die eingebauten Standardwerte — ein Tippfehler degradiert also auf das ausgelieferte Verhalten, statt das automatische Nachtrainieren abzuschalten. Beide Werte werden einmalig beim Start gelesen — eine Änderung erfordert einen Neustart.
+Ein nicht lesbarer `threshold` oder `idle_seconds` fällt auf die JSON-Einstellung zurück, ein fehlender oder fehlerhafter Block auf die eingebauten Standardwerte — ein Tippfehler degradiert also auf das ausgelieferte Verhalten, statt das automatische Nachtrainieren abzuschalten. `backend` ist die Ausnahme: ein nicht lesbarer oder ungültiger Wert fällt sicherheitshalber auf `"external"` (siehe unten). `threshold` und `idle_seconds` werden einmalig beim Start gelesen — eine Änderung erfordert einen Neustart.
 
 Das Nachtrainieren behält sein Holdout-Kreuzvalidierungs-Gate: Ein Lauf, der die aktuelle Referenz nicht schlägt, schreibt nichts.
+
+### Externes Lern-Backend
+
+Der Standardwert von `auto_retrain.backend` ist `"native"` und bewahrt das lokale Verhalten von persönlichem Ranker und Keeper-Head. Setzen Sie `"backend": "external"`, um Präferenzen und ausstehende Vergleichszähler zu behalten, ohne lokales persönliches Lernen zu starten oder gelernte Heads auf der CPU auszuwerten.
+
+Dies ist eine Dispatch-Richtlinie, kein externer Job-Dienst. Sie startet keinen externen GPU-Worker und behauptet nicht, dass ein persönliches Modell trainiert wurde. Ein separater, vom Betreiber kontrollierter Trainings-Workflow muss Beobachtungen authentifizieren, sein Modell qualifizieren und die resultierenden Scores veröffentlichen. Vorhandene Bewertungen und Vergleiche bleiben für diesen Workflow verfügbar.
+
+Im externen Modus erhöhen Benachrichtigungen die bestehenden dauerhaften Zähler, ohne sie zu verbrauchen oder einen Trainings-Thread einzuplanen. Eingereihte Worker prüfen die Richtlinie erneut und geben ihren verbrauchten ausstehenden Zähler zurück, wenn sie zurückgestellt werden. Manuelle Einstiegspunkte für persönlichen Ranker, Keeper-Head und Gewichtslernen liefern ein explizites Zurückgestellt-Ergebnis. Keeper-Wahrscheinlichkeiten sind nicht verfügbar; die Antworten von Vergleichen (gelernte Gewichte und Konfidenz) melden `available: false` mit einer erklärenden Meldung.
+
+Eine fehlerhafte oder nicht lesbare Backend-Richtlinie (ein `auto_retrain`-Block, der kein Objekt ist, ein anderes `backend` als `"native"` oder `"external"`, eine nicht lesbare Konfiguration) fällt sicherheitshalber auf den externen Modus und protokolliert eine Warnung. Eine gültige Konfiguration ohne `backend`-Schlüssel verwendet den nativen Modus. Der Viewer liest seinen bereits aufgelösten Server-Konfigurationspfad; CLI-Aufrufe beachten ihre explizite Konfiguration. Diese Option deaktiviert nicht die normale deterministische Foto-Bewertung und löscht keine Stimmen.
 
 ## Genre-spezifische Aussortier-Profile
 

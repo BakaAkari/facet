@@ -1721,7 +1721,8 @@ Visualización y comportamiento de la galería web.
 | Ajuste | Por defecto | Descripción |
 |---------|---------|-------------|
 | `default_category` | `""` | Filtro de categoría por defecto |
-| `edition_password` | `""` | Contraseña para desbloquear el modo edición (vacío = toda edición se rechaza; la instalación es de solo lectura) |
+| `edition_password` | `""` | Contraseña para desbloquear el modo edición (vacío = toda edición se rechaza; la instalación es de solo lectura, salvo para un navegador local directo con `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Concede derechos de edición, sin contraseña de edición, a un navegador del mismo equipo que llega al visor directamente por loopback. Solo se aplica mientras `password` Y `edition_password` estén vacías en una instalación de un solo usuario; cubre todas las rutas sujetas a edición salvo el inicio del escaneo. **Nunca la actives detrás de un proxy inverso en el mismo equipo.** Consulta [Edición local de confianza](#edición-local-de-confianza) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Número mínimo de comparaciones decisivas (ganó una foto; los empates no cuentan) de la categoría antes de sugerir pesos |
 | `pair_selection_strategy` | `"learning"` | Estrategia de pares: `learning` (arranque en frío por diversidad de embeddings + desacuerdo de rango una vez entrenado), `uncertainty`, `boundary`, `active`, `random` |
@@ -1979,6 +1980,31 @@ Protección por contraseña opcional para el visor:
 ```
 
 Cuando se establece, los usuarios deben autenticarse antes de acceder al visor.
+
+### Edición local de confianza
+
+Un visor de un solo usuario usado únicamente desde un navegador del mismo equipo puede editar sin contraseña de edición, activándolo explícitamente:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+La opción solo se aplica mientras **tanto** `viewer.password` **como** `viewer.edition_password` estén vacías, el modo multiusuario esté desactivado y la configuración se haya cargado sin errores. Definir una contraseña de edición la desactiva: quien la definió espera que se pida, así que la opción nunca la elude. No define ni revela ninguna contraseña, no cambia los tokens ni habilita la administración multiusuario.
+
+El acceso se decide en cada petición, nunca a partir de un claim del token. Una petición es de confianza solo si se cumplen todas estas condiciones; si no, se trata como si la opción estuviera desactivada, peticiones GET incluidas:
+
+- el par TCP es una dirección de loopback (un par IPv4 mapeado como `::ffff:127.0.0.1` se evalúa por su dirección IPv4);
+- hay exactamente una cabecera `Host`, y es `localhost`, `127.0.0.1` o `[::1]`, con un puerto opcional;
+- la petición no lleva ninguna cabecera `Forwarded`, `Via`, `X-Real-IP`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Original-Forwarded-For` ni `X-Forwarded-*`;
+- un `Origin` o un `Referer`, si está presente, indica exactamente el esquema, el host y el puerto de la petición, sin credenciales (un `Origin` con ruta, consulta o fragmento se rechaza), y un `Sec-Fetch-Site`, si está presente, es `same-origin` o `none`.
+
+Una petición de confianza tiene todos los derechos de edición: cada ruta que, si no, exige una sesión de edición, no solo las valoraciones. Eso abarca valoraciones, favoritos y rechazos, el modo de comparación, la selección (incluido **Descartar a carpeta**, que mueve o envía archivos a la papelera, y el borrado de una foto), los álbumes, la gestión de personas y rostros, los cambios de pesos, prioridades y contextos de puntuación, la incrustación de metadatos y las exportaciones, los trabajos de argumentos fijos de recálculo y de detección de panorámicas, y la generación bajo demanda de subtítulos y críticas. El inicio del escaneo es la única excepción: sigue exigiendo `viewer.edition_password`, que nunca puede estar definida mientras se aplica esta opción, así que sigue rechazado.
+
+> **Advertencia:** el par de loopback es la única frontera real. `Host`, `Origin`, `Referer` y `Sec-Fetch-Site` los fija el cliente y solo pueden rechazar una petición, y un proxy inverso, un túnel o una redirección de puertos en el mismo equipo que no añada ninguna de las cabeceras anteriores es indistinguible de tu navegador. Nunca actives esta opción detrás de un proxy inverso en el mismo equipo. Mientras esté activa, cualquier proceso local y cualquier cuenta del equipo puede editar.
 
 ### Rendimiento del visor
 
@@ -2321,7 +2347,8 @@ La ventana de inactividad es clave: el reentrenamiento reescribe una fila por fo
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2330,6 +2357,7 @@ La ventana de inactividad es clave: el reentrenamiento reescribe una fila por fo
 |---------|---------|-------------|
 | `threshold` | `25` | Nuevas comparaciones que un usuario debe acumular antes de armar un reentrenamiento. Aumenta el valor si valoras lotes muy grandes y quieres amortizar el coste del entrenamiento (CPU, de segundos a minutos) sobre más señal |
 | `idle_seconds` | `60` | Segundos sin actividad de valoración/descarte necesarios antes de que el reentrenamiento armado arranque realmente. Cada nueva acción retrasa el temporizador. `0` lo lanza de inmediato (comportamiento anterior a 1.7.3) |
+| `backend` | `"native"` | `"native"` entrena en local el clasificador personal, la cabeza de selección y los pesos aprendidos. `"external"` solo conserva las preferencias y los contadores de comparaciones pendientes, y nunca entrena ni evalúa en local una cabeza aprendida; véase [Backend de aprendizaje externo](#backend-de-aprendizaje-externo) |
 
 Ambos se pueden sobrescribir en tiempo de ejecución mediante variables de entorno, que tienen prioridad sobre los valores JSON — útil en Docker, donde la configuración suele venir incrustada en la imagen:
 
@@ -2342,9 +2370,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-Un valor no interpretable recae en el ajuste JSON, y un bloque ausente o mal formado recae en los valores por defecto integrados, de modo que una errata degrada al comportamiento de fábrica en lugar de desactivar el reentrenamiento automático. Ambos valores se leen una sola vez al arrancar — cambiarlos requiere un reinicio.
+Un `threshold` o `idle_seconds` no interpretable recae en el ajuste JSON, y un bloque ausente o mal formado recae en los valores por defecto integrados, de modo que una errata degrada al comportamiento de fábrica en lugar de desactivar el reentrenamiento automático. `backend` es la excepción: un valor ilegible o no válido recae por precaución en `"external"` (véase más abajo). `threshold` e `idle_seconds` se leen una sola vez al arrancar — cambiarlos requiere un reinicio.
 
 El reentrenamiento conserva su verificación por validación cruzada sobre datos reservados: una ejecución que no supera la referencia actual no escribe nada.
+
+### Backend de aprendizaje externo
+
+El valor por defecto de `auto_retrain.backend` es `"native"`, que conserva el comportamiento local del clasificador personal y de la cabeza de selección. Establece `"backend": "external"` para conservar las preferencias y los contadores de comparaciones pendientes sin iniciar aprendizaje personal local ni evaluar cabezas aprendidas en la CPU.
+
+Es una política de despacho, no un servicio de trabajos externo. No lanza ningún worker de GPU externo ni afirma que se haya entrenado un modelo personal. Un flujo de entrenamiento aparte, controlado por el operador, debe autenticar las observaciones, calificar su modelo y publicar las puntuaciones resultantes. Las valoraciones y comparaciones existentes siguen disponibles para ese flujo.
+
+En modo externo, las notificaciones incrementan los contadores duraderos existentes sin consumirlos ni programar un hilo de entrenamiento. Los workers en cola vuelven a comprobar la política y devuelven su recuento pendiente consumido cuando se aplazan. Los puntos de entrada manuales del clasificador personal, la cabeza de selección y el aprendizaje de pesos devuelven un resultado aplazado explícito. Las probabilidades de selección no están disponibles; las respuestas de Comparar (pesos aprendidos y confianza) indican `available: false` con un mensaje explicativo.
+
+Una política de backend mal formada o ilegible (bloque `auto_retrain` que no es un objeto, `backend` distinto de `"native"` o `"external"`, configuración ilegible) recae por precaución en el modo externo y registra una advertencia. Una configuración válida sin clave `backend` usa el modo nativo. El visor lee la ruta de configuración del servidor ya resuelta; las llamadas CLI respetan su configuración explícita. Esta opción no desactiva la puntuación determinista ordinaria de las fotos ni borra votos.
 
 ## Perfiles de descarte por género
 

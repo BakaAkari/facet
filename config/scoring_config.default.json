@@ -3182,7 +3182,8 @@
   },
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   },
   "capsules": {
     "min_aggregate": 6.0,
@@ -3434,6 +3435,7 @@
     "password": "",
     "default_category": "",
     "edition_password": "",
+    "trusted_local_editing": false,
     "comparison_mode": {
       "min_comparisons_for_optimization": 50,
       "pair_selection_strategy": "learning",
