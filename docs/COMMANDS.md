@@ -70,7 +70,7 @@ lines (phase, current/total, ETA) which the viewer's scan API surfaces in the
 | `python facet.py /path --dry-run --dry-run-count 20` | Score 20 sample photos |
 | `python facet.py --export-csv` | Export all scores to timestamped CSV (the `tags` column is the AI tags only; [manual tags](VIEWER.md#manual-tags) are not included) |
 | `python facet.py --export-csv output.csv` | Export to specific CSV file |
-| `python facet.py --export-json` | Export all scores to timestamped JSON (`tags` is AI-only, like the CSV) |
+| `python facet.py --export-json` | Export to timestamped JSON; each photo's `scores` object carries every stored metric column (NULL as `null`, non-finite numbers and BLOBs as `null`; columns an older schema lacks are omitted). `tags` is AI-only, like the CSV. An output path that is the database or its `-wal`/`-shm`/`-journal` is refused |
 | `python facet.py --export-json output.json` | Export to specific JSON file |
 | `python facet.py --export-manifest` | Export a compact JSON manifest (path, category, scores, tags — AI plus manual —, star rating, favorite/reject, burst-lead) to `facet_manifest.json` for external tools such as a Lightroom Classic plugin |
 | _manifest version 2_ | Adds `burst_group_id`, `sequence_kind`, `sequence_group_id` and `score_stars` (the aggregate score mapped through `xmp_export.score_to_rating`) to each photo, for the Facet plug-in's burst pick/reject and star-fallback options — see [docs/INTEROP.md](INTEROP.md#the-facet-plug-in-star-ratings-pick-flags-metadata-fields-and-keywords). A plug-in built for this version refuses an older manifest and asks you to re-export |

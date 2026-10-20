@@ -69,7 +69,7 @@ API 会将其呈现在 `/api/scan/status` 的 `progress` 字段以及 SSE 数据
 | `python facet.py /path --dry-run --dry-run-count 20` | 对 20 张样本照片评分 |
 | `python facet.py --export-csv` | 把全部评分导出为带时间戳的 CSV（`tags` 列只含 AI 标签，不包含[手动标签](VIEWER.md#手动标签)） |
 | `python facet.py --export-csv output.csv` | 导出到指定的 CSV 文件 |
-| `python facet.py --export-json` | 把全部评分导出为带时间戳的 JSON（`tags` 只含 AI 标签，与 CSV 相同） |
+| `python facet.py --export-json` | 导出为带时间戳的 JSON；每张照片的 `scores` 对象包含全部已存储的指标列（NULL、非有限数字与 BLOB 均为 `null`；旧版架构没有的列会被省略）。`tags` 只含 AI 标签，与 CSV 相同。输出路径若是数据库本身或其 `-wal`／`-shm`／`-journal`，则会被拒绝 |
 | `python facet.py --export-json output.json` | 导出到指定的 JSON 文件 |
 | `python facet.py --export-manifest` | 导出紧凑的 JSON 清单（路径、类别、评分、标签、星级评分、收藏／淘汰、连拍代表帧）到 `facet_manifest.json`，供 Lightroom Classic 插件等外部工具使用（`tags` = AI 标签 + 手动标签） |
 | _清单版本 2_ | 为每张照片新增 `burst_group_id`、`sequence_kind`、`sequence_group_id` 和 `score_stars`（综合评分经 `xmp_export.score_to_rating` 换算得到），供 Facet 增效工具新增的连拍留用／淘汰与星级兜底选项使用——见 [docs/INTEROP.md](INTEROP.md#facet-增效工具星级留用旗标元数据字段与关键字)。为此版本构建的增效工具会拒绝更早版本的清单，并要求重新导出 |
