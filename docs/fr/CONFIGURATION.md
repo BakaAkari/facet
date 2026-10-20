@@ -1715,7 +1715,8 @@ Affichage et comportement de la galerie web.
 | Réglage | Défaut | Description |
 |---------|--------|-------------|
 | `default_category` | `""` | Filtre de catégorie par défaut |
-| `edition_password` | `""` | Mot de passe pour déverrouiller le mode édition (vide = toute modification est refusée ; l'installation est en lecture seule) |
+| `edition_password` | `""` | Mot de passe pour déverrouiller le mode édition (vide = toute modification est refusée ; l'installation est en lecture seule, sauf pour un navigateur local direct avec `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Accorde les droits d'édition, sans mot de passe d'édition, à un navigateur de la même machine qui joint la visionneuse directement en loopback. Ne s'applique que si `password` ET `edition_password` sont vides sur une installation mono-utilisateur ; couvre toutes les routes soumises à l'édition sauf le déclenchement du scan. **Ne jamais l'activer derrière un proxy inverse sur la même machine.** Voir [Édition locale de confiance](#édition-locale-de-confiance) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Nombre minimal de comparaisons décisives (une photo l'a emporté ; les égalités ne comptent pas) de la catégorie avant de suggérer des poids |
 | `pair_selection_strategy` | `"learning"` | Stratégie de paires : `learning` (démarrage à froid par diversité d'embeddings + désaccord de rang une fois entraîné), `uncertainty`, `boundary`, `active`, `random` |
@@ -1973,6 +1974,31 @@ Protection par mot de passe optionnelle pour la visionneuse :
 ```
 
 Lorsqu'il est défini, les utilisateurs doivent s'authentifier avant d'accéder à la visionneuse.
+
+### Édition locale de confiance
+
+Une visionneuse mono-utilisateur utilisée uniquement depuis un navigateur de la même machine peut modifier sans mot de passe d'édition, sur activation explicite :
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+L'option ne s'applique que si **à la fois** `viewer.password` et `viewer.edition_password` sont vides, le mode multi-utilisateur désactivé et la configuration chargée sans erreur. Définir un mot de passe d'édition la désactive : un opérateur qui en a défini un s'attend à ce qu'il soit demandé, l'option ne le contourne donc jamais. Elle ne définit ni ne révèle aucun mot de passe, ne modifie pas les jetons et n'active pas l'administration multi-utilisateur.
+
+L'accès est décidé à chaque requête, jamais à partir d'une revendication de jeton. Une requête n'est de confiance que si toutes ces conditions sont réunies ; sinon tout se passe comme si l'option était désactivée, requêtes GET comprises :
+
+- le pair TCP est une adresse loopback (un pair IPv4 mappé comme `::ffff:127.0.0.1` est jugé sur son adresse IPv4) ;
+- il y a exactement un en-tête `Host`, et il vaut `localhost`, `127.0.0.1` ou `[::1]`, avec un port facultatif ;
+- la requête ne porte aucun en-tête `Forwarded`, `Via`, `X-Real-IP`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Original-Forwarded-For` ni `X-Forwarded-*` ;
+- un `Origin` ou un `Referer`, s'il est présent, désigne exactement le schéma, l'hôte et le port de la requête, sans identifiants (un `Origin` avec chemin, requête ou fragment est refusé), et un `Sec-Fetch-Site`, s'il est présent, vaut `same-origin` ou `none`.
+
+Une requête de confiance détient tous les droits d'édition : chaque route qui exige sinon une session d'édition, pas seulement les notes. Cela couvre les notes, favoris et rejets, le mode de comparaison, le tri (y compris **Trier vers un dossier**, qui déplace ou met à la corbeille des fichiers, et la suppression d'une photo), les albums, la gestion des personnes et des visages, les changements de poids, de priorités et de contextes de notation, l'intégration de métadonnées et les exports, les tâches à arguments fixes de recalcul et de détection de panoramas, et la génération à la demande de légendes et de critiques. Le déclenchement du scan est la seule exception : il exige toujours `viewer.edition_password`, qui ne peut jamais être défini quand cette option s'applique, il reste donc refusé.
+
+> **Avertissement :** le pair loopback est la seule vraie frontière. `Host`, `Origin`, `Referer` et `Sec-Fetch-Site` sont fixés par le client et ne peuvent que refuser une requête, et un proxy inverse, un tunnel ou une redirection de port sur la même machine qui n'ajoute aucun des en-têtes ci-dessus est indiscernable de votre navigateur. N'activez jamais cette option derrière un proxy inverse sur la même machine. Tant qu'elle est active, tout processus local et tout compte de la machine peut modifier.
 
 ### Performance de la visionneuse
 

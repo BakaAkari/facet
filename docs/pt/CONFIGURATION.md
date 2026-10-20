@@ -1716,7 +1716,8 @@ Exibição e comportamento da galeria web.
 | Configuração | Padrão | Descrição |
 |--------------|--------|-----------|
 | `default_category` | `""` | Filtro de categoria padrão |
-| `edition_password` | `""` | Senha para desbloquear o modo de edição (vazio = toda edição é recusada; a instalação é somente leitura) |
+| `edition_password` | `""` | Senha para desbloquear o modo de edição (vazio = toda edição é recusada; a instalação é somente leitura, exceto para um navegador local direto com `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Concede direitos de edição, sem senha de edição, a um navegador no mesmo computador que acessa o visualizador diretamente por loopback. Só se aplica enquanto `password` E `edition_password` estiverem vazias numa instalação de usuário único; cobre todas as rotas sujeitas a edição, exceto o disparo da varredura. **Nunca ative atrás de um proxy reverso no mesmo host.** Veja [Edição Local Confiável](#edição-local-confiável) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Número mínimo de comparações decisivas (uma foto venceu; empates não contam) da categoria antes de sugerir pesos |
 | `pair_selection_strategy` | `"learning"` | Estratégia de pares: `learning` (partida a frio por diversidade de embeddings + discordância de classificação uma vez treinado), `uncertainty`, `boundary`, `active`, `random` |
@@ -1974,6 +1975,31 @@ Proteção por senha opcional para o visualizador:
 ```
 
 Quando definida, os usuários precisam se autenticar antes de acessar o visualizador.
+
+### Edição Local Confiável
+
+Um visualizador de usuário único usado apenas a partir de um navegador no mesmo computador pode editar sem senha de edição, mediante ativação explícita:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+A opção só se aplica enquanto **tanto** `viewer.password` **quanto** `viewer.edition_password` estiverem vazias, o modo multiusuário estiver desativado e a configuração tiver sido carregada sem erros. Definir uma senha de edição a desativa: quem definiu uma espera que ela seja pedida, então a opção nunca a contorna. Ela não define nem revela nenhuma senha, não altera tokens nem habilita a administração multiusuário.
+
+O acesso é decidido a cada requisição, nunca a partir de um claim do token. Uma requisição só é confiável quando todas estas condições valem; caso contrário é tratada como se a opção estivesse desativada, requisições GET incluídas:
+
+- o par TCP é um endereço de loopback (um par IPv4 mapeado como `::ffff:127.0.0.1` é avaliado pelo seu endereço IPv4);
+- há exatamente um cabeçalho `Host`, e ele é `localhost`, `127.0.0.1` ou `[::1]`, com uma porta opcional;
+- a requisição não traz nenhum cabeçalho `Forwarded`, `Via`, `X-Real-IP`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Original-Forwarded-For` nem `X-Forwarded-*`;
+- um `Origin` ou `Referer`, quando presente, indica exatamente o esquema, o host e a porta da requisição, sem credenciais (um `Origin` com caminho, consulta ou fragmento é recusado), e um `Sec-Fetch-Site`, quando presente, é `same-origin` ou `none`.
+
+Uma requisição confiável tem todos os direitos de edição: toda rota que, de outra forma, exige uma sessão de edição, não apenas as avaliações. Isso abrange avaliações, favoritos e rejeições, o modo de comparação, a seleção (incluindo **Selecionar para pasta**, que move arquivos ou os envia para a lixeira, e a exclusão de uma foto), os álbuns, o gerenciamento de pessoas e rostos, as mudanças de pesos, prioridades e contextos de pontuação, a incorporação de metadados e as exportações, os jobs de argumentos fixos de recálculo e de detecção de panoramas, e a geração sob demanda de legendas e críticas. O disparo da varredura é a única exceção: continua exigindo `viewer.edition_password`, que nunca pode estar definida enquanto esta opção se aplica, então continua recusado.
+
+> **Aviso:** o par de loopback é a única fronteira real. `Host`, `Origin`, `Referer` e `Sec-Fetch-Site` são definidos pelo cliente e só podem recusar uma requisição, e um proxy reverso, túnel ou redirecionamento de porta no mesmo host que não adicione nenhum dos cabeçalhos acima é indistinguível do seu navegador. Nunca ative esta opção atrás de qualquer proxy reverso no mesmo host. Enquanto estiver ativa, qualquer processo local e qualquer conta do computador pode editar.
 
 ### Desempenho do Visualizador
 

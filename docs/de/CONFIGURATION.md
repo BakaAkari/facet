@@ -1725,7 +1725,8 @@ Anzeige und Verhalten der Web-Galerie.
 | Einstellung | Standard | Beschreibung |
 |---------|---------|-------------|
 | `default_category` | `""` | Standard-Kategoriefilter |
-| `edition_password` | `""` | Passwort zum Freischalten des Editionsmodus (leer = jede Bearbeitung wird abgelehnt; die Installation ist schreibgeschützt) |
+| `edition_password` | `""` | Passwort zum Freischalten des Editionsmodus (leer = jede Bearbeitung wird abgelehnt; die Installation ist schreibgeschützt, außer für einen direkten lokalen Browser mit `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Gewährt einem Browser auf demselben Rechner, der den Viewer direkt über Loopback erreicht, Editionsrechte ohne Editionspasswort. Gilt nur, solange `password` UND `edition_password` auf einer Einzelbenutzer-Installation leer sind; umfasst jede editionspflichtige Route außer dem Scan-Auslöser. **Niemals hinter einem Reverse-Proxy auf demselben Rechner aktivieren.** Siehe [Vertrauenswürdige lokale Bearbeitung](#vertrauenswürdige-lokale-bearbeitung) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Mindestanzahl entscheidender Vergleiche (ein Foto hat gewonnen; Gleichstände zählen nicht) in der Kategorie, bevor Gewichte vorgeschlagen werden |
 | `pair_selection_strategy` | `"learning"` | Paarstrategie: `learning` (Embedding-Diversität für den Kaltstart + Rang-Uneinigkeit nach dem Training), `uncertainty`, `boundary`, `active`, `random` |
@@ -1982,6 +1983,31 @@ Optionaler Passwortschutz für den Viewer:
 ```
 
 Wenn gesetzt, müssen sich Benutzer authentifizieren, bevor sie auf den Viewer zugreifen können.
+
+### Vertrauenswürdige lokale Bearbeitung
+
+Ein Einzelbenutzer-Viewer, der nur von einem Browser auf demselben Rechner genutzt wird, kann nach ausdrücklicher Aktivierung ohne Editionspasswort bearbeiten:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+Die Option gilt nur, solange **sowohl** `viewer.password` als auch `viewer.edition_password` leer sind, der Mehrbenutzermodus aus ist und die Konfiguration fehlerfrei geladen wurde. Ein gesetztes Editionspasswort schaltet sie ab: Wer eines gesetzt hat, erwartet, dass es abgefragt wird, daher umgeht die Option es nie. Sie setzt oder verrät kein Passwort, ändert keine Tokens und aktiviert keine Mehrbenutzer-Verwaltung.
+
+Der Zugriff wird pro Anfrage entschieden, nie anhand eines Token-Claims. Eine Anfrage gilt nur als vertrauenswürdig, wenn alle folgenden Bedingungen erfüllt sind; andernfalls wird sie behandelt, als wäre die Option aus, GET-Anfragen eingeschlossen:
+
+- der TCP-Peer ist eine Loopback-Adresse (ein IPv4-gemappter Peer wie `::ffff:127.0.0.1` zählt nach seiner IPv4-Adresse);
+- es gibt genau einen `Host`-Header, und er lautet `localhost`, `127.0.0.1` oder `[::1]`, mit optionalem Port;
+- die Anfrage trägt keinen `Forwarded`-, `Via`-, `X-Real-IP`-, `X-Client-IP`-, `True-Client-IP`-, `CF-Connecting-IP`-, `X-Original-Forwarded-For`- oder `X-Forwarded-*`-Header;
+- ein vorhandener `Origin` oder `Referer` nennt genau Schema, Host und Port der Anfrage, ohne Zugangsdaten (ein `Origin` mit Pfad, Query oder Fragment wird abgelehnt), und ein vorhandener `Sec-Fetch-Site` lautet `same-origin` oder `none`.
+
+Eine vertrauenswürdige Anfrage hat volle Editionsrechte: jede Route, die sonst eine Editionssitzung verlangt, nicht nur Bewertungen. Das umfasst Bewertungen, Favoriten und Ablehnungen, den Vergleichsmodus, das Aussortieren (einschließlich **In Ordner aussortieren**, das Dateien verschiebt oder in den Papierkorb legt, und das Löschen einzelner Fotos), Alben, Personen- und Gesichtsverwaltung, Änderungen an Gewichten, Prioritäten und Bewertungskontexten, das Einbetten von Metadaten und Exporte, die Neuberechnungs- und Panoramaerkennungs-Jobs mit festen Argumenten sowie die Erzeugung von Bildbeschreibungen und Kritiken auf Anfrage. Einzige Ausnahme ist der Scan-Auslöser: Er verlangt weiterhin `viewer.edition_password`, das nie gesetzt sein kann, während diese Option gilt, und bleibt daher abgelehnt.
+
+> **Warnung:** Der Loopback-Peer ist die einzige echte Grenze. `Host`, `Origin`, `Referer` und `Sec-Fetch-Site` setzt der Client, sie können eine Anfrage nur ablehnen, und ein Reverse-Proxy, Tunnel oder Port-Forward auf demselben Rechner, der keinen der obigen Header hinzufügt, ist von Ihrem Browser nicht zu unterscheiden. Aktivieren Sie diese Option nie hinter einem Reverse-Proxy auf demselben Rechner. Solange sie aktiv ist, kann jeder lokale Prozess und jedes Konto auf dem Rechner bearbeiten.
 
 ### Viewer-Performance
 

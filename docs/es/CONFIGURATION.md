@@ -1721,7 +1721,8 @@ Visualización y comportamiento de la galería web.
 | Ajuste | Por defecto | Descripción |
 |---------|---------|-------------|
 | `default_category` | `""` | Filtro de categoría por defecto |
-| `edition_password` | `""` | Contraseña para desbloquear el modo edición (vacío = toda edición se rechaza; la instalación es de solo lectura) |
+| `edition_password` | `""` | Contraseña para desbloquear el modo edición (vacío = toda edición se rechaza; la instalación es de solo lectura, salvo para un navegador local directo con `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Concede derechos de edición, sin contraseña de edición, a un navegador del mismo equipo que llega al visor directamente por loopback. Solo se aplica mientras `password` Y `edition_password` estén vacías en una instalación de un solo usuario; cubre todas las rutas sujetas a edición salvo el inicio del escaneo. **Nunca la actives detrás de un proxy inverso en el mismo equipo.** Consulta [Edición local de confianza](#edición-local-de-confianza) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Número mínimo de comparaciones decisivas (ganó una foto; los empates no cuentan) de la categoría antes de sugerir pesos |
 | `pair_selection_strategy` | `"learning"` | Estrategia de pares: `learning` (arranque en frío por diversidad de embeddings + desacuerdo de rango una vez entrenado), `uncertainty`, `boundary`, `active`, `random` |
@@ -1979,6 +1980,31 @@ Protección por contraseña opcional para el visor:
 ```
 
 Cuando se establece, los usuarios deben autenticarse antes de acceder al visor.
+
+### Edición local de confianza
+
+Un visor de un solo usuario usado únicamente desde un navegador del mismo equipo puede editar sin contraseña de edición, activándolo explícitamente:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+La opción solo se aplica mientras **tanto** `viewer.password` **como** `viewer.edition_password` estén vacías, el modo multiusuario esté desactivado y la configuración se haya cargado sin errores. Definir una contraseña de edición la desactiva: quien la definió espera que se pida, así que la opción nunca la elude. No define ni revela ninguna contraseña, no cambia los tokens ni habilita la administración multiusuario.
+
+El acceso se decide en cada petición, nunca a partir de un claim del token. Una petición es de confianza solo si se cumplen todas estas condiciones; si no, se trata como si la opción estuviera desactivada, peticiones GET incluidas:
+
+- el par TCP es una dirección de loopback (un par IPv4 mapeado como `::ffff:127.0.0.1` se evalúa por su dirección IPv4);
+- hay exactamente una cabecera `Host`, y es `localhost`, `127.0.0.1` o `[::1]`, con un puerto opcional;
+- la petición no lleva ninguna cabecera `Forwarded`, `Via`, `X-Real-IP`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Original-Forwarded-For` ni `X-Forwarded-*`;
+- un `Origin` o un `Referer`, si está presente, indica exactamente el esquema, el host y el puerto de la petición, sin credenciales (un `Origin` con ruta, consulta o fragmento se rechaza), y un `Sec-Fetch-Site`, si está presente, es `same-origin` o `none`.
+
+Una petición de confianza tiene todos los derechos de edición: cada ruta que, si no, exige una sesión de edición, no solo las valoraciones. Eso abarca valoraciones, favoritos y rechazos, el modo de comparación, la selección (incluido **Descartar a carpeta**, que mueve o envía archivos a la papelera, y el borrado de una foto), los álbumes, la gestión de personas y rostros, los cambios de pesos, prioridades y contextos de puntuación, la incrustación de metadatos y las exportaciones, los trabajos de argumentos fijos de recálculo y de detección de panorámicas, y la generación bajo demanda de subtítulos y críticas. El inicio del escaneo es la única excepción: sigue exigiendo `viewer.edition_password`, que nunca puede estar definida mientras se aplica esta opción, así que sigue rechazado.
+
+> **Advertencia:** el par de loopback es la única frontera real. `Host`, `Origin`, `Referer` y `Sec-Fetch-Site` los fija el cliente y solo pueden rechazar una petición, y un proxy inverso, un túnel o una redirección de puertos en el mismo equipo que no añada ninguna de las cabeceras anteriores es indistinguible de tu navegador. Nunca actives esta opción detrás de un proxy inverso en el mismo equipo. Mientras esté activa, cualquier proceso local y cualquier cuenta del equipo puede editar.
 
 ### Rendimiento del visor
 
