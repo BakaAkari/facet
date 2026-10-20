@@ -2316,7 +2316,8 @@ A janela de inatividade é essencial: o re-treinamento reescreve uma linha por f
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2325,6 +2326,7 @@ A janela de inatividade é essencial: o re-treinamento reescreve uma linha por f
 |--------------|--------|-----------|
 | `threshold` | `25` | Novas comparações que um usuário deve acumular antes de armar um re-treinamento. Aumente se você avalia lotes muito grandes e quer amortizar o custo do treinamento (CPU, de segundos a minutos) sobre mais sinal |
 | `idle_seconds` | `60` | Segundos sem atividade de avaliação/triagem necessários antes que o re-treinamento armado realmente comece. Cada nova ação adia o temporizador. `0` dispara imediatamente (comportamento anterior à 1.7.3) |
+| `backend` | `"native"` | `"native"` treina localmente o classificador pessoal, a cabeça de seleção e os pesos aprendidos. `"external"` apenas mantém as preferências e os contadores de comparações pendentes, e nunca treina nem avalia localmente uma cabeça aprendida; veja [Backend de aprendizado externo](#backend-de-aprendizado-externo) |
 
 Ambos podem ser sobrescritos em tempo de execução por variáveis de ambiente, que têm precedência sobre os valores do JSON — útil no Docker, onde a configuração costuma vir embutida na imagem:
 
@@ -2337,9 +2339,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-Um valor ilegível recai na configuração do JSON, e um bloco ausente ou malformado recai nos padrões embutidos, de modo que um erro de digitação degrada para o comportamento de fábrica em vez de desativar o re-treinamento automático. Ambos os valores são lidos uma única vez na inicialização — alterá-los exige um reinício.
+Um `threshold` ou `idle_seconds` ilegível recai na configuração do JSON, e um bloco ausente ou malformado recai nos padrões embutidos, de modo que um erro de digitação degrada para o comportamento de fábrica em vez de desativar o re-treinamento automático. `backend` é a exceção: um valor ilegível ou inválido recai por precaução em `"external"` (veja abaixo). `threshold` e `idle_seconds` são lidos uma única vez na inicialização — alterá-los exige um reinício.
 
 O re-treinamento mantém sua verificação por validação cruzada em dados reservados: uma execução que não supera a referência atual não escreve nada.
+
+### Backend de aprendizado externo
+
+O valor padrão de `auto_retrain.backend` é `"native"`, que preserva o comportamento local do classificador pessoal e da cabeça de seleção. Defina `"backend": "external"` para manter as preferências e os contadores de comparações pendentes sem iniciar aprendizado pessoal local nem avaliar cabeças aprendidas na CPU.
+
+Trata-se de uma política de despacho, não de um serviço de jobs externo. Ela não inicia nenhum worker de GPU externo nem afirma que um modelo pessoal foi treinado. Um fluxo de treinamento separado, controlado pelo operador, deve autenticar as observações, qualificar seu modelo e publicar as pontuações resultantes. As avaliações e comparações existentes continuam disponíveis para esse fluxo.
+
+No modo externo, as notificações incrementam os contadores duráveis existentes sem consumi-los nem agendar uma thread de treinamento. Os workers enfileirados verificam a política novamente e devolvem a contagem pendente que haviam consumido quando são adiados. Os pontos de entrada manuais do classificador pessoal, da cabeça de seleção e do aprendizado de pesos retornam um resultado adiado explícito. As probabilidades de seleção não estão disponíveis; as respostas de Comparar (pesos aprendidos e confiança) informam `available: false` com uma mensagem explicativa.
+
+Uma política de backend malformada ou ilegível (bloco `auto_retrain` que não é um objeto, `backend` diferente de `"native"` ou `"external"`, configuração ilegível) recai por precaução no modo externo e registra um aviso. Uma configuração válida sem a chave `backend` usa o modo nativo. O visualizador lê o caminho de configuração do servidor já resolvido; as chamadas CLI respeitam sua configuração explícita. Esta opção não desativa a pontuação determinística comum das fotos nem apaga votos.
 
 ## Perfis de seleção por gênero
 

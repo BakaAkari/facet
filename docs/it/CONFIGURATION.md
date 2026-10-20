@@ -2319,7 +2319,8 @@ La finestra di inattività è cruciale: il riaddestramento riscrive una riga per
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2328,6 +2329,7 @@ La finestra di inattività è cruciale: il riaddestramento riscrive una riga per
 |---------|---------|-------------|
 | `threshold` | `25` | Nuovi confronti che un utente deve accumulare prima che un riaddestramento venga armato. Aumentalo se valuti lotti molto grandi e vuoi ammortizzare il costo dell'addestramento (CPU, da secondi a minuti) su più segnale |
 | `idle_seconds` | `60` | Secondi senza attività di valutazione/scarto necessari prima che il riaddestramento armato parta davvero. Ogni nuova azione posticipa il timer. `0` avvia immediatamente (comportamento precedente alla 1.7.3) |
+| `backend` | `"native"` | `"native"` addestra in locale il ranker personale, la testa di selezione e i pesi appresi. `"external"` conserva soltanto le preferenze e i contatori dei confronti in sospeso e non addestra né valuta mai in locale una testa appresa; vedi [Backend di apprendimento esterno](#backend-di-apprendimento-esterno) |
 
 Entrambi sono sovrascrivibili a runtime tramite variabili d'ambiente, che hanno la precedenza sui valori JSON — utile con Docker, dove la configurazione è spesso integrata nell'immagine:
 
@@ -2340,9 +2342,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-Un valore non interpretabile ricade sull'impostazione JSON, e un blocco assente o malformato ricade sui valori predefiniti integrati, così un errore di battitura degrada al comportamento di fabbrica invece di disattivare il riaddestramento automatico. Entrambi i valori vengono letti una sola volta all'avvio — modificarli richiede un riavvio.
+Un `threshold` o `idle_seconds` non interpretabile ricade sull'impostazione JSON, e un blocco assente o malformato ricade sui valori predefiniti integrati, così un errore di battitura degrada al comportamento di fabbrica invece di disattivare il riaddestramento automatico. `backend` fa eccezione: un valore illeggibile o non valido ricade per prudenza su `"external"` (vedi sotto). `threshold` e `idle_seconds` vengono letti una sola volta all'avvio — modificarli richiede un riavvio.
 
 Il riaddestramento mantiene il suo controllo di convalida incrociata su dati riservati: un'esecuzione che non batte il riferimento attuale non scrive nulla.
+
+### Backend di apprendimento esterno
+
+Il valore predefinito di `auto_retrain.backend` è `"native"`, che conserva il comportamento locale del ranker personale e della testa di selezione. Imposta `"backend": "external"` per conservare le preferenze e i contatori dei confronti in sospeso senza avviare l'apprendimento personale locale né valutare teste apprese sulla CPU.
+
+Si tratta di una politica di smistamento, non di un servizio di job esterno. Non avvia alcun worker GPU esterno e non sostiene che un modello personale sia stato addestrato. Un flusso di addestramento separato, controllato dall'operatore, deve autenticare le osservazioni, qualificare il proprio modello e pubblicare i punteggi risultanti. Le valutazioni e i confronti esistenti restano disponibili per quel flusso.
+
+In modalità esterna, le notifiche incrementano i contatori durevoli esistenti senza consumarli né pianificare un thread di addestramento. I worker in coda ricontrollano la politica e restituiscono il conteggio in sospeso che avevano consumato quando vengono rinviati. I punti di ingresso manuali del ranker personale, della testa di selezione e dell'apprendimento dei pesi restituiscono un risultato rinviato esplicito. Le probabilità di selezione non sono disponibili; le risposte di Confronta (pesi appresi e confidenza) riportano `available: false` con un messaggio esplicativo.
+
+Una politica di backend malformata o illeggibile (blocco `auto_retrain` che non è un oggetto, `backend` diverso da `"native"` o `"external"`, configurazione illeggibile) ricade per prudenza sulla modalità esterna e registra un avviso. Una configurazione valida senza chiave `backend` usa la modalità nativa. Il visualizzatore legge il percorso di configurazione del server già risolto; le chiamate CLI rispettano la propria configurazione esplicita. Questa opzione non disattiva il normale punteggio deterministico delle foto e non cancella i voti.
 
 ## Profili di scarto per genere
 
