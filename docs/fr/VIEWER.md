@@ -289,7 +289,7 @@ Contrairement à Trier vers un dossier, qui laisse la ligne de base de données 
 
 Cliquez sur le bouton « Similaires » de n'importe quelle photo pour choisir un mode de similarité :
 
-- **Visuel** (par défaut) — distance de Hamming pHash (70%) + similarité cosinus CLIP/SigLIP (30%). Bascule sur CLIP seul lorsqu'aucun pHash n'est disponible.
+- **Visuel** (par défaut) — ne compare que les indices que les deux photos possèdent : similarité pHash (70%) + similarité cosinus CLIP/SigLIP (30%) lorsque les deux photos ont les deux ; lorsqu'elles n'en partagent qu'un (pas de pHash, ou un embedding absent, illisible ou d'une autre dimension), celui-ci compte pour la totalité ; une photo qui n'en partage aucun n'est jamais listée, même à 0%. Toutes les correspondances au-dessus du seuil sont renvoyées, page par page, au lieu des 500 premières, et le classement est conservé deux minutes (ou jusqu'à une modification de la base) pour que les pages suivantes se chargent sans réanalyser la bibliothèque. Si la photo elle-même n'a ni pHash ni embedding, la galerie l'indique et propose de la scanner de nouveau avec `--force` (un simple `python facet.py <dir>` ignore les fichiers déjà traités). L'API répond `422` pour un `limit` hors de 1–500, un `offset` négatif ou un `min_similarity` hors de 0–1.
 - **Couleur** — Intersection d'histogrammes (70%) + distance de saturation (10%) + distance de luminance (10%) + bonus monochrome (10%). Préfiltre par l'indicateur monochrome et la plage de saturation.
 - **Personne** — Trouve les photos contenant la ou les mêmes personnes. Utilise `person_id` lorsqu'il est disponible (rapide), sinon bascule sur la similarité cosinus des embeddings de visages.
 

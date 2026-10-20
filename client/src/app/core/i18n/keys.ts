@@ -548,6 +548,7 @@ export const I18N = {
     mode_person: "similar.mode_person",
     no_faces: "similar.no_faces",
     no_histogram: "similar.no_histogram",
+    no_visual_features: "similar.no_visual_features",
   },
   merge_suggestions: {
     title: "merge_suggestions.title",

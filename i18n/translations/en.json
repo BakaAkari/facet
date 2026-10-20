@@ -533,7 +533,8 @@
     "mode_color": "Color palette",
     "mode_person": "Same person",
     "no_faces": "No faces detected on this photo",
-    "no_histogram": "No color data available for this photo"
+    "no_histogram": "No color data available for this photo",
+    "no_visual_features": "Visual similarity is unavailable: this photo has no valid visual fingerprint or embedding. Rescan it with --force to compute them."
   },
   "merge_suggestions": {
     "title": "Merge Suggestions",
