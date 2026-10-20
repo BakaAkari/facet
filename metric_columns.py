@@ -3,6 +3,12 @@
 Definitions only: importing this registry never imports a model or backend.
 """
 
+# The seven legacy scores, in this order: first in --export-json, after the metadata columns in --export-csv.
+JSON_LEGACY_SCORE_COLUMNS = (
+    'aggregate', 'aesthetic', 'comp_score', 'face_quality', 'tech_sharpness',
+    'exposure_score', 'color_score',
+)
+
 SCORE_RANGE_COLUMNS = [
     ("aggregate", "min_score", "max_score", True),
     ("aesthetic", "min_aesthetic", "max_aesthetic", True),

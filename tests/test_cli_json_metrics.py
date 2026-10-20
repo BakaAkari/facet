@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from db.schema import init_database
 from metric_columns import JSON_SCORE_COLUMNS, SCORE_RANGE_COLUMNS
 from tests.test_cli import _sanitized_env
 
@@ -26,18 +27,27 @@ MODEL_METRICS = (
 METADATA = ('path', 'filename', 'date_taken', 'category', 'tags', 'camera_model', 'lens_model')
 
 
+def seeded_value(index):
+    """A distinct number per metric column, so a column mix-up changes the export."""
+    return 0.005 + index * 0.02
+
+
 def database(path, *, extended=False, empty=False):
-    scores = tuple(dict.fromkeys(LEGACY + (JSON_SCORE_COLUMNS if extended else ())))
+    if not extended:
+        # Deliberate old schema: a pre-metric library that lacks the extended columns.
+        with sqlite3.connect(path) as conn:
+            conn.execute('CREATE TABLE photos (' + ', '.join(
+                [name + ' TEXT' for name in METADATA] + [name + ' REAL' for name in LEGACY]
+                + ['iso INTEGER', 'f_stop REAL', 'focal_length REAL', 'shutter_speed TEXT',
+                   'caption TEXT', 'thumbnail BLOB', 'clip_embedding BLOB', 'star_rating INTEGER']
+            ) + ')')
+    else:
+        init_database(str(path))
     with sqlite3.connect(path) as conn:
-        conn.execute('CREATE TABLE photos (' + ', '.join(
-            [name + ' TEXT' for name in METADATA] + [name + ' REAL' for name in scores]
-            + ['iso INTEGER', 'f_stop REAL', 'focal_length REAL', 'shutter_speed TEXT',
-               'caption TEXT', 'thumbnail BLOB', 'clip_embedding BLOB']
-            + ([] if 'star_rating' in scores else ['star_rating INTEGER'])
-        ) + ')')
         if not empty:
             for name, aggregate in (('high', 8), ('low', 3)):
-                values = dict.fromkeys(scores, 0)
+                values = {column: seeded_value(index) for index, column in enumerate(
+                    LEGACY if not extended else JSON_SCORE_COLUMNS)}
                 values.update(path='/synthetic/' + name + '.jpg', filename=name + '.jpg',
                               date_taken=None, category='default', tags='manual,雪',
                               camera_model='camera', lens_model=None, aggregate=aggregate,
@@ -45,7 +55,7 @@ def database(path, *, extended=False, empty=False):
                               caption='not a score', thumbnail=b'not an image', clip_embedding=b'not a feature', star_rating=5)
                 if extended:
                     values.update(aesthetic_v25=None, deqa_score='retained text',
-                                  composition_pattern='rule_of_thirds', narrative_moment_confidence=0)
+                                  composition_pattern='rule_of_thirds')
                 columns = list(values)
                 conn.execute('INSERT INTO photos (' + ','.join(columns) + ') VALUES ('
                              + ','.join('?' for _ in columns) + ')', list(values.values()))
@@ -91,10 +101,16 @@ def test_real_cli_exports_all_model_metrics_raw_values_and_no_schema_dump(tmp_pa
         scores = photo['scores']
         assert list(scores)[:7] == list(LEGACY)
         assert set(MODEL_METRICS) <= scores.keys()
-        assert scores['qrealign_score'] == 0 and scores['aesthetic_v25'] is None
+        assert set(JSON_SCORE_COLUMNS) <= scores.keys()
+        for index, column in enumerate(JSON_SCORE_COLUMNS):
+            if column == 'aggregate':
+                assert scores[column] == (8 if photo['filename'] == 'high.jpg' else 3)
+            elif column not in ('aesthetic_v25', 'deqa_score', 'composition_pattern'):
+                assert scores[column] == seeded_value(index), column
+        assert scores['aesthetic_v25'] is None
         assert scores['deqa_score'] == 'retained text'
         assert scores['composition_pattern'] == 'rule_of_thirds'
-        assert scores['face_count'] == 0 and photo['tags'] == 'manual,雪'
+        assert photo['tags'] == 'manual,雪'
         assert not set(('iso', 'f_stop', 'focal_length', 'shutter_speed', 'star_rating',
                         'caption', 'thumbnail', 'clip_embedding')).intersection(scores)
     with sqlite3.connect(db) as conn:
@@ -130,10 +146,28 @@ def test_output_must_not_overwrite_source_database(tmp_path, alias):
     elif alias == 'hardlink':
         os.link(db, output)
     result = run_export(tmp_path, db, output)
-    assert result.returncode != 0
-    assert 'must not overwrite' in result.stderr
+    assert result.returncode == 1
+    assert 'must not overwrite' in result.stderr and 'Traceback' not in result.stderr
     with sqlite3.connect(db) as conn:
         assert conn.execute('SELECT count(*) FROM photos').fetchone()[0] == 2
+        assert conn.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+
+
+def test_non_finite_and_blob_scores_export_as_null_in_valid_json(tmp_path):
+    db = database(tmp_path / 'odd.db', extended=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE photos SET liqe_score = 9e999 WHERE filename = 'high.jpg'")
+        conn.execute("UPDATE photos SET qrealign_score = -9e999, deqa_score = x'00ff' WHERE filename = 'high.jpg'")
+        conn.execute("UPDATE photos SET face_quality_iqa = x'0102' WHERE filename = 'low.jpg'")
+    output = tmp_path / 'odd.json'
+    result = run_export(tmp_path, db, output)
+    assert result.returncode == 0, result.stderr
+    text = output.read_text()
+    assert 'Infinity' not in text and 'NaN' not in text
+    by_name = {photo['filename']: photo['scores'] for photo in json.loads(text)['photos']}
+    assert by_name['high.jpg']['liqe_score'] is None
+    assert by_name['high.jpg']['qrealign_score'] is None and by_name['high.jpg']['deqa_score'] is None
+    assert by_name['low.jpg']['face_quality_iqa'] is None
 
 
 def test_gallery_registry_public_name_and_exif_separation():

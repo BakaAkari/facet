@@ -461,10 +461,9 @@ def _apply_preference_filters(where_clauses, sql_params, params, user_id):
         where_clauses.append(f"({pref_cols['is_rejected']} = 0 OR {pref_cols['is_rejected']} IS NULL)")
 
 
-# Single source of truth for numeric range filters: (column, min_key, max_key, is_float).
-# Drives both the WHERE-clause builders below and the /filter_options/metric_ranges endpoint.
-
-
+# Camera/EXIF numeric range filters, same shape as SCORE_RANGE_COLUMNS (metric_columns.py):
+# (column, min_key, max_key, is_float). Both drive the WHERE-clause builders below and
+# the /filter_options/metric_ranges endpoint.
 EXIF_RANGE_COLUMNS = [
     ("iso", "min_iso", "max_iso", False),
     ("f_stop", "min_aperture", "max_aperture", True),

@@ -8,6 +8,7 @@ from typing import Any
 import importlib
 import atexit
 import fnmatch
+import math
 import os
 import random
 import signal
@@ -98,6 +99,7 @@ except ImportError:
 import licensing
 from config import ScoringConfig, PercentileNormalizer
 from config.scoring_config import resolve_scoring_config_path
+from metric_columns import JSON_LEGACY_SCORE_COLUMNS, JSON_SCORE_COLUMNS
 from utils.image_loading import (
     RAW_EXTENSIONS, HEIF_EXTENSIONS, JPEG_EXTENSIONS, SCANNABLE_IMAGE_EXTENSIONS,
 )
@@ -3970,28 +3972,14 @@ def main():
             output_file = args.export_csv
 
         with get_connection(args.db) as conn:
-            cursor = conn.execute("""
-                SELECT path, filename, date_taken, category, aggregate, aesthetic,
-                       comp_score, face_quality, tech_sharpness, exposure_score,
-                       color_score, tags, camera_model, lens_model
-                FROM photos
-                ORDER BY aggregate DESC
-            """)
+            cursor = conn.execute(
+                'SELECT ' + ', '.join(_CSV_COLUMNS) + ' FROM photos ORDER BY aggregate DESC')
 
             with open(output_file, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow([
-                    'path', 'filename', 'date_taken', 'category', 'aggregate',
-                    'aesthetic', 'comp_score', 'face_quality', 'tech_sharpness',
-                    'exposure_score', 'color_score', 'tags', 'camera_model', 'lens_model'
-                ])
+                writer.writerow(_CSV_COLUMNS)
                 for row in cursor:
-                    writer.writerow([
-                        row['path'], row['filename'], row['date_taken'], row['category'],
-                        row['aggregate'], row['aesthetic'], row['comp_score'],
-                        row['face_quality'], row['tech_sharpness'], row['exposure_score'],
-                        row['color_score'], row['tags'], row['camera_model'], row['lens_model']
-                    ])
+                    writer.writerow([row[column] for column in _CSV_COLUMNS])
         row_count = sum(1 for _ in open(output_file, encoding='utf-8')) - 1
         logger.info("Exported %d photos to %s", row_count, output_file)
         exit()
@@ -4004,16 +3992,9 @@ def main():
         else:
             output_file = args.export_json
 
-        # Refuse output aliases of the source library before opening for write.
-        protected = {
-            base + suffix
-            for base in (str(args.db), os.path.realpath(args.db))
-            for suffix in ('', '-wal', '-shm', '-journal')
-        }
-        if any(os.path.realpath(output_file) == os.path.realpath(path)
-               or (os.path.exists(output_file) and os.path.exists(path)
-                   and os.path.samefile(output_file, path)) for path in protected):
-            raise ValueError('JSON output must not overwrite the source database')
+        if _refuse_db_alias(output_file, args.db):
+            logger.error("JSON output %s must not overwrite the source database %s", output_file, args.db)
+            sys.exit(1)
         with get_connection(args.db) as conn, open(output_file, 'w', encoding='utf-8') as stream:
             count = write_json_export(conn, stream)
         logger.info("Exported %d photos to %s", count, output_file)
@@ -4145,39 +4126,58 @@ def main():
             lock.release()
 
 
-
-_JSON_LEGACY_SCORE_COLUMNS = (
-    'aggregate', 'aesthetic', 'comp_score', 'face_quality', 'tech_sharpness',
-    'exposure_score', 'color_score',
+_CSV_COLUMNS = (
+    ('path', 'filename', 'date_taken', 'category') + JSON_LEGACY_SCORE_COLUMNS
+    + ('tags', 'camera_model', 'lens_model')
 )
+
+
+def _refuse_db_alias(output_file, db_path):
+    """True when output_file is the source database or its -wal/-shm/-journal."""
+    protected = {
+        base + suffix
+        for base in (str(db_path), os.path.realpath(db_path))
+        for suffix in ('', '-wal', '-shm', '-journal')
+    }
+    return any(os.path.realpath(output_file) == os.path.realpath(path)
+               or (os.path.exists(output_file) and os.path.exists(path)
+                   and os.path.samefile(output_file, path)) for path in protected)
+
+
+def _json_safe(value):
+    """NULL for what JSON cannot carry: non-finite floats and BLOBs."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def write_json_export(conn, stream):
     """Write stored scores row by row, preserving the legacy JSON envelope.
 
     Optional metrics absent from older schemas are omitted, whereas stored NULL,
-    zero, and text values are emitted verbatim. No BLOBs or model calls are used.
+    zero, and text values are emitted verbatim. Non-finite floats and BLOBs are
+    emitted as null. No model calls are used.
     """
-    from metric_columns import JSON_SCORE_COLUMNS
-
     available = {row[1] for row in conn.execute('PRAGMA table_info(photos)')}
     score_columns = tuple(dict.fromkeys(
-        _JSON_LEGACY_SCORE_COLUMNS
+        JSON_LEGACY_SCORE_COLUMNS
         + tuple(column for column in JSON_SCORE_COLUMNS if column in available)
     ))
     metadata = ('path', 'filename', 'date_taken', 'category', 'tags', 'camera_model', 'lens_model')
     columns = ', '.join(metadata + score_columns)
     cursor = conn.execute(f'SELECT {columns} FROM photos ORDER BY aggregate DESC')
-    encoder = json.JSONEncoder(indent=2)
+    encoder = json.JSONEncoder(indent=2, allow_nan=False)
     stream.write('{\n  "photos": [')
     count = 0
     for row in cursor:
         photo = {
-            'path': row['path'], 'filename': row['filename'],
-            'date_taken': row['date_taken'], 'category': row['category'],
-            'scores': {column: row[column] for column in score_columns},
-            'tags': row['tags'], 'camera_model': row['camera_model'],
-            'lens_model': row['lens_model'],
+            'path': _json_safe(row['path']), 'filename': _json_safe(row['filename']),
+            'date_taken': _json_safe(row['date_taken']), 'category': _json_safe(row['category']),
+            'scores': {column: _json_safe(row[column]) for column in score_columns},
+            'tags': _json_safe(row['tags']), 'camera_model': _json_safe(row['camera_model']),
+            'lens_model': _json_safe(row['lens_model']),
         }
         stream.write(',\n' if count else '\n')
         stream.write('    ')
@@ -4188,6 +4188,7 @@ def write_json_export(conn, stream):
         stream.write('\n  ')
     stream.write('],\n  "count": ' + str(count) + '\n}')
     return count
+
 
 if __name__ == '__main__':
     main()
