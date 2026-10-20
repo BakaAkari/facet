@@ -1719,7 +1719,8 @@ Visualizzazione e comportamento della galleria web.
 | Impostazione | Predefinito | Descrizione |
 |---------|---------|-------------|
 | `default_category` | `""` | Filtro categoria predefinito |
-| `edition_password` | `""` | Password per sbloccare la modalità di modifica (vuoto = ogni modifica è rifiutata; l'installazione è in sola lettura) |
+| `edition_password` | `""` | Password per sbloccare la modalità di modifica (vuoto = ogni modifica è rifiutata; l'installazione è in sola lettura, tranne per un browser locale diretto con `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Concede i diritti di modifica, senza password di modifica, a un browser sullo stesso computer che raggiunge il viewer direttamente in loopback. Si applica solo quando `password` E `edition_password` sono entrambe vuote su un'installazione a utente singolo; copre ogni route soggetta a modifica tranne l'avvio della scansione. **Non abilitarla mai dietro un reverse proxy sullo stesso host.** Vedi [Modifica locale attendibile](#modifica-locale-attendibile) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Numero minimo di confronti decisivi (una foto ha vinto; i pareggi non contano) della categoria prima di suggerire dei pesi |
 | `pair_selection_strategy` | `"learning"` | Strategia di coppia: `learning` (avvio a freddo per diversità di embedding + disaccordo di rango una volta addestrato), `uncertainty`, `boundary`, `active`, `random` |
@@ -1977,6 +1978,31 @@ Protezione opzionale con password per il viewer:
 ```
 
 Quando impostata, gli utenti devono autenticarsi prima di accedere al viewer.
+
+### Modifica locale attendibile
+
+Un viewer a utente singolo usato solo da un browser sullo stesso computer può modificare senza password di modifica, previa attivazione esplicita:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+L'opzione si applica solo quando **sia** `viewer.password` **sia** `viewer.edition_password` sono vuote, la modalità multiutente è disattivata e la configurazione è stata caricata senza errori. Impostare una password di modifica la disattiva: chi ne ha impostata una si aspetta che venga richiesta, quindi l'opzione non la aggira mai. Non imposta né rivela alcuna password, non modifica i token e non abilita l'amministrazione multiutente.
+
+L'accesso viene deciso a ogni richiesta, mai in base a un claim del token. Una richiesta è attendibile solo se valgono tutte queste condizioni; in caso contrario è trattata come se l'opzione fosse disattivata, richieste GET comprese:
+
+- il peer TCP è un indirizzo di loopback (un peer IPv4 mappato come `::ffff:127.0.0.1` è valutato in base al suo indirizzo IPv4);
+- c'è esattamente un header `Host`, e vale `localhost`, `127.0.0.1` o `[::1]`, con una porta facoltativa;
+- la richiesta non porta alcun header `Forwarded`, `Via`, `X-Real-IP`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Original-Forwarded-For` o `X-Forwarded-*`;
+- un `Origin` o un `Referer`, se presente, indica esattamente schema, host e porta della richiesta, senza credenziali (un `Origin` con percorso, query o frammento è rifiutato), e un `Sec-Fetch-Site`, se presente, vale `same-origin` o `none`.
+
+Una richiesta attendibile ha pieni diritti di modifica: ogni route che altrimenti richiede una sessione di modifica, non solo le valutazioni. Ciò comprende valutazioni, preferiti e scarti, la modalità di confronto, la selezione (incluso **Scarta in cartella**, che sposta o cestina file, e l'eliminazione di una foto), gli album, la gestione di persone e volti, le modifiche a pesi, priorità e contesti di valutazione, l'incorporamento dei metadati e le esportazioni, i job a argomenti fissi di ricalcolo e di rilevamento panorami, e la generazione su richiesta di didascalie e critiche. L'avvio della scansione è l'unica eccezione: richiede sempre `viewer.edition_password`, che non può mai essere impostata mentre questa opzione si applica, quindi resta rifiutato.
+
+> **Attenzione:** il peer di loopback è l'unico vero confine. `Host`, `Origin`, `Referer` e `Sec-Fetch-Site` sono impostati dal client e possono solo rifiutare una richiesta, e un reverse proxy, un tunnel o un port forward sullo stesso host che non aggiunge nessuno degli header sopra è indistinguibile dal tuo browser. Non abilitare mai questa opzione dietro un reverse proxy sullo stesso host. Finché è attiva, qualsiasi processo locale e qualsiasi account del computer può modificare.
 
 ### Prestazioni del viewer
 

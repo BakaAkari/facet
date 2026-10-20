@@ -3434,6 +3434,7 @@
     "password": "",
     "default_category": "",
     "edition_password": "",
+    "trusted_local_editing": false,
     "comparison_mode": {
       "min_comparisons_for_optimization": 50,
       "pair_selection_strategy": "learning",

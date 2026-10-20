@@ -8,15 +8,15 @@ Supports all 4 auth modes: no-password, legacy password, edition password, multi
 import collections
 import hmac
 import hashlib
-import logging
 import ipaddress
-import re
-from urllib.parse import urlsplit
+import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlsplit
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
@@ -33,6 +33,10 @@ from api.config import (
 
 VIEWER_PASSWORD_KEY = 'password'
 EDITION_PASSWORD_KEY = 'edition_password'
+TRUSTED_LOCAL_EDITING_KEY = 'trusted_local_editing'
+# Still the right advice when viewer.trusted_local_editing is on: that opt-in
+# never applies once an edition password is set, and a request it refuses
+# (forwarded, cross-origin, non-loopback) can only edit through the password.
 OPEN_INSTALL_EDIT_DETAIL = 'Set viewer.edition_password to enable editing'
 
 VIEWER_GENERATION_CLAIM = 'pv'
@@ -147,49 +151,103 @@ def _is_open_install(password_key):
     treated as locked; only a genuinely absent config, or a configured-and-
     empty password, stays open. An open install is READ-ONLY: it grants library
     access, never edition rights -- not even to a token that carries an
-    edition claim (see CurrentUser.is_edition).
+    edition claim (see CurrentUser.is_edition). The one exception is the
+    ``viewer.trusted_local_editing`` opt-in (see _trusted_local_editing).
     """
     if config_load_failed() or is_multi_user_enabled():
         return False
     return not VIEWER_CONFIG.get(password_key, '')
 
 
+# Headers a reverse proxy or CDN adds to name the original client. Their
+# presence means the loopback peer is a relay, not the user's browser.
+_PROXY_HEADERS = frozenset({
+    'forwarded', 'via', 'x-real-ip', 'x-client-ip', 'true-client-ip',
+    'cf-connecting-ip', 'x-original-forwarded-for',
+})
+_LOCAL_HOST_RE = re.compile(r'(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?', re.IGNORECASE)
+_DEFAULT_PORTS = {'http': 80, 'https': 443}
+
+
+def _origin(parts):
+    """``(scheme, host, port)`` of a ``urlsplit`` result, the port defaulted from the scheme."""
+    return parts.scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(parts.scheme)
+
+
+def _trusted_local_editing_enabled():
+    """The opt-in is on and the install has neither a browse nor an edition password.
+
+    An operator who set ``viewer.edition_password`` expects it to be asked for,
+    so the opt-in never overrides one; ``_is_open_install`` also keeps a failed
+    config load and multi-user mode out.
+    """
+    return (VIEWER_CONFIG.get(TRUSTED_LOCAL_EDITING_KEY) is True
+            and _is_open_install(VIEWER_PASSWORD_KEY)
+            and _is_open_install(EDITION_PASSWORD_KEY))
+
+
+def _is_proxied(request: Request) -> bool:
+    return any(name.lower() in _PROXY_HEADERS or name.lower().startswith('x-forwarded-')
+               for name in request.headers.keys())
+
+
+def _is_loopback_peer(request: Request) -> bool:
+    """The TCP peer itself is loopback. Raises ValueError for a non-IP peer.
+
+    An IPv4-mapped peer (``::ffff:127.0.0.1``, what a dual-stack listener reports
+    for a local IPv4 browser) is judged by its IPv4 address: ``is_loopback`` on
+    the mapped form differs between Python 3.12 patch releases (gh-117566).
+    """
+    if request.client is None:
+        return False
+    address = ipaddress.ip_address(request.client.host)
+    return (getattr(address, 'ipv4_mapped', None) or address).is_loopback
+
+
+def _local_target_origin(request: Request):
+    """Origin the browser addressed, or None unless it is a loopback name over http(s)."""
+    hosts = request.headers.getlist('host')
+    if (len(hosts) != 1 or not _LOCAL_HOST_RE.fullmatch(hosts[0])
+            or request.url.scheme not in _DEFAULT_PORTS):
+        return None
+    return _origin(urlsplit(f'{request.url.scheme}://{hosts[0]}'))
+
+
+def _same_origin_browser_metadata(request: Request, target_origin) -> bool:
+    """Sec-Fetch-Site, Origin and Referer, when present, all name ``target_origin``."""
+    sites = request.headers.getlist('sec-fetch-site')
+    if len(sites) > 1 or (sites and sites[0] not in ('same-origin', 'none')):
+        return False
+    for name in ('origin', 'referer'):
+        values = request.headers.getlist(name)
+        if len(values) > 1:
+            return False
+        if not values:
+            continue
+        parts = urlsplit(values[0])
+        if parts.username is not None or parts.password is not None or _origin(parts) != target_origin:
+            return False
+        if name == 'origin' and (parts.path not in ('', '/') or parts.query or parts.fragment):
+            return False
+    return True
+
 
 def _trusted_local_editing(request: Request) -> bool:
-    """Request-only opt-in; forwarded identities and browser cross-origin fail closed."""
-    if (VIEWER_CONFIG.get('trusted_local_editing') is not True
-            or config_load_failed() or is_multi_user_enabled()
-            or VIEWER_CONFIG.get(VIEWER_PASSWORD_KEY, '')):
-        return False
-    if any(key.lower() in ('forwarded', 'via', 'x-real-ip') or key.lower().startswith('x-forwarded-')
-           for key in request.headers):
+    """Whether ``viewer.trusted_local_editing`` grants this request edition.
+
+    Derived from the request alone, never from a token claim. Every check
+    fails closed. The loopback peer is the real boundary: Host, Origin,
+    Referer and Sec-Fetch-Site are client-controlled and only refuse, and an
+    unmarked reverse proxy on the same host is indistinguishable from the
+    user's browser -- which is why the option must never run behind one.
+    """
+    if not _trusted_local_editing_enabled() or _is_proxied(request):
         return False
     try:
-        if request.client is None or not ipaddress.ip_address(request.client.host).is_loopback:
+        if not _is_loopback_peer(request):
             return False
-        hosts = request.headers.getlist('host')
-        if len(hosts) != 1 or not re.fullmatch(
-                r'(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?', hosts[0], re.I):
-            return False
-        target = urlsplit(request.url.scheme + '://' + hosts[0])
-        target_origin = (target.scheme, target.hostname, target.port or (443 if target.scheme == 'https' else 80))
-        if target.scheme not in ('http', 'https'):
-            return False
-        sites = request.headers.getlist('sec-fetch-site')
-        if len(sites) > 1 or (sites and sites[0] not in ('same-origin', 'none')):
-            return False
-        for name in ('origin', 'referer'):
-            values = request.headers.getlist(name)
-            if len(values) > 1:
-                return False
-            if values:
-                origin = urlsplit(values[0])
-                if (origin.username is not None or origin.password is not None
-                        or (origin.scheme, origin.hostname, origin.port or (443 if origin.scheme == 'https' else 80)) != target_origin):
-                    return False
-                if name == 'origin' and (origin.path not in ('', '/') or origin.query or origin.fragment):
-                    return False
-        return True
+        target_origin = _local_target_origin(request)
+        return target_origin is not None and _same_origin_browser_metadata(request, target_origin)
     except (ValueError, TypeError):
         return False
 
@@ -212,6 +270,9 @@ class CurrentUser:
 
     @property
     def is_edition(self):
+        # viewer.trusted_local_editing: set per request by get_optional_user,
+        # and only ever true on a single-user install with no passwords at all
+        # (see _trusted_local_editing_enabled), so it overrides nothing below.
         if self.trusted_local_editing:
             return True
         if is_multi_user_enabled():
@@ -662,8 +723,10 @@ def is_edition_enabled() -> bool:
 def is_edition_authenticated(user: Optional[CurrentUser]) -> bool:
     """Check if user has edition-level access.
 
-    An open install (no edition password) grants none: it is read-only.
-    Share-token visitors are excluded.
+    An open install (no edition password) grants none: it is read-only --
+    except to a request ``viewer.trusted_local_editing`` trusts (a direct
+    loopback browser on an install with no passwords; see
+    ``_trusted_local_editing``). Share-token visitors are excluded.
     """
     if user is None:
         return False

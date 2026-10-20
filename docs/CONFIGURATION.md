@@ -1697,7 +1697,8 @@ Web gallery display and behavior.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `default_category` | `""` | Default category filter |
-| `edition_password` | `""` | Password to unlock edition mode (empty = every edit is refused; the install is read-only) |
+| `edition_password` | `""` | Password to unlock edition mode (empty = every edit is refused; the install is read-only, except to a direct local browser under `trusted_local_editing`) |
+| `trusted_local_editing` | `false` | Grant edition rights, without an edition password, to a browser on the same computer reaching the viewer directly over loopback. Applies only while BOTH `password` and `edition_password` are empty on a single-user install; covers every edition-gated route except the scan trigger. **Never enable behind a reverse proxy on the same host.** See [Trusted Local Editing](#trusted-local-editing) |
 | **comparison_mode** | | |
 | `min_comparisons_for_optimization` | `50` | Minimum number of decisive comparisons (one photo won; ties do not count) in the category before weights are suggested |
 | `pair_selection_strategy` | `"learning"` | Pair strategy: `learning` (embedding-diversity cold-start + rank-disagreement once trained), `uncertainty`, `boundary`, `active`, `random` |
@@ -1954,6 +1955,31 @@ Optional password protection for the viewer:
 ```
 
 When set, users must authenticate before accessing the viewer.
+
+### Trusted Local Editing
+
+A single-user viewer used only from a browser on the same computer can edit without an edition password, by opting in:
+
+```json
+{
+  "viewer": {
+    "trusted_local_editing": true
+  }
+}
+```
+
+The opt-in applies only while **both** `viewer.password` and `viewer.edition_password` are empty, multi-user mode is off and the configuration loaded cleanly. Setting an edition password turns it off: an operator who set one expects it to be asked for, so the opt-in never bypasses it. It does not set or reveal a password, change tokens, or enable multi-user administration.
+
+Access is decided per request, never from a token claim. A request is trusted only when all of these hold; anything else is treated as if the option were off, GET requests included:
+
+- the TCP peer is a loopback address (an IPv4-mapped peer such as `::ffff:127.0.0.1` counts by its IPv4 address);
+- there is exactly one `Host` header, and it is `localhost`, `127.0.0.1` or `[::1]`, with an optional port;
+- the request carries no `Forwarded`, `Via`, `X-Real-IP`, `X-Client-IP`, `True-Client-IP`, `CF-Connecting-IP`, `X-Original-Forwarded-For` or `X-Forwarded-*` header;
+- an `Origin` or `Referer`, when present, names the exact scheme, host and port the request was sent to, without credentials (an `Origin` with a path, query or fragment is refused), and a `Sec-Fetch-Site`, when present, is `same-origin` or `none`.
+
+A trusted request holds full edition rights: every route that otherwise needs an edition session, not only ratings. That covers ratings, favorites and rejects, comparison mode, culling (including **Cull to folder**, which moves or trashes files, and per-photo delete), albums, person and face management, weight, priority and scoring-context changes, metadata embedding and exports, the fixed-argument recompute and panorama-detection jobs, and on-demand caption and critique generation. The scan trigger is the one exception: it still requires `viewer.edition_password`, which can never be set while this option applies, so it stays refused.
+
+> **Warning:** the loopback peer is the only real boundary. `Host`, `Origin`, `Referer` and `Sec-Fetch-Site` are set by the client and can only refuse a request, and a reverse proxy, tunnel or port forward on the same host that adds none of the headers above is indistinguishable from your browser. Never enable this option behind any reverse proxy on the same host. Every local process and every account on the computer can edit while it is on.
 
 ### Viewer Performance
 
