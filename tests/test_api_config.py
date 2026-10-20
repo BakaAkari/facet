@@ -20,6 +20,12 @@ import pytest
 import api.config as api_config
 import config_resolve
 from api.config import load_viewer_config, map_disk_path
+# Imported here, not inside the test that uses it: importing the frame router
+# builds api.types' type dropdown from the server config, so an import made
+# under ``isolated_config`` read a path no file had been written to yet (and,
+# written first, would freeze that throwaway config into api.types for the
+# rest of the session).
+from api.routers.frame import _secret as frame_secret
 
 _MOD = "api.config"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1241,11 +1247,9 @@ class TestSecretSignsTokens:
         assert decode_access_token(token) is None
 
     def test_frame_router_reads_the_same_secret(self, isolated_config, preserved_globals):
-        from api.routers.frame import _secret
-
         _write_config(isolated_config)
         api_config.reload_config()
-        assert _secret() == Path(api_config.secret_path()).read_text().strip()
+        assert frame_secret() == Path(api_config.secret_path()).read_text().strip()
 
 
 def _recorded_mkstemp_names(monkeypatch):

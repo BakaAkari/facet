@@ -395,7 +395,7 @@ python /opt/facet/viewer.py      # 仍然读取 /opt/facet/scoring_config.json�
 | `python database.py --export-viewer-db` | 导出轻量版图库数据库（剥离 BLOB，缩小缩略图；若输出已存在则增量导出） |
 | `python database.py --export-viewer-db --force-export` | 强制完整重新导出，即使图库数据库已存在 |
 | `python database.py --cleanup-orphaned-persons` | 删除没有关联人脸的人物 |
-| `python database.py --cleanup-missing-photos` | 从数据库中删除磁盘上已不存在的照片（级联删除会清理标签、检测到的人脸等；同时清除相册归属和向量索引，并使统计缓存失效） |
+| `python database.py --cleanup-missing-photos` | 从数据库中删除磁盘上已不存在的照片（级联删除会清理标签、检测到的人脸等；同时清除相册归属和向量索引，并使统计缓存失效，但保留其中的图库状态——百分位快照、Immich 同步状态、已训练的保留照片排序头与排序器指标，以及缩略图刷新和修复标记；自动重新训练的比较计数会被清零） |
 | `python database.py --cleanup-missing-photos --dry-run` | 预览缺失的文件但不删除 |
 | `python database.py --cleanup-missing-photos --force` | 即使全部照片看起来都缺失也继续执行（用于防止卷未挂载时把一切删光） |
 | `python database.py --migrate-storage-fs` | 把缩略图和特征向量从数据库 BLOB 迁移到文件系统 |

@@ -113,7 +113,7 @@ def _do_resize(thumbnail_bytes: bytes, size: int) -> bytes:
     img = Image.open(BytesIO(thumbnail_bytes))
     if max(img.size) <= size:
         return thumbnail_bytes
-    img.thumbnail((size, size), Image.LANCZOS)
+    img.thumbnail((size, size), Image.Resampling.LANCZOS)
     quality = 20 if size <= 48 else 80
     buf = BytesIO()
     img.save(buf, format='JPEG', quality=quality)

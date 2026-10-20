@@ -24,6 +24,25 @@ _PATH_INACCESSIBLE = 'inaccessible'
 
 _MIN_BACKUPS_TO_KEEP = 1
 
+# stats_cache rows that are library STATE rather than an aggregate derived from
+# the photo rows, so a photo delete keeps them while it invalidates the rest.
+# GLOB patterns, not LIKE: GLOB is case-sensitive and `_` is literal in it. The
+# writers live above db in the import graph (sync, optimization, facet, api), so
+# the keys are spelled here; tests/test_cleanup_missing_photos.py builds each one
+# through its producer's own key function and fails if a pattern drifts.
+DURABLE_STATS_CACHE_KEY_GLOBS: tuple[str, ...] = (
+    PERCENTILES_SNAPSHOT_KEY,          # the distribution stored aggregates were normalized with
+    'immich_synced_paths:*',           # sync.immich: paths last pushed active (drives explicit clears)
+    'immich_webhook_pending:*',        # sync.immich: webhook assets Facet has not scored yet
+    'keeper_head:*',                   # optimization.keeper_head: trained head weights
+    'ranker_metrics:*',                # optimization.personal_ranker: last-train metrics
+    'refresh_thumbnails_watermark',    # facet --refresh-thumbnails resume point
+    'thumbnail_dims_repaired',         # api.db_helpers one-shot repair marker
+)
+# optimization.auto_retrain's per-scope "comparisons since last train" counters,
+# kept only when the caller asks (see delete_photo_rows).
+AUTO_RETRAIN_COUNTER_KEY_GLOB = 'auto_retrain_pending:*'
+
 
 def _classify_missing_path(path):
     """Classify a stored photo path as present, genuinely deleted, or merely
@@ -244,9 +263,11 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
     stores that have no cascade of their own: ``album_photos`` membership,
     ``album_client_picks``, and the ``albums.cover_photo_path``
     back-reference. Refreshes ``persons.face_count`` afterward so the viewer
-    stays accurate, and invalidates ``stats_cache`` -- all but the persisted
-    percentile snapshot, the distribution the last recompute normalized every
-    stored aggregate with, which deleting photos does not change.
+    stays accurate, and invalidates ``stats_cache`` -- every row except the
+    library state in ``DURABLE_STATS_CACHE_KEY_GLOBS`` (the percentile snapshot
+    the last recompute normalized every stored aggregate with, the Immich push
+    state, trained keeper heads, ranker metrics, the thumbnail-refresh
+    watermark and the dimension-repair marker), none of which a delete changes.
 
     ``preserve_auto_retrain_counters`` (default off, ``cleanup_missing_photos``'s
     behaviour unchanged) scopes that invalidation to spare
@@ -300,11 +321,12 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
 
     # Invalidate stats cache since photo counts and details have changed.
     try:
+        kept = DURABLE_STATS_CACHE_KEY_GLOBS
         if preserve_auto_retrain_counters:
-            cursor.execute("DELETE FROM stats_cache WHERE key != ? AND "
-                           "key NOT LIKE 'auto_retrain_pending:%'", (PERCENTILES_SNAPSHOT_KEY,))
-        else:
-            cursor.execute("DELETE FROM stats_cache WHERE key != ?", (PERCENTILES_SNAPSHOT_KEY,))
+            kept += (AUTO_RETRAIN_COUNTER_KEY_GLOB,)
+        cursor.execute(
+            "DELETE FROM stats_cache WHERE NOT (" + " OR ".join(["key GLOB ?"] * len(kept)) + ")",
+            kept)
         # Tombstone rather than absence, so a viewer computing the ranges right
         # now cannot write its pre-deletion result back (invalidate_metric_ranges).
         invalidate_metric_ranges(cursor)

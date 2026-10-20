@@ -5,7 +5,8 @@
 at 07280e7a (float64 numpy formulation). Nothing here may be "improved": it exists so a faster rewrite
 is compared against what shipped, not against itself. The one deliberate deviation is the no-subject
 branch of ``_score_from_mask``: it stores None (not a made-up 5.0) for the three metrics that need a
-subject, because the production method now does. ``tests/test_saliency_exact.py`` and
+subject, because the production method now does; the other is the ``int()`` around
+``np.count_nonzero`` (see there). ``tests/test_saliency_exact.py`` and
 ``scripts/perf/verify_saliency_exact.py`` both import it.
 """
 import cv2
@@ -36,8 +37,11 @@ class ReferenceSaliency:
         h, w = mask.shape[:2]
         total_pixels = h * w
 
-        # Subject area ratio
-        subject_pixels = np.count_nonzero(mask)
+        # Subject area ratio. int() is the one departure from the old code: it ran
+        # under NumPy < 2.3, where np.count_nonzero returned a Python int; from 2.3
+        # it returns np.int64, which would make this reference's prominence an
+        # np.float64 the old code never produced.
+        subject_pixels = int(np.count_nonzero(mask))
         subject_prominence = subject_pixels / total_pixels if total_pixels > 0 else 0
 
         # If no subject detected, return defaults (None, not 5.0: see the module docstring)

@@ -201,10 +201,6 @@ cuML 的划分略微更细，噪声率相当，聚类规模中位数完全一致
 
 由于规则 2 以先前的归属为准，早先的错误归属会被延续而不是被纠正。对于一个以保留已有人物为目的的模式，这正是预期的行为——若要从零重新推导全部结果，请使用 `--cluster-faces-force`。当一个聚类的人脸恰好在两个人物之间平分时，平局按人脸 id 顺序决定：保留拥有该聚类中编号最小的、此前已有归属的人脸的那位人物。特征向量按 `ORDER BY id` 加载；旧版本未指定该顺序，因此在这种平局下，保留下来的人物 id 可能与旧版本的运行结果不同。
 
-## 可选的 OFIQ 人脸质量（商业模式）
-
-商业模式下受限的人脸质量模型不可用。可选的替代方案是安装 `python-ofiq`（UNICEF 对 BSI OFIQ 的绑定，ISO/IEC 29794-5；MIT；可与 numpy 2 和 OpenCV 4.8+ 共存），命令为 `pip install python-ofiq`。它只提供 Linux x86-64 和 macOS arm64 的 wheel（Windows 请用 WSL2 或 Docker）。OFIQ 模型（约 400 MB，MIT/Apache-2.0）从不随 Facet 分发：首次使用时 Facet 会以固定的 SHA-256 下载到 `pretrained_models/ofiq/`。商业模式的人脸流水线会把 OFIQ 统一分数（0-100）除以 10 后存入 `face_quality_iqa`；一张照片的值为 0.7 x 最差人脸 + 0.3 x 平均值。未安装 `python-ofiq` 时该列为 NULL，其权重会被重新归一化。
-
 ## 闭眼检测
 
 使用 InsightFace 106 点关键点计算的 Eye Aspect Ratio（EAR）。
@@ -232,6 +228,10 @@ python facet.py --recompute-blinks
 ```
 
 只处理包含人脸的照片，无需 GPU。
+
+## 可选的 OFIQ 人脸质量（商业模式）
+
+商业模式下受限的人脸质量模型不可用。可选的替代方案是安装 `python-ofiq`（UNICEF 对 BSI OFIQ 的绑定，ISO/IEC 29794-5；MIT；可与 numpy 2 和 OpenCV 4.8+ 共存），命令为 `pip install python-ofiq`。它只提供 Linux x86-64 和 macOS arm64 的 wheel（Windows 请用 WSL2 或 Docker）。OFIQ 模型（约 400 MB，MIT/Apache-2.0）从不随 Facet 分发：首次使用时 Facet 会以固定的 SHA-256 下载到 `pretrained_models/ofiq/`。商业模式的人脸流水线会把 OFIQ 统一分数（0-100）除以 10 后存入 `face_quality_iqa`；一张照片的值为 0.7 x 最差人脸 + 0.3 x 平均值。未安装 `python-ofiq` 时该列为 NULL，其权重会被重新归一化。
 
 ## 逐张人脸的表情信号（睁眼 + 微笑）
 

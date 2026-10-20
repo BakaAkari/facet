@@ -401,7 +401,7 @@ Verifica: faixas de pontuação, métricas faciais, corrupção de BLOB, tamanho
 | `python database.py --export-viewer-db` | Exporta um banco de dados leve para o visualizador (remove BLOBs, reduz as miniaturas; incremental se a saída já existir) |
 | `python database.py --export-viewer-db --force-export` | Força uma re-exportação completa, mesmo se o banco do visualizador já existir |
 | `python database.py --cleanup-orphaned-persons` | Remove pessoas sem rostos associados |
-| `python database.py --cleanup-missing-photos` | Remove do banco de dados as fotos que não estão mais no disco (as exclusões em cascata limpam tags, rostos detectados etc.; também limpa associações de álbuns, o índice vetorial e invalida o cache de estatísticas) |
+| `python database.py --cleanup-missing-photos` | Remove do banco de dados as fotos que não estão mais no disco (as exclusões em cascata limpam tags, rostos detectados etc.; também limpa associações de álbuns e o índice vetorial, e invalida o cache de estatísticas exceto o estado da biblioteca que ele guarda — o snapshot de percentis, o estado de sincronização com o Immich, as heads keeper treinadas e as métricas do ranker, e os marcadores de atualização de miniaturas e de reparo; os contadores de comparações do retreinamento automático são zerados) |
 | `python database.py --cleanup-missing-photos --dry-run` | Pré-visualiza os arquivos ausentes sem excluir |
 | `python database.py --cleanup-missing-photos --force` | Prossegue mesmo quando todas as fotos parecem ausentes (proteção contra apagar tudo quando um volume está desmontado) |
 | `python database.py --migrate-storage-fs` | Migra miniaturas e embeddings dos BLOBs do banco de dados para o sistema de arquivos |
