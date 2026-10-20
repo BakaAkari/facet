@@ -51,4 +51,4 @@ def bound_to_inference_size(img):
     w, h = bounded_size(*img.size, MAX_INFERENCE_SIZE)
     if (w, h) == img.size:
         return img
-    return img.resize((w, h), Image.LANCZOS)
+    return img.resize((w, h), Image.Resampling.LANCZOS)

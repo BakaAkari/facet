@@ -125,7 +125,7 @@ def test_no_constructor_or_database_initialization(config, monkeypatch):
     ("stored", "state"),
     [(None, "missing"), (float("nan"), "invalid"), (True, "invalid"), (0.0, "present")],
 )
-def test_stored_presence_and_generation_are_separate_from_recalculation(
+def test_stored_presence_is_separate_from_recalculation(
     config, stored, state
 ):
     import json

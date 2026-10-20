@@ -1866,12 +1866,12 @@
     },
     "unavailable_reason": {
       "missing_scoring_inputs": "Nel database mancano alcune colonne di valutazione, quindi il calcolo non è possibile. Esegui python database.py per aggiornare lo schema.",
-      "normalization_snapshot_unavailable": "Lo snapshot di normalizzazione salvato della libreria non è disponibile. Esegui python facet.py --recompute-average per ricostruirlo.",
-      "invalid_scoring_inputs": "Le metriche salvate di questa foto non sono valide. Riscansionala per sostituirle."
+      "normalization_snapshot_unavailable": "Lo snapshot di normalizzazione salvato della libreria non è disponibile. Riprova; se persiste, esegui python facet.py --recompute-average per ricostruirlo.",
+      "invalid_scoring_inputs": "Le metriche salvate di questa foto non sono valide. Riscansionala con --force per sostituirle."
     },
     "normalization_basis": {
       "persisted_percentiles": "Normalizzato in base allo snapshot dei percentili salvato della libreria.",
-      "stored_metrics": "Vengono usati i valori grezzi delle metriche salvate perché non esiste ancora uno snapshot dei percentili."
+      "stored_metrics": "Vengono usati i valori grezzi delle metriche salvate, senza normalizzazione per percentili."
     }
   },
   "culling": {

@@ -5,6 +5,7 @@ VACUUM, ANALYZE, optimization, and viewer database export.
 """
 
 import glob
+import json
 import logging
 import os
 import shutil
@@ -248,6 +249,32 @@ def backup_database(db_path='photo_scores_pro.db', keep=3, dest_dir=None, verbos
     return backup_path
 
 
+def _prune_immich_synced_paths(cursor, paths):
+    """Drop deleted paths from every ``immich_synced_paths:*`` blob.
+
+    The blob is ``{path: {"rating": bool, "favorite": bool}}`` (sync.immich);
+    the push only revisits paths still in ``photos``, so an entry for a deleted
+    photo would otherwise stay forever. The writer sits above db in the import
+    graph, so the format is handled minimally here.
+    """
+    try:
+        rows = cursor.execute(
+            "SELECT key, value FROM stats_cache WHERE key GLOB 'immich_synced_paths:*'"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return
+    gone = set(paths)
+    for key, value in rows:
+        try:
+            state = json.loads(value) if value else None
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(state, dict) or gone.isdisjoint(state):
+            continue
+        cursor.execute("UPDATE stats_cache SET value = ? WHERE key = ?",
+                       (json.dumps({k: v for k, v in state.items() if k not in gone}), key))
+
+
 def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters: bool = False) -> dict:
     """Delete photo rows and their cascade-adjacent side effects.
 
@@ -267,7 +294,8 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
     library state in ``DURABLE_STATS_CACHE_KEY_GLOBS`` (the percentile snapshot
     the last recompute normalized every stored aggregate with, the Immich push
     state, trained keeper heads, ranker metrics, the thumbnail-refresh
-    watermark and the dimension-repair marker), none of which a delete changes.
+    watermark and the dimension-repair marker). Those survive the delete; only
+    the Immich push state is edited, to drop the deleted paths from it.
 
     ``preserve_auto_retrain_counters`` (default off, ``cleanup_missing_photos``'s
     behaviour unchanged) scopes that invalidation to spare
@@ -318,6 +346,8 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
     emptied_persons = cursor.execute(
         "SELECT COUNT(*) FROM persons WHERE face_count = 0"
     ).fetchone()[0]
+
+    _prune_immich_synced_paths(cursor, paths)
 
     # Invalidate stats cache since photo counts and details have changed.
     try:
@@ -547,7 +577,7 @@ def _downsize_face_thumbnails(dest_conn, face_resync_paths, thumbnail_size, batc
             try:
                 img = Image.open(BytesIO(thumb_bytes))
                 if max(img.size) > thumbnail_size:
-                    img.thumbnail((thumbnail_size, thumbnail_size), Image.LANCZOS)
+                    img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
                     buf = BytesIO()
                     img.save(buf, format='JPEG', quality=80)
                     updates.append((buf.getvalue(), face_id))
@@ -680,7 +710,7 @@ def _incremental_update_viewer_db(source_db, output_path, thumbnail_size, verbos
                 try:
                     img = Image.open(BytesIO(thumb_bytes))
                     if max(img.size) > thumbnail_size:
-                        img.thumbnail((thumbnail_size, thumbnail_size), Image.LANCZOS)
+                        img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
                         buf = BytesIO()
                         img.save(buf, format='JPEG', quality=80)
                         updates.append((buf.getvalue(), path))
@@ -990,7 +1020,7 @@ def export_viewer_db(source_db='photo_scores_pro.db', output_path=None, thumbnai
             try:
                 img = Image.open(BytesIO(thumb_bytes))
                 if max(img.size) > thumbnail_size:
-                    img.thumbnail((thumbnail_size, thumbnail_size), Image.LANCZOS)
+                    img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
                     buf = BytesIO()
                     img.save(buf, format='JPEG', quality=80)
                     updates.append((buf.getvalue(), path))
@@ -1034,7 +1064,7 @@ def export_viewer_db(source_db='photo_scores_pro.db', output_path=None, thumbnai
                 img = Image.open(BytesIO(thumb_bytes))
                 # Face thumbnails are small; only resize if larger than thumbnail_size
                 if max(img.size) > thumbnail_size:
-                    img.thumbnail((thumbnail_size, thumbnail_size), Image.LANCZOS)
+                    img.thumbnail((thumbnail_size, thumbnail_size), Image.Resampling.LANCZOS)
                     buf = BytesIO()
                     img.save(buf, format='JPEG', quality=80)
                     updates.append((buf.getvalue(), face_id))

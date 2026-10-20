@@ -1866,12 +1866,12 @@
     },
     "unavailable_reason": {
       "missing_scoring_inputs": "The database lacks some scoring columns, so the calculation cannot run. Run python database.py to upgrade the schema.",
-      "normalization_snapshot_unavailable": "The library's saved normalization snapshot is unavailable. Run python facet.py --recompute-average to rebuild it.",
-      "invalid_scoring_inputs": "The stored metrics for this photo are invalid. Rescan it to replace them."
+      "normalization_snapshot_unavailable": "The library's saved normalization snapshot is unavailable. Retry; if it persists, run python facet.py --recompute-average to rebuild it.",
+      "invalid_scoring_inputs": "The stored metrics for this photo are invalid. Rescan it with --force to replace them."
     },
     "normalization_basis": {
       "persisted_percentiles": "Normalized against the library's saved percentile snapshot.",
-      "stored_metrics": "Raw stored metric values are used because no saved percentile snapshot exists yet."
+      "stored_metrics": "Raw stored metric values are used, without percentile normalization."
     }
   },
   "culling": {

@@ -1866,12 +1866,12 @@
     },
     "unavailable_reason": {
       "missing_scoring_inputs": "Il manque des colonnes de notation dans la base, le calcul est impossible. Lancez python database.py pour mettre le schéma à niveau.",
-      "normalization_snapshot_unavailable": "L’instantané de normalisation enregistré de la bibliothèque est indisponible. Lancez python facet.py --recompute-average pour le reconstruire.",
-      "invalid_scoring_inputs": "Les métriques enregistrées de cette photo sont invalides. Réanalysez-la pour les remplacer."
+      "normalization_snapshot_unavailable": "L’instantané de normalisation enregistré de la bibliothèque est indisponible. Réessayez ; si le problème persiste, lancez python facet.py --recompute-average pour le reconstruire.",
+      "invalid_scoring_inputs": "Les métriques enregistrées de cette photo sont invalides. Réanalysez-la avec --force pour les remplacer."
     },
     "normalization_basis": {
       "persisted_percentiles": "Normalisé selon l’instantané de percentiles enregistré de la bibliothèque.",
-      "stored_metrics": "Les valeurs brutes des métriques enregistrées sont utilisées, car aucun instantané de percentiles n’existe encore."
+      "stored_metrics": "Les valeurs brutes des métriques enregistrées sont utilisées, sans normalisation par percentiles."
     }
   },
   "culling": {

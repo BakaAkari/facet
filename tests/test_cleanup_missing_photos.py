@@ -3,6 +3,7 @@ paths (F33): a permission-denied directory or an unmounted/absent scan root
 must be preserved, never cascade-deleted, unless --force is given.
 """
 
+import json
 import os
 import sqlite3
 
@@ -275,6 +276,25 @@ def test_delete_photo_rows_keeps_durable_library_state(tmp_path, preserve_counte
     if preserve_counters:
         expected.add('auto_retrain_pending:global')
     assert _stats_cache_keys(db) == expected
+
+
+def test_delete_photo_rows_prunes_deleted_paths_from_immich_synced_state(tmp_path):
+    """A deleted photo can never be re-pushed or cleared, so its entry must not
+    linger in the durable synced-paths blob; surviving paths stay."""
+    db = str(tmp_path / 'scores.db')
+    _make_db(db, ['/lib/a.jpg', '/lib/b.jpg'])
+    state = {'/lib/a.jpg': {'rating': True, 'favorite': False},
+             '/lib/b.jpg': {'rating': False, 'favorite': True}}
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO stats_cache (key, value, updated_at) VALUES (?, ?, 0)",
+                 ('immich_synced_paths:global', json.dumps(state)))
+    conn.commit()
+    delete_photo_rows(conn, ['/lib/b.jpg'])
+    conn.commit()
+    value = conn.execute(
+        "SELECT value FROM stats_cache WHERE key = 'immich_synced_paths:global'").fetchone()[0]
+    conn.close()
+    assert json.loads(value) == {'/lib/a.jpg': state['/lib/a.jpg']}
 
 
 if __name__ == '__main__':

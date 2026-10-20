@@ -1382,7 +1382,7 @@ def _subject_crop_and_sharpness(thumbnail_bytes, bbox):
         return None, None
     crop = img.crop((px0, py0, px1, py1))
     if max(crop.size) > _SUBJECT_CROP_OUTPUT:
-        crop.thumbnail((_SUBJECT_CROP_OUTPUT, _SUBJECT_CROP_OUTPUT), Image.LANCZOS)
+        crop.thumbnail((_SUBJECT_CROP_OUTPUT, _SUBJECT_CROP_OUTPUT), Image.Resampling.LANCZOS)
     gray = cv2.cvtColor(np.asarray(crop), cv2.COLOR_RGB2GRAY)
     sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     buf = BytesIO()

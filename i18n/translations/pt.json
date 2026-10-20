@@ -1866,12 +1866,12 @@
     },
     "unavailable_reason": {
       "missing_scoring_inputs": "À base de dados faltam colunas de pontuação, por isso o cálculo não é possível. Execute python database.py para atualizar o esquema.",
-      "normalization_snapshot_unavailable": "O instantâneo de normalização guardado da biblioteca não está disponível. Execute python facet.py --recompute-average para o reconstruir.",
-      "invalid_scoring_inputs": "As métricas guardadas desta foto são inválidas. Volte a analisá-la para as substituir."
+      "normalization_snapshot_unavailable": "O instantâneo de normalização guardado da biblioteca não está disponível. Tente novamente; se persistir, execute python facet.py --recompute-average para o reconstruir.",
+      "invalid_scoring_inputs": "As métricas guardadas desta foto são inválidas. Volte a analisá-la com --force para as substituir."
     },
     "normalization_basis": {
       "persisted_percentiles": "Normalizado com o instantâneo de percentis guardado da biblioteca.",
-      "stored_metrics": "São usados os valores brutos das métricas guardadas porque ainda não existe um instantâneo de percentis."
+      "stored_metrics": "São usados os valores brutos das métricas guardadas, sem normalização por percentis."
     }
   },
   "culling": {

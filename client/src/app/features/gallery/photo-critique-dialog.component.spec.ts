@@ -184,9 +184,10 @@ describe('PhotoCritiqueDialogComponent current calculation DOM', () => {
   });
   const unavailable = { current_formula_score: null, native_adjustment: null, breakdown: [], category_reason: { reason_key: 'unavailable', category: 'portrait', details: [] } };
   it.each(['missing_scoring_inputs', 'normalization_snapshot_unavailable', 'invalid_scoring_inputs'] as const)('renders the %s reason', async (reason) => {
-    const fixture = await render({ ...unavailable, explanation_unavailable_reason: reason });
+    const fixture = await render({ ...unavailable, explanation_unavailable_reason: reason, normalization_basis: 'stored_metrics' });
     const text = fixture.nativeElement.querySelector('[data-testid="unavailable-reason"]').textContent;
     expect(text).toContain('critique.unavailable_reason.' + reason);
+    expect(fixture.nativeElement.querySelector('[data-testid="normalization-basis"]')).toBeNull();
   });
   it('falls back to the generic text when no unavailable reason is given', async () => {
     const fixture = await render({ ...unavailable, explanation_unavailable_reason: null });
@@ -207,6 +208,10 @@ describe('PhotoCritiqueDialogComponent current calculation DOM', () => {
     const fixture = await render({ normalization_basis: basis });
     expect(fixture.nativeElement.querySelector('[data-testid="normalization-basis"]').textContent)
       .toContain('critique.normalization_basis.' + basis);
+  });
+  it('omits the normalization basis when none is reported', async () => {
+    const fixture = await render({ normalization_basis: null });
+    expect(fixture.nativeElement.querySelector('[data-testid="normalization-basis"]')).toBeNull();
   });
   it('marks cached commentary without claiming verified scoring context', async () => {
     const fixture = await render({ vlm_critique: 'Synthetic cached commentary', vlm_source: 'cached' });
