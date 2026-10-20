@@ -14,7 +14,7 @@ from io import BytesIO
 
 from int_affinity import storable_int
 from db.connection import apply_pragmas
-from db.stats_cache import invalidate_metric_ranges
+from db.stats_cache import PERCENTILES_SNAPSHOT_KEY, invalidate_metric_ranges
 
 logger = logging.getLogger("facet.db_maintenance")
 
@@ -244,7 +244,9 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
     stores that have no cascade of their own: ``album_photos`` membership,
     ``album_client_picks``, and the ``albums.cover_photo_path``
     back-reference. Refreshes ``persons.face_count`` afterward so the viewer
-    stays accurate, and invalidates ``stats_cache``.
+    stays accurate, and invalidates ``stats_cache`` -- all but the persisted
+    percentile snapshot, the distribution the last recompute normalized every
+    stored aggregate with, which deleting photos does not change.
 
     ``preserve_auto_retrain_counters`` (default off, ``cleanup_missing_photos``'s
     behaviour unchanged) scopes that invalidation to spare
@@ -299,9 +301,10 @@ def delete_photo_rows(conn, paths: list[str], *, preserve_auto_retrain_counters:
     # Invalidate stats cache since photo counts and details have changed.
     try:
         if preserve_auto_retrain_counters:
-            cursor.execute("DELETE FROM stats_cache WHERE key NOT LIKE 'auto_retrain_pending:%'")
+            cursor.execute("DELETE FROM stats_cache WHERE key != ? AND "
+                           "key NOT LIKE 'auto_retrain_pending:%'", (PERCENTILES_SNAPSHOT_KEY,))
         else:
-            cursor.execute("DELETE FROM stats_cache")
+            cursor.execute("DELETE FROM stats_cache WHERE key != ?", (PERCENTILES_SNAPSHOT_KEY,))
         # Tombstone rather than absence, so a viewer computing the ranges right
         # now cannot write its pre-deletion result back (invalidate_metric_ranges).
         invalidate_metric_ranges(cursor)

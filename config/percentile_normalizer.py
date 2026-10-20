@@ -8,6 +8,7 @@ import json
 import logging
 import sqlite3
 from db import get_connection
+from db.stats_cache import PERCENTILES_SNAPSHOT_KEY
 from config_resolve import load_resolved, write_user_config
 
 logger = logging.getLogger("facet.normalizer")
@@ -111,8 +112,6 @@ class PercentileNormalizer:
 
         return self.category_percentiles
 
-    PERSIST_KEY = 'percentiles_snapshot'
-
     def save_to_stats_cache(self, conn):
         """Persist computed percentiles into stats_cache for staleness tracking.
 
@@ -131,7 +130,7 @@ class PercentileNormalizer:
         }
         conn.execute(
             "INSERT OR REPLACE INTO stats_cache (key, value, updated_at) VALUES (?, ?, ?)",
-            (self.PERSIST_KEY, json.dumps(snapshot), time.time()),
+            (PERCENTILES_SNAPSHOT_KEY, json.dumps(snapshot), time.time()),
         )
 
     @classmethod
@@ -139,7 +138,7 @@ class PercentileNormalizer:
         """Load the persisted percentile snapshot, or None if absent/invalid."""
         try:
             row = conn.execute(
-                "SELECT value FROM stats_cache WHERE key = ?", (cls.PERSIST_KEY,)
+                "SELECT value FROM stats_cache WHERE key = ?", (PERCENTILES_SNAPSHOT_KEY,)
             ).fetchone()
         except sqlite3.OperationalError:
             return None
@@ -152,7 +151,7 @@ class PercentileNormalizer:
 
     @classmethod
     def from_snapshot(cls, conn, settings):
-        """The normalizer the last ``--recompute-average`` scored with, or None.
+        """The normalizer the last percentile recompute scored with, or None.
 
         ``update_all_aggregates`` rewrites tech_sharpness / color_score /
         eye_sharpness from their raw columns in memory, never on disk, so the
@@ -162,9 +161,11 @@ class PercentileNormalizer:
         over a minute, too slow for a request handler).
 
         ``settings`` is ``ScoringConfig.get_normalization_settings()``. Returns
-        None when the method is not ``percentile`` or no snapshot exists: no
-        percentile recompute has then ever run, so the stored columns ARE what
-        is served.
+        None when the method is not ``percentile`` or no snapshot exists. Only
+        ``--recompute-average`` and ``--recompute-category`` persist one and a
+        photo delete keeps it, so an absent snapshot means no percentile
+        recompute has run (or ``stats_cache`` was dropped): the scan scored the
+        stored columns un-normalized, and those ARE what is served.
         """
         if settings.get('method') != 'percentile':
             return None

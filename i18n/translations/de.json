@@ -1720,7 +1720,6 @@
     "strengths": "Starken",
     "weaknesses": "Schwachen",
     "suggestions": "Vorschlage",
-    "penalties": "Strafen",
     "distortions": "Erkannte Verzerrungen",
     "vlm_title": "KI-Kritik",
     "vlm_loading": "KI-Kritik wird erstellt...",
@@ -1737,7 +1736,7 @@
       "color_score": "Farbe",
       "contrast_score": "Kontrast",
       "isolation_bonus": "Motivfreistelling",
-      "noise_sigma": "Rauschpegel",
+      "noise_sigma": "Rauschqualität",
       "dynamic_range_stops": "Dynamikumfang",
       "leading_lines_score": "Fuhrungslinien",
       "power_point_score": "Kraftpunkte",
@@ -1754,7 +1753,10 @@
       "form_balance": "Visuelle Balance",
       "form_edge_entropy": "Kantenentropie",
       "form_fractal": "Fraktale Komplexitat",
-      "color_harmony": "Farbharmonie"
+      "color_harmony": "Farbharmonie",
+      "aesthetic_v25": "Aesthetic v2.5",
+      "qrealign_score": "Q-ReAlign",
+      "deqa_score": "DeQA"
     },
     "suggestion": {
       "aesthetic": "Streben Sie eine starkere visuelle Wirkung durch bessere Beleuchtung oder Motivwahl an",
@@ -1842,15 +1844,22 @@
         "f_stop_min": "Blende {actual} < {required}",
         "f_stop_max": "Blende {actual} > {required}",
         "no_value": "Daten nicht verfügbar"
-      }
+      },
+      "override": "Kategorie überschrieben: {category}"
     },
     "penalty": {
       "blink": "Blinzeln erkannt",
-      "noise": "Rauschen: {value}",
-      "highlight_clipping": "Lichter-Clipping: {value}",
-      "shadow_clipping": "Schatten-Clipping: {value}",
       "skin_tone": "Hautton-Farbstich: {cast} (ΔE {delta})"
-    }
+    },
+    "current_formula": "Aktuelle Berechnung",
+    "stored_score": "Gespeicherte Bewertung",
+    "calculation_note": "Aktuelle Einstellungen und gespeicherte Normalisierung bestimmen diese Qualitätswerte. Höher ist besser; fehlende Werte verwenden die Standardwerte der Bewertung.",
+    "adjustments": "Nettoanpassungen und Rundung",
+    "different_score": "Die gespeicherte Bewertung weicht von dieser Berechnung ab.",
+    "calculation_unavailable": "Der vollständige Bewertungskontext fehlt. Die gespeicherte Bewertung wird weiterhin angezeigt.",
+    "advisories": "Erkannte Bedingungen",
+    "cached_commentary": "Gespeicherte Kommentare haben keinen verifizierten Bewertungskontext.",
+    "stored_unavailable": "Keine gültige gespeicherte Bewertung"
   },
   "culling": {
     "compare": {

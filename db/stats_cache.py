@@ -20,6 +20,11 @@ PENDING_RENDER_KEY = 'pending_render_count'
 # offline refresh and the neutral-IQA repair all name one key. Its evictors write
 # a tombstone (see invalidate_metric_ranges) instead of deleting the row.
 METRIC_RANGES_KEY = 'metric_ranges'
+# The percentile distribution the last --recompute-average / --recompute-category
+# normalized every stored aggregate with (PercentileNormalizer.save_to_stats_cache).
+# Library data rather than a derived count, so the stats_cache invalidations that
+# follow a photo delete keep it. Defined here because db cannot import config.
+PERCENTILES_SNAPSHOT_KEY = 'percentiles_snapshot'
 
 # The count only moves when a scan or a --refresh-thumbnails run writes, and the
 # banner it drives is advisory. An hour keeps the scan off every SPA startup
