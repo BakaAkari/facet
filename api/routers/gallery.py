@@ -1732,7 +1732,8 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
 
     features = dict(VIEWER_CONFIG.get('features', {}))
     with get_db() as conn:
-        sort_options, sort_options_grouped = available_sort_options(populated_gated_cols(conn))
+        populated_scores = populated_gated_cols(conn)
+        sort_options, sort_options_grouped = available_sort_options(populated_scores)
         has_embeddings = conn.execute(
             "SELECT 1 FROM photos WHERE clip_embedding IS NOT NULL LIMIT 1"
         ).fetchone() is not None
@@ -1760,6 +1761,7 @@ def api_config(user: Optional[CurrentUser] = Depends(get_optional_user)):
         'sort_options': sort_options,
         'sort_options_grouped': sort_options_grouped,
         'unavailable_metrics': unavailable_columns(),
+        'populated_scores': sorted(populated_scores),
         'quality_levels': QUALITY_LEVELS,
         'type_labels': TYPE_LABELS,
         'defaults': VIEWER_CONFIG['defaults'],

@@ -5,6 +5,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatMenuModule } from '@angular/material/menu';
 import { firstValueFrom } from 'rxjs';
+import { ExtendedQualityComponent } from '../extended-quality/extended-quality.component';
 import { Photo, normalisePhotoFlags } from '../../models/photo.model';
 import { FixedPipe } from '../../pipes/fixed.pipe';
 import { ShutterSpeedPipe } from '../../pipes/shutter-speed.pipe';
@@ -21,6 +22,7 @@ import { i18nKeys } from '../../../core/i18n/keys';
   selector: 'app-shared-photo-detail',
   standalone: true,
   imports: [
+    ExtendedQualityComponent,
     MatIconModule, MatButtonModule, MatTooltipModule, MatMenuModule,
     FixedPipe, ShutterSpeedPipe, TranslatePipe, ThumbnailUrlPipe,
     CategoryLabelPipe, IsLensNamePipe, DownloadIconPipe,
@@ -145,6 +147,7 @@ import { i18nKeys } from '../../../core/i18n/keys';
               @if (p.liqe_score !== null) {
                 <div class="flex justify-between items-baseline gap-2"><span class="text-[var(--mat-sys-on-surface-variant)]">{{ I18N.tooltip.liqe_score | translate }}</span><span class="text-[var(--mat-sys-primary)] font-medium">{{ p.liqe_score | fixed:1 }}</span></div>
               }
+              <app-extended-quality [photo]="p" />
             </div>
           </div>
 

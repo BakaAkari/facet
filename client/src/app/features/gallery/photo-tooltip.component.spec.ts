@@ -7,6 +7,7 @@ import { PhotoTooltipComponent, CategoryLabelPipe } from './photo-tooltip.compon
 import { ApiService } from '../../core/services/api.service';
 import { I18nService } from '../../core/services/i18n.service';
 import type { Photo, PhotoSet } from '../../shared/models/photo.model';
+import { GalleryStore } from './gallery.store';
 import { makePhoto, makePhotoFull } from '../../../testing/photo.fixture';
 
 /* eslint-disable @angular-eslint/component-selector */
@@ -26,18 +27,41 @@ class TestHostComponent {
 describe('PhotoTooltipComponent', () => {
   let fixture: ComponentFixture<TestHostComponent>;
   const mockI18n = { t: (key: string) => key, locale: vi.fn(() => 'en'), translations: vi.fn(() => ({})) };
+  const mockStore = { config: signal<{ populated_scores?: string[] } | null>(null) };
   const mockRouter = { navigate: vi.fn(() => Promise.resolve(true)) };
 
   beforeEach(async () => {
+    mockStore.config.set(null);
     mockRouter.navigate.mockClear();
     await TestBed.configureTestingModule({
       imports: [TestHostComponent],
       providers: [
         { provide: I18nService, useValue: mockI18n },
         { provide: Router, useValue: mockRouter },
+        { provide: GalleryStore, useValue: mockStore },
       ],
     }).compileComponents();
     fixture = TestBed.createComponent(TestHostComponent);
+  });
+
+  it('keeps present NULL extended metrics visible in the actual hover template', () => {
+    mockStore.config.set({ populated_scores: ['aesthetic_v25', 'qrealign_score', 'deqa_score'] });
+    fixture.componentInstance.photo.set(makePhotoFull({ aesthetic_v25: null, qrealign_score: null, deqa_score: 0 }));
+    fixture.detectChanges();
+    for (const key of ['aesthetic_v25', 'qrealign_score']) {
+      expect(fixture.nativeElement.querySelector(`[data-testid="${key}-score"]`).textContent).toContain('tooltip.not_computed');
+    }
+    expect(fixture.nativeElement.querySelector('[data-testid="deqa_score-score"]').textContent.trim()).toBe('0.0');
+  });
+
+  it('hides NULL extended metrics when the library never ran those models, and omitted keys render no rows', () => {
+    mockStore.config.set({ populated_scores: [] });
+    fixture.componentInstance.photo.set(makePhotoFull({ aesthetic_v25: null, qrealign_score: null, deqa_score: null }));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelectorAll('app-extended-quality [data-testid$="-row"]').length).toBe(0);
+    fixture.componentInstance.photo.set(makePhoto());
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelectorAll('app-extended-quality [data-testid$="-row"]').length).toBe(0);
   });
 
   it('creates the host', () => {
@@ -418,6 +442,7 @@ describe('PhotoTooltipComponent', () => {
           { provide: I18nService, useValue: mockI18n },
           { provide: ApiService, useValue: mockApi },
           { provide: Router, useValue: mockRouter },
+          { provide: GalleryStore, useValue: mockStore },
         ],
       }).compileComponents();
       setFixture = TestBed.createComponent(TestHostComponent);
