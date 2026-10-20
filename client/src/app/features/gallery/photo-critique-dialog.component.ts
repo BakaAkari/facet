@@ -203,15 +203,24 @@ export class DistortionLabelPipe implements PipeTransform {
         <div class="text-sm mb-3" data-testid="score-calculation-context">
           <div>{{ I18N.critique.stored_score | translate }}:
             @if (c.aggregate !== null && c.aggregate !== undefined) { {{ c.aggregate | number:'1.2-2' }} }
+            @else if (c.stored_score_state === 'missing') { {{ I18N.critique.stored_state.missing | translate }} }
+            @else if (c.stored_score_state === 'invalid') { {{ I18N.critique.stored_state.invalid | translate }} }
             @else { {{ I18N.critique.stored_unavailable | translate }} }
           </div>
           @if (c.current_formula_score !== null && c.current_formula_score !== undefined) {
             <p class="text-xs opacity-60">{{ I18N.critique.calculation_note | translate }}</p>
+            @if (c.normalization_basis; as basis) {
+              <p class="text-xs opacity-60" data-testid="normalization-basis">{{ 'critique.normalization_basis.' + basis | translate }}</p>
+            }
             @if (c.stored_score_matches_current_formula === false) {
               <p class="text-xs text-amber-400">{{ I18N.critique.different_score | translate }}</p>
             }
           } @else {
-            <p class="text-xs opacity-60">{{ I18N.critique.calculation_unavailable | translate }}</p>
+            @if (c.explanation_unavailable_reason; as reason) {
+              <p class="text-xs opacity-60" data-testid="unavailable-reason">{{ 'critique.unavailable_reason.' + reason | translate }}</p>
+            } @else {
+              <p class="text-xs opacity-60">{{ I18N.critique.calculation_unavailable | translate }}</p>
+            }
           }
         </div>
 

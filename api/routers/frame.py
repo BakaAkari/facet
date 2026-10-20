@@ -164,7 +164,7 @@ def _encode_jpeg(pil, max_edge: int) -> bytes:
     if longest > max_edge:
         scale = max_edge / float(longest)
         pil = pil.resize(
-            (max(1, int(width * scale)), max(1, int(height * scale))), Image.LANCZOS
+            (max(1, int(width * scale)), max(1, int(height * scale))), Image.Resampling.LANCZOS
         )
     buf = BytesIO()
     pil.save(buf, format="JPEG", quality=_JPEG_QUALITY)

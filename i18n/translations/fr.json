@@ -1859,7 +1859,20 @@
     "calculation_unavailable": "Le contexte complet du calcul est indisponible. La note enregistrée reste affichée.",
     "advisories": "Conditions détectées",
     "cached_commentary": "Le commentaire enregistré n’a pas de contexte de notation vérifié.",
-    "stored_unavailable": "Aucune note enregistrée valide"
+    "stored_unavailable": "Aucune note enregistrée valide",
+    "stored_state": {
+      "missing": "Pas encore notée",
+      "invalid": "La note enregistrée est inutilisable. Lancez python facet.py --recompute-average pour la reconstruire."
+    },
+    "unavailable_reason": {
+      "missing_scoring_inputs": "Il manque des colonnes de notation dans la base, le calcul est impossible. Lancez python database.py pour mettre le schéma à niveau.",
+      "normalization_snapshot_unavailable": "L’instantané de normalisation enregistré de la bibliothèque est indisponible. Réessayez ; si le problème persiste, lancez python facet.py --recompute-average pour le reconstruire.",
+      "invalid_scoring_inputs": "Les métriques enregistrées de cette photo sont invalides. Réanalysez-la avec --force pour les remplacer."
+    },
+    "normalization_basis": {
+      "persisted_percentiles": "Normalisé selon l’instantané de percentiles enregistré de la bibliothèque.",
+      "stored_metrics": "Les valeurs brutes des métriques enregistrées sont utilisées, sans normalisation par percentiles."
+    }
   },
   "culling": {
     "compare": {

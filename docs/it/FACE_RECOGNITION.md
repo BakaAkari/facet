@@ -201,10 +201,6 @@ La seconda regola pesa più di quanto sembri. Il centroide di una persona è un 
 
 Poiché la regola 2 si affida all'assegnazione precedente, un errore passato viene riportato anziché corretto. È il contratto di una modalità il cui scopo è preservare le persone esistenti: usa `--cluster-faces-force` per ricalcolare tutto da zero. Quando i volti di un gruppo si dividono esattamente a metà tra due persone, il pareggio si risolve in base all'ordine degli id dei volti: viene mantenuta la persona che possiede il volto già assegnato con il numero più basso del gruppo. Gli embedding vengono caricati con `ORDER BY id`; le versioni precedenti lasciavano quell'ordine non specificato, quindi in un pareggio simile l'id della persona mantenuta può differire da quello di un'esecuzione più vecchia.
 
-## Qualità del volto OFIQ opzionale (modalità commerciale)
-
-In modalità commerciale il modello ristretto di qualità del volto non è disponibile. Come sostituto opzionale, installa `python-ofiq` (binding UNICEF su OFIQ del BSI, ISO/IEC 29794-5; MIT; compatibile con numpy 2 e OpenCV 4.8+) con `pip install python-ofiq`. Offre wheel solo per Linux x86-64 e macOS arm64 (su Windows: WSL2 o Docker). I modelli OFIQ (circa 400 MB, MIT/Apache-2.0) non sono mai inclusi: al primo utilizzo Facet li scarica, con SHA-256 fissato, in `pretrained_models/ofiq/`. La pipeline facciale commerciale divide per 10 il punteggio unificato OFIQ (0-100) e lo salva in `face_quality_iqa`; il valore di una foto è 0,7 x il suo volto peggiore + 0,3 x la media. Se `python-ofiq` manca, la colonna resta NULL e il suo peso viene rinormalizzato.
-
 ## Rilevamento degli occhi chiusi
 
 Utilizza l'Eye Aspect Ratio (EAR) dai 106 punti di riferimento di InsightFace.
@@ -232,6 +228,10 @@ python facet.py --recompute-blinks
 ```
 
 Elabora solo le foto con volti, senza bisogno di GPU.
+
+## Qualità del volto OFIQ opzionale (modalità commerciale)
+
+In modalità commerciale il modello ristretto di qualità del volto non è disponibile. Come sostituto opzionale, installa `python-ofiq` (binding UNICEF su OFIQ del BSI, ISO/IEC 29794-5; MIT; compatibile con numpy 2 e OpenCV 4.8+) con `pip install python-ofiq`. Offre wheel solo per Linux x86-64 e macOS arm64 (su Windows: WSL2 o Docker). I modelli OFIQ (circa 400 MB, MIT/Apache-2.0) non sono mai inclusi: al primo utilizzo Facet li scarica, con SHA-256 fissato, in `pretrained_models/ofiq/`. La pipeline facciale commerciale divide per 10 il punteggio unificato OFIQ (0-100) e lo salva in `face_quality_iqa`; il valore di una foto è 0,7 x il suo volto peggiore + 0,3 x la media. Se `python-ofiq` manca, la colonna resta NULL e il suo peso viene rinormalizzato.
 
 ## Segnali di espressione per volto (occhi aperti + sorriso)
 

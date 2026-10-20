@@ -1859,7 +1859,20 @@
     "calculation_unavailable": "Der vollständige Bewertungskontext fehlt. Die gespeicherte Bewertung wird weiterhin angezeigt.",
     "advisories": "Erkannte Bedingungen",
     "cached_commentary": "Gespeicherte Kommentare haben keinen verifizierten Bewertungskontext.",
-    "stored_unavailable": "Keine gültige gespeicherte Bewertung"
+    "stored_unavailable": "Keine gültige gespeicherte Bewertung",
+    "stored_state": {
+      "missing": "Noch nicht bewertet",
+      "invalid": "Die gespeicherte Bewertung ist unbrauchbar. Führen Sie python facet.py --recompute-average aus, um sie neu zu erstellen."
+    },
+    "unavailable_reason": {
+      "missing_scoring_inputs": "In der Datenbank fehlen Bewertungsspalten, daher ist die Berechnung nicht möglich. Führen Sie python database.py aus, um das Schema zu aktualisieren.",
+      "normalization_snapshot_unavailable": "Der gespeicherte Normalisierungs-Snapshot der Bibliothek ist nicht verfügbar. Versuchen Sie es erneut; falls das Problem bestehen bleibt, führen Sie python facet.py --recompute-average aus, um ihn neu zu erstellen.",
+      "invalid_scoring_inputs": "Die gespeicherten Metriken dieses Fotos sind ungültig. Scannen Sie es mit --force erneut, um sie zu ersetzen."
+    },
+    "normalization_basis": {
+      "persisted_percentiles": "Normalisiert anhand des gespeicherten Perzentil-Snapshots der Bibliothek.",
+      "stored_metrics": "Es werden die rohen gespeicherten Metrikwerte ohne Perzentil-Normalisierung verwendet."
+    }
   },
   "culling": {
     "compare": {

@@ -1874,6 +1874,19 @@ export const I18N = {
     advisories: "critique.advisories",
     cached_commentary: "critique.cached_commentary",
     stored_unavailable: "critique.stored_unavailable",
+    stored_state: {
+      missing: "critique.stored_state.missing",
+      invalid: "critique.stored_state.invalid",
+    },
+    unavailable_reason: {
+      missing_scoring_inputs: "critique.unavailable_reason.missing_scoring_inputs",
+      normalization_snapshot_unavailable: "critique.unavailable_reason.normalization_snapshot_unavailable",
+      invalid_scoring_inputs: "critique.unavailable_reason.invalid_scoring_inputs",
+    },
+    normalization_basis: {
+      persisted_percentiles: "critique.normalization_basis.persisted_percentiles",
+      stored_metrics: "critique.normalization_basis.stored_metrics",
+    },
   },
   culling: {
     compare: {

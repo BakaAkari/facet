@@ -161,7 +161,7 @@ def _load_source_image(photo, max_edge):
 def _fit(image, max_edge):
     """Downscale ``image`` in place so its longest edge is at most ``max_edge``."""
     if max_edge and max(image.size) > max_edge:
-        image.thumbnail((max_edge, max_edge), Image.LANCZOS)
+        image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
     return image
 
 

@@ -1859,7 +1859,20 @@
     "calculation_unavailable": "No está disponible el contexto completo del cálculo. Se sigue mostrando la puntuación guardada.",
     "advisories": "Condiciones detectadas",
     "cached_commentary": "El comentario guardado no tiene un contexto de puntuación verificado.",
-    "stored_unavailable": "No hay una puntuación guardada válida"
+    "stored_unavailable": "No hay una puntuación guardada válida",
+    "stored_state": {
+      "missing": "Aún sin puntuar",
+      "invalid": "La puntuación guardada no es utilizable. Ejecuta python facet.py --recompute-average para reconstruirla."
+    },
+    "unavailable_reason": {
+      "missing_scoring_inputs": "A la base de datos le faltan columnas de puntuación, así que no se puede calcular. Ejecuta python database.py para actualizar el esquema.",
+      "normalization_snapshot_unavailable": "La instantánea de normalización guardada de la biblioteca no está disponible. Inténtalo de nuevo; si persiste, ejecuta python facet.py --recompute-average para reconstruirla.",
+      "invalid_scoring_inputs": "Las métricas guardadas de esta foto no son válidas. Vuelve a escanearla con --force para reemplazarlas."
+    },
+    "normalization_basis": {
+      "persisted_percentiles": "Normalizado con la instantánea de percentiles guardada de la biblioteca.",
+      "stored_metrics": "Se usan los valores brutos de las métricas guardadas, sin normalización por percentiles."
+    }
   },
   "culling": {
     "compare": {

@@ -289,7 +289,7 @@ class PyIQAScorer:
         long_edge = max(w, h)
         if long_edge > MAX_INFERENCE_SIZE:
             scale = MAX_INFERENCE_SIZE / long_edge
-            image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            image = image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
 
         # Convert to tensor: (H, W, C) -> (C, H, W)
         img_array = np.array(image).astype(np.float32) / 255.0

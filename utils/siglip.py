@@ -11,6 +11,8 @@ CPU and MPS keep fp32 (and need no ``torch`` import here).
 
 from __future__ import annotations
 
+from typing import Any
+
 
 def load_siglip_model(model_name: str, device: str):
     """Load a transformers SigLIP model onto ``device`` in eval mode.
@@ -19,7 +21,7 @@ def load_siglip_model(model_name: str, device: str):
     """
     from transformers import AutoModel
 
-    kwargs = {'trust_remote_code': True}
+    kwargs: dict[str, Any] = {'trust_remote_code': True}
     if device == 'cuda':
         import torch
         kwargs['dtype'] = torch.float16

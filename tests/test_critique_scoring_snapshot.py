@@ -79,7 +79,6 @@ def test_real_api_uses_snapshot_but_never_mislabels_valid_legacy_score(snapshot)
     result = get(client)
     assert result["current_formula_score"] == result["aggregate"] == 2.0
     assert result["stored_score_state"] == "present"
-    assert result["generation_state"] == "unknown"
     assert result["stored_score_matches_current_formula"] is True
     assert result["normalization_basis"] == "persisted_percentiles"
     assert result["breakdown"][0]["value"] == 2.0

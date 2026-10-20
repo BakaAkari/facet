@@ -577,7 +577,7 @@ class TestBuildRuleCritique:
             "penalties",
             "distortions", "score_basis", "current_formula_score",
             "native_adjustment", "stored_score_matches_current_formula",
-            "normalization_basis", "generation_state", "stored_score_state",
+            "normalization_basis", "stored_score_state",
         }
         assert expected_keys == set(result.keys())
 

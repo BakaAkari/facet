@@ -12,34 +12,16 @@ class CompositionAnalyzer:
     """Evaluates the mathematical placement of subjects within the frame."""
 
     @staticmethod
-    def _is_valid_saliency_map(saliency_map, shape):
-        """True when saliency_map is a finite real array of `shape` within [0, 1]."""
-        return (isinstance(saliency_map, np.ndarray)
-                and saliency_map.shape == shape
-                and np.issubdtype(saliency_map.dtype, np.number)
-                and not np.issubdtype(saliency_map.dtype, np.complexfloating)
-                and bool(np.isfinite(saliency_map).all())
-                and not (saliency_map < 0).any()
-                and not (saliency_map > 1).any())
+    def detect_subject_region(img_cv):
+        """Detect the main subject region with adaptive Canny edge detection.
 
-    @staticmethod
-    def detect_subject_region(img_cv, *, strict_errors=False):
-        """Detect the main subject region using multiple strategies.
-
-        Uses a cascading approach:
-        1. Adaptive Canny edge detection with relaxed thresholds
-        2. Saliency-based detection using spectral residual
-
-        With strict_errors=True, unavailable/failed spectral processing raises
-        RuntimeError instead of being confused with a successful no-region result.
-        Existing callers keep the historical best-effort behavior by default.
+        Contours above a relaxed minimum area are scored by area and proximity
+        to rule-of-thirds points. BiRefNet provides the real subject saliency;
+        this is only the cheap rule-based estimate.
 
         Returns:
-            Bounding box [x1, y1, x2, y2] of detected subject, or None if none found.
-
-        Raises:
-            RuntimeError: Only when strict_errors=True and spectral residual
-                saliency is unavailable, fails, or returns an invalid map.
+            Bounding box [x1, y1, x2, y2] of detected subject, or None when no
+            contour qualifies.
         """
         if img_cv is None:
             return None
@@ -47,7 +29,7 @@ class CompositionAnalyzer:
         h, w = img_cv.shape[:2]
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
-        # Strategy 1: Adaptive Canny with relaxed thresholds
+        # Adaptive Canny with relaxed thresholds
         median_val = np.median(gray)
         lower = int(max(0, 0.5 * median_val))
         upper = int(min(255, 1.5 * median_val))
@@ -91,27 +73,6 @@ class CompositionAnalyzer:
             if best_contour is not None:
                 x, y, bw, bh = cv2.boundingRect(best_contour)
                 return [x, y, x + bw, y + bh]
-
-        # Strategy 2: Saliency-based detection
-        try:
-            saliency = cv2.saliency.StaticSaliencySpectralResidual_create()
-            success, saliency_map = saliency.computeSaliency(img_cv)
-            if not success and strict_errors:
-                raise RuntimeError("Spectral residual computeSaliency failed")
-            if success:
-                if strict_errors and not CompositionAnalyzer._is_valid_saliency_map(saliency_map, gray.shape):
-                    raise RuntimeError("Invalid spectral residual saliency map")
-                saliency_map = (saliency_map * 255).astype(np.uint8)
-                _, thresh = cv2.threshold(saliency_map, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                sal_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if sal_contours:
-                    largest = max(sal_contours, key=cv2.contourArea)
-                    x, y, bw, bh = cv2.boundingRect(largest)
-                    return [x, y, x + bw, y + bh]
-        except (cv2.error, AttributeError) as error:
-            # Saliency module may not be available in all OpenCV builds.
-            if strict_errors:
-                raise RuntimeError("Spectral residual capability or execution unavailable") from error
 
         return None
 

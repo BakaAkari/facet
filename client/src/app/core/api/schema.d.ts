@@ -5733,8 +5733,6 @@ export interface components {
             distortions?: string[];
             /** Explanation Unavailable Reason */
             explanation_unavailable_reason?: ("missing_scoring_inputs" | "normalization_snapshot_unavailable" | "invalid_scoring_inputs") | null;
-            /** Generation State */
-            generation_state?: "unknown" | null;
             /** Native Adjustment */
             native_adjustment?: number | null;
             /** Normalization Basis */
