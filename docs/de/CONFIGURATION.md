@@ -2324,7 +2324,8 @@ Das Leerlauffenster ist entscheidend: Das Nachtrainieren schreibt eine Zeile pro
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2333,6 +2334,7 @@ Das Leerlauffenster ist entscheidend: Das Nachtrainieren schreibt eine Zeile pro
 |---------|---------|-------------|
 | `threshold` | `25` | Anzahl neuer Vergleiche, die ein Benutzer sammeln muss, bevor ein Nachtrainieren bewaffnet wird. Erhöhen Sie den Wert, wenn Sie sehr große Stapel bewerten und die (CPU-, Sekunden- bis Minuten-)Trainingskosten über mehr Signal amortisieren möchten |
 | `idle_seconds` | `60` | Sekunden ohne Bewertungs-/Aussortier-Aktivität, die erforderlich sind, bevor das bewaffnete Nachtrainieren tatsächlich startet. Jede neue Aktion verschiebt den Timer. `0` startet sofort (Verhalten vor 1.7.3) |
+| `backend` | `"native"` | `"native"` trainiert den persönlichen Ranker, den Keeper-Head und die gelernten Gewichte lokal. `"external"` behält nur Präferenzen und ausstehende Vergleichszähler und trainiert oder bewertet lokal nie einen gelernten Head; siehe [Externes Lern-Backend](#externes-lern-backend) |
 
 Beide sind zur Laufzeit über Umgebungsvariablen überschreibbar, die Vorrang vor den JSON-Werten haben — nützlich unter Docker, wo die Konfiguration oft ins Image eingebacken ist:
 
@@ -2345,9 +2347,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-Ein nicht lesbarer Wert fällt auf die JSON-Einstellung zurück, ein fehlender oder fehlerhafter Block auf die eingebauten Standardwerte — ein Tippfehler degradiert also auf das ausgelieferte Verhalten, statt das automatische Nachtrainieren abzuschalten. Beide Werte werden einmalig beim Start gelesen — eine Änderung erfordert einen Neustart.
+Ein nicht lesbarer `threshold` oder `idle_seconds` fällt auf die JSON-Einstellung zurück, ein fehlender oder fehlerhafter Block auf die eingebauten Standardwerte — ein Tippfehler degradiert also auf das ausgelieferte Verhalten, statt das automatische Nachtrainieren abzuschalten. `backend` ist die Ausnahme: ein nicht lesbarer oder ungültiger Wert fällt sicherheitshalber auf `"external"` (siehe unten). `threshold` und `idle_seconds` werden einmalig beim Start gelesen — eine Änderung erfordert einen Neustart.
 
 Das Nachtrainieren behält sein Holdout-Kreuzvalidierungs-Gate: Ein Lauf, der die aktuelle Referenz nicht schlägt, schreibt nichts.
+
+### Externes Lern-Backend
+
+Der Standardwert von `auto_retrain.backend` ist `"native"` und bewahrt das lokale Verhalten von persönlichem Ranker und Keeper-Head. Setzen Sie `"backend": "external"`, um Präferenzen und ausstehende Vergleichszähler zu behalten, ohne lokales persönliches Lernen zu starten oder gelernte Heads auf der CPU auszuwerten.
+
+Dies ist eine Dispatch-Richtlinie, kein externer Job-Dienst. Sie startet keinen externen GPU-Worker und behauptet nicht, dass ein persönliches Modell trainiert wurde. Ein separater, vom Betreiber kontrollierter Trainings-Workflow muss Beobachtungen authentifizieren, sein Modell qualifizieren und die resultierenden Scores veröffentlichen. Vorhandene Bewertungen und Vergleiche bleiben für diesen Workflow verfügbar.
+
+Im externen Modus erhöhen Benachrichtigungen die bestehenden dauerhaften Zähler, ohne sie zu verbrauchen oder einen Trainings-Thread einzuplanen. Eingereihte Worker prüfen die Richtlinie erneut und geben ihren verbrauchten ausstehenden Zähler zurück, wenn sie zurückgestellt werden. Manuelle Einstiegspunkte für persönlichen Ranker, Keeper-Head und Gewichtslernen liefern ein explizites Zurückgestellt-Ergebnis. Keeper-Wahrscheinlichkeiten sind nicht verfügbar; die Antworten von Vergleichen (gelernte Gewichte und Konfidenz) melden `available: false` mit einer erklärenden Meldung.
+
+Eine fehlerhafte oder nicht lesbare Backend-Richtlinie (ein `auto_retrain`-Block, der kein Objekt ist, ein anderes `backend` als `"native"` oder `"external"`, eine nicht lesbare Konfiguration) fällt sicherheitshalber auf den externen Modus und protokolliert eine Warnung. Eine gültige Konfiguration ohne `backend`-Schlüssel verwendet den nativen Modus. Der Viewer liest seinen bereits aufgelösten Server-Konfigurationspfad; CLI-Aufrufe beachten ihre explizite Konfiguration. Diese Option deaktiviert nicht die normale deterministische Foto-Bewertung und löscht keine Stimmen.
 
 ## Genre-spezifische Aussortier-Profile
 

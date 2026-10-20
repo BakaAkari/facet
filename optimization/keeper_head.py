@@ -27,6 +27,7 @@ import numpy as np
 
 from config import default_config_path
 from db import DEFAULT_DB_PATH, get_connection
+from optimization.learning_policy import deferred_if_external
 from optimization.personal_ranker import (
     DEFAULT_C, DEFAULT_CV_FOLDS, DEFAULT_MIN_IMPROVEMENT_PP, MIN_COMPARISONS,
     _cv_accuracy, _fit_logistic, _pairwise_accuracy, _scaled_feature,
@@ -143,11 +144,11 @@ def train_keeper_head(db_path=DEFAULT_DB_PATH, category=None, user_id=None,
     failed gate (and not ``force``) returns ``{'gated': True, 'written': False}``
     and persists nothing.
     """
-    from optimization.auto_retrain import learning_backend, external_learning_result
-    if learning_backend(config_path) != 'native':
-        return external_learning_result()
     if config_path is None:
         config_path = _default_config_path()
+    deferred = deferred_if_external(config_path)
+    if deferred is not None:
+        return deferred
     weights = _burst_weights_for(config_path)
     optimizer = WeightOptimizer(db_path, config_path)
     with get_connection(db_path) as conn:
@@ -214,9 +215,6 @@ def keeper_probs_for_group(head, optimizer, rows, category=None):
     the members whose embedding matches ``head.emb_dim``, or None when fewer than
     two match or ``head`` is None.
     """
-    from optimization.auto_retrain import learning_backend
-    if learning_backend(getattr(optimizer, 'config_path', None)) != 'native':
-        return None
     if head is None:
         return None
     scored = []

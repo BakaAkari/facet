@@ -3182,7 +3182,8 @@
   },
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   },
   "capsules": {
     "min_aggregate": 6.0,

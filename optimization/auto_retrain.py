@@ -37,9 +37,10 @@ Design notes / safety:
 from typing import Any
 import logging
 import os
-import sys
 import threading
 import time
+
+from optimization import learning_policy
 
 logger = logging.getLogger("facet.auto_retrain")
 
@@ -93,37 +94,6 @@ def load_settings(config_path=None):
 
 
 RETRAIN_THRESHOLD, RETRAIN_IDLE_SECONDS = load_settings()
-
-
-def learning_backend(config_path=None):
-    """Explicit dispatch policy: native(default) or retained external work.
-
-    Malformed/unreadable policy never silently enables local learned inference.
-    A valid config with no backend keeps the historical native behavior.
-    """
-    try:
-        # The viewer can relocate its library config; use its authoritative
-        # already-loaded path without importing API/auth side effects in a CLI.
-        if config_path is None:
-            server = sys.modules.get('api.config')
-            server_path = getattr(server, 'server_config_path', None)
-            if callable(server_path):
-                config_path = server_path()
-        from config_resolve import load_resolved
-        block = load_resolved(config_path).get('auto_retrain', {})
-        if not isinstance(block, dict):
-            return 'external'
-        backend = block.get('backend', 'native')
-        return backend if backend in ('native', 'external') else 'external'
-    except Exception:  # noqa: BLE001 -- policy failure defers, never CPU fallback
-        logger.warning('Personal learning deferred: backend policy could not be read', exc_info=True)
-        return 'external'
-
-
-def external_learning_result():
-    """Honest deferred result, not a claim an external job was dispatched."""
-    return {'error': 'Preferences retained; external GPU learning has not been dispatched here',
-            'deferred': True, 'backend': 'external', 'written': 0}
 
 # One in-flight retrain at a time, process-wide. The scopes that requested a
 # retrain while one was running are coalesced — they keep accumulating in the
@@ -259,7 +229,7 @@ def _run_retrain(db_path, scope, pending=0):
     library_lock = None
     counter_returned = False
     try:
-        if learning_backend() != 'native':
+        if learning_policy.learning_backend() != 'native':
             _give_back_counter(db_path, scope, pending)
             counter_returned = True
             return
@@ -289,7 +259,7 @@ def _run_retrain(db_path, scope, pending=0):
         # Culling confirms accumulate source='culling' pairs; refresh the keeper
         # head on the same trigger (best-effort — its own gate is intact).
         try:
-            if learning_backend() != 'native':
+            if learning_policy.learning_backend() != 'native':
                 return
             from optimization.keeper_head import train_keeper_head
             kr = train_keeper_head(db_path=db_path, user_id=scope)
@@ -340,7 +310,7 @@ def _dispatch(db_path, scope, threshold, firing_timer=None):
     Returns True when the worker thread started.
     """
     global _retrain_running
-    if learning_backend() != 'native':
+    if learning_policy.learning_backend() != 'native':
         with _retrain_lock:
             _deregister_timer(scope, firing_timer)
         return False
@@ -487,7 +457,7 @@ def maybe_retrain(db_path, user_id, added: int = 1, threshold: int | None = None
         logger.warning("Auto-retrain counter update failed (scope=%s)", scope, exc_info=True)
         return False
 
-    if learning_backend() != 'native':
+    if learning_policy.learning_backend() != 'native':
         with _retrain_lock:
             existing = _pending_timers.pop(scope, None)
         if existing is not None:

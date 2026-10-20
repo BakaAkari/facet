@@ -46,6 +46,7 @@ from config import ScoringConfig
 from config.percentile_normalizer import PercentileNormalizer
 from config.scoring_config import resolve_scoring_config_path
 from config_resolve import load_resolved
+from optimization.learning_policy import deferred_if_external
 from db.scoring_overrides import get_photo_scoring_overrides
 from processing.scorer import (
     Facet, SCORING_METRIC_KEYS, SERVED_ROW_COLUMNS, build_metric_vector,
@@ -463,9 +464,9 @@ class WeightOptimizer:
             - gate: the optimize_weights_with_cv result, or None when it was not run
             - per_comparison: list of (photo_a, photo_b, winner, predicted_correct)
         """
-        from optimization.auto_retrain import learning_backend, external_learning_result
-        if learning_backend(self.config_path) != 'native':
-            return external_learning_result()
+        deferred = deferred_if_external(self.config_path)
+        if deferred is not None:
+            return deferred
         with get_connection(self.db_path) as conn:
             comparisons, X_a, X_b, winners, row_weights = self._fetch_comparison_data(
                 conn, category=category, include_ties=include_ties, sources=sources,
@@ -600,9 +601,9 @@ class WeightOptimizer:
             - discordant_new / discordant_old: McNemar's b and c
             - p_value, passed, suggest_changes (= passed)
         """
-        from optimization.auto_retrain import learning_backend, external_learning_result
-        if learning_backend(self.config_path) != 'native':
-            return external_learning_result()
+        deferred = deferred_if_external(self.config_path)
+        if deferred is not None:
+            return deferred
         with get_connection(self.db_path) as conn:
             all_data, X_a, X_b, winners, row_weights = self._fetch_comparison_data(
                 conn, category=category, include_ties=include_ties, sources=sources,
@@ -703,9 +704,9 @@ class WeightOptimizer:
             - confidence_intervals: per-component CI width
             - stable_components: components with narrow CIs
         """
-        from optimization.auto_retrain import learning_backend, external_learning_result
-        if learning_backend(self.config_path) != 'native':
-            return external_learning_result()
+        deferred = deferred_if_external(self.config_path)
+        if deferred is not None:
+            return deferred
         with get_connection(self.db_path) as conn:
             all_data, X_a, X_b, winners, row_weights = self._fetch_comparison_data(
                 conn, category=category, include_ties=True, sources=sources,

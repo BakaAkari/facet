@@ -8,7 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 import optimization.auto_retrain as ar
-real_backend = ar.learning_backend
+import optimization.learning_policy as lp
+real_backend = lp.learning_backend
 
 
 @pytest.fixture
@@ -18,7 +19,7 @@ def db(tmp_path, monkeypatch):
         conn.execute(
             "CREATE TABLE stats_cache(key TEXT PRIMARY KEY,value TEXT,updated_at REAL)"
         )
-    monkeypatch.setattr(ar, "learning_backend", lambda *args: "external")
+    monkeypatch.setattr(lp, "learning_backend", lambda *args: "external")
     with ar._retrain_lock:
         ar._retrain_running = False
         ar._pending_timers.clear()
@@ -48,7 +49,8 @@ def test_external_retains_every_count_without_dispatch(db, monkeypatch, scope, t
         assert (
             ar.maybe_retrain(db, scope, added=1, threshold=25, idle_seconds=0) is False
         )
-    assert count(db, scope) == total and not ar._retrain_running
+    assert count(db, scope) == total
+    assert not ar._retrain_running
 
 
 def test_old_timer_external_dispatch_never_consumes_pending(db, monkeypatch):
@@ -74,11 +76,12 @@ def test_old_consumed_worker_restores_once_before_any_model_or_librarylock(
     )
     ar._retrain_running = True
     ar._run_retrain(db, None, pending=25)
-    assert count(db, None) == 25 and ar._retrain_running is False
+    assert count(db, None) == 25
+    assert ar._retrain_running is False
 
 
 def test_core_deferred_race_restores_once_and_does_not_call_keeper(db, monkeypatch):
-    monkeypatch.setattr(ar, "learning_backend", lambda *args: "native")
+    monkeypatch.setattr(lp, "learning_backend", lambda *args: "native")
     released = []
     monkeypatch.setattr(
         ar,
@@ -88,7 +91,7 @@ def test_core_deferred_race_restores_once_and_does_not_call_keeper(db, monkeypat
     pr = importlib.import_module("optimization.personal_ranker")
     keeper = importlib.import_module("optimization.keeper_head")
     monkeypatch.setattr(
-        pr, "train_ranker", lambda **kwargs: ar.external_learning_result()
+        pr, "train_ranker", lambda **kwargs: lp.external_learning_result()
     )
     monkeypatch.setattr(
         keeper,
@@ -96,7 +99,8 @@ def test_core_deferred_race_restores_once_and_does_not_call_keeper(db, monkeypat
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("NO_KEEPER")),
     )
     ar._run_retrain(db, "owner", pending=30)
-    assert count(db, "owner") == 30 and released == [True]
+    assert count(db, "owner") == 30
+    assert released == [True]
 
 
 @pytest.mark.parametrize(
@@ -128,41 +132,24 @@ def test_unreadable_policy_cannot_enable_cpu(monkeypatch):
     assert real_backend() == "external"
 
 
-def function(relative, name, module_name, class_name=None):
+def function(name, module_name, class_name=None):
     module = importlib.import_module(module_name)
     target = getattr(module, class_name) if class_name else module
     return getattr(target, name)
 
 
 @pytest.mark.parametrize(
-    "relative,name,module_name",
+    "name,module_name",
     [
-        (
-            "optimization/personal_ranker.py",
-            "train_ranker",
-            "optimization.personal_ranker",
-        ),
-        (
-            "optimization/keeper_head.py",
-            "train_keeper_head",
-            "optimization.keeper_head",
-        ),
+        ("train_ranker", "optimization.personal_ranker"),
+        ("train_keeper_head", "optimization.keeper_head"),
     ],
 )
-def test_actual_manual_train_core_defers_before_any_fit(
-    db, relative, name, module_name
-):
-    result = function(relative, name, module_name)(db_path="/must-not-open")
-    assert result["deferred"] is True and result["written"] == 0 and "error" in result
-
-
-def test_existing_keeper_cannot_evaluate_on_cpu_in_externalmode(db):
-    fn = function(
-        "optimization/keeper_head.py",
-        "keeper_probs_for_group",
-        "optimization.keeper_head",
-    )
-    assert fn(object(), SimpleNamespace(config_path=None), [object()]) is None
+def test_actual_manual_train_core_defers_before_any_fit(db, name, module_name):
+    result = function(name, module_name)(db_path="/must-not-open")
+    assert result["deferred"] is True
+    assert result["written"] == 0
+    assert "error" in result
 
 
 @pytest.mark.parametrize(
@@ -174,12 +161,7 @@ def test_existing_keeper_cannot_evaluate_on_cpu_in_externalmode(db):
     ],
 )
 def test_weight_cli_methods_have_no_validation_inference_fallback(db, name):
-    fn = function(
-        "optimization/weight_optimizer.py",
-        name,
-        "optimization.weight_optimizer",
-        "WeightOptimizer",
-    )
+    fn = function(name, "optimization.weight_optimizer", "WeightOptimizer")
     assert fn(SimpleNamespace(config_path=None))["deferred"] is True
 
 
@@ -187,12 +169,13 @@ def test_weight_cli_methods_have_no_validation_inference_fallback(db, name):
     "name", ["api_comparison_learned_weights", "api_comparison_confidence"]
 )
 def test_actual_compare_manual_json_contract_is_unavailable_not_servererror(db, name):
-    fn = function("api/routers/comparison.py", name, "api.routers.comparison")
+    fn = function(name, "api.routers.comparison")
     kwargs = {"category": None}
     if name == "api_comparison_learned_weights":
         kwargs.update(include_ties="true", use_cv="false")
     result = fn(**kwargs)
-    assert result["available"] is False and "external GPU learning" in result["message"]
+    assert result["available"] is False
+    assert "external GPU learning" in result["message"]
     from api.models.comparison import LearnedWeightsResponse
 
     if name == "api_comparison_learned_weights":
@@ -202,28 +185,14 @@ def test_actual_compare_manual_json_contract_is_unavailable_not_servererror(db, 
 @pytest.mark.parametrize(
     "name,path",
     [
-        ("api_comparison_learned_weights", "/api/comparison/learned_weights"),
-        ("api_comparison_confidence", "/api/comparison/confidence"),
+        ("learned_weights", "/api/comparison/learned_weights"),
+        ("confidence", "/api/comparison/confidence"),
     ],
 )
-def test_actual_compare_http_json_contract_external_no_cpu(db, name, path):
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from api import auth
-    from api.models.comparison import LearnedWeightsResponse
-
-    fn = function("api/routers/comparison.py", name, "api.routers.comparison")
-    app = FastAPI()
-    app.dependency_overrides[auth.require_edition] = lambda: SimpleNamespace()
-    options = (
-        {"response_model": LearnedWeightsResponse, "response_model_exclude_unset": True}
-        if name == "api_comparison_learned_weights"
-        else {}
-    )
-    app.add_api_route(path, fn, methods=["GET"], **options)
-    with TestClient(app) as client:
-        response = client.get(path)
-    assert response.status_code == 200 and response.json()["available"] is False
+def test_actual_compare_http_json_contract_external_no_cpu(db, edition_client, name, path):
+    response = edition_client.get(path)
+    assert response.status_code == 200
+    assert response.json()["available"] is False
     assert "external GPU learning" in response.json()["message"]
 
 
@@ -243,6 +212,95 @@ def test_backend_uses_authoritative_relocated_server_config(monkeypatch):
         "load_resolved",
         lambda path: seen.append(path) or {"auto_retrain": {"backend": "external"}},
     )
-    assert real_backend() == "external" and seen == [
-        "/synthetic/library/scoring_config.json"
-    ]
+    assert real_backend() == "external"
+    assert seen == ["/synthetic/library/scoring_config.json"]
+
+
+def test_invalid_backend_warns_once_per_distinct_value(monkeypatch, caplog):
+    import config_resolve
+
+    monkeypatch.setattr(lp, "_warned_values", set())
+    monkeypatch.setattr(
+        config_resolve, "load_resolved", lambda *a: {"auto_retrain": {"backend": "typo"}}
+    )
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        assert real_backend() == "external"
+        assert real_backend() == "external"
+    assert len([r for r in caplog.records if "typo" in r.getMessage()]) == 1
+    monkeypatch.setattr(
+        config_resolve, "load_resolved", lambda *a: {"auto_retrain": ["x"]}
+    )
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        assert real_backend() == "external"
+    assert len([r for r in caplog.records if "not an object" in r.getMessage()]) == 1
+
+
+def test_flip_to_external_cancels_and_deregisters_armed_timer(db, monkeypatch):
+    class FakeTimer:
+        cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+    timer = FakeTimer()
+    with ar._retrain_lock:
+        ar._pending_timers[None] = (timer, db, 25)
+    assert ar.maybe_retrain(db, None, added=1, threshold=25, idle_seconds=0) is False
+    assert timer.cancelled is True
+    assert None not in ar._pending_timers
+
+
+def test_dispatch_external_deregisters_only_the_firing_timer(db):
+    firing, newer = SimpleNamespace(cancel=lambda: None), SimpleNamespace(cancel=lambda: None)
+    with ar._retrain_lock:
+        ar._pending_timers[None] = (firing, db, 25)
+    assert ar._dispatch(db, None, 25, firing_timer=firing) is False
+    assert None not in ar._pending_timers
+    with ar._retrain_lock:
+        ar._pending_timers[None] = (newer, db, 25)
+    assert ar._dispatch(db, None, 25, firing_timer=firing) is False
+    assert ar._pending_timers[None][0] is newer
+
+
+def test_flip_to_external_between_ranker_and_keeper_skips_keeper(db, monkeypatch):
+    backends = iter(["native", "external"])
+    monkeypatch.setattr(lp, "learning_backend", lambda *a: next(backends))
+    monkeypatch.setattr(
+        ar, "_hold_library_lock", lambda *a: SimpleNamespace(release=lambda: None)
+    )
+    pr = importlib.import_module("optimization.personal_ranker")
+    keeper = importlib.import_module("optimization.keeper_head")
+    monkeypatch.setattr(pr, "train_ranker", lambda **kw: {"written": 3, "cv_accuracy": 70.0})
+    keeper_calls = []
+    monkeypatch.setattr(
+        keeper, "train_keeper_head", lambda **kw: keeper_calls.append(kw) or {}
+    )
+    ar._retrain_running = True
+    ar._run_retrain(db, "owner", pending=30)
+    assert ar._retrain_running is False
+    assert keeper_calls == []
+
+
+def test_train_ranker_gates_on_the_resolved_config_path(db, monkeypatch):
+    pr = importlib.import_module("optimization.personal_ranker")
+    seen = []
+    monkeypatch.setattr(pr, "resolve_scoring_config_path", lambda p: "/resolved/cfg.json")
+    monkeypatch.setattr(
+        lp, "learning_backend", lambda path=None: seen.append(path) or "external"
+    )
+    assert pr.train_ranker(db_path="/must-not-open")["deferred"] is True
+    assert seen == ["/resolved/cfg.json"]
+
+
+def test_external_keeper_head_gate_skips_every_per_group_query(db, monkeypatch):
+    bc = importlib.import_module("api.routers.burst_culling")
+    keeper = importlib.import_module("optimization.keeper_head")
+    monkeypatch.setattr(
+        keeper, "load_keeper_head", lambda *a: (_ for _ in ()).throw(AssertionError("NO_LOAD"))
+    )
+    monkeypatch.setattr(
+        bc, "_keeper_rows", lambda *a: (_ for _ in ()).throw(AssertionError("NO_ROWS"))
+    )
+    assert bc._keeper_head_for(None, "owner") is None
+    groups = [{"photos": [{"path": "/a.jpg"}]}]
+    bc._for_each_group_probs(None, groups, "owner", lambda *a: pytest.fail("NO_APPLY"))

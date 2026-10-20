@@ -2296,7 +2296,8 @@ The idle window matters: the retrain rewrites one row per photo, and SQLite allo
 {
   "auto_retrain": {
     "threshold": 25,
-    "idle_seconds": 60
+    "idle_seconds": 60,
+    "backend": "native"
   }
 }
 ```
@@ -2305,6 +2306,7 @@ The idle window matters: the retrain rewrites one row per photo, and SQLite allo
 |---------|---------|-------------|
 | `threshold` | `25` | New comparisons a user must accumulate before a retrain is armed. Raise it if you rate very large batches and want the (CPU, seconds-to-minutes) training amortized over more signal |
 | `idle_seconds` | `60` | Seconds of no rating/culling activity required before the armed retrain actually starts. Every new action pushes the timer back. `0` dispatches immediately (the pre-1.7.3 behaviour) |
+| `backend` | `"native"` | `"native"` trains the personal ranker, keeper head and learned weights locally. `"external"` only retains preferences and pending-comparison counts and never trains or evaluates a learned head locally; see [External learning backend](#external-learning-backend) |
 
 Both are overridable at runtime by environment variables, which take precedence over the JSON values — useful for Docker, where the config is often baked into the image:
 
@@ -2317,9 +2319,19 @@ FACET_RETRAIN_THRESHOLD=100 FACET_RETRAIN_IDLE_S=300 python viewer.py
 | `FACET_RETRAIN_THRESHOLD` | `auto_retrain.threshold` |
 | `FACET_RETRAIN_IDLE_S` | `auto_retrain.idle_seconds` |
 
-An unparseable value falls back to the JSON setting, and a missing or malformed block falls back to the built-in defaults, so a typo degrades to the shipped behaviour instead of disabling auto-retrain. Both values are read once at startup — changing them needs a restart.
+An unparseable `threshold` or `idle_seconds` falls back to the JSON setting, and a missing or malformed block falls back to the built-in defaults, so a typo degrades to the shipped behaviour instead of disabling auto-retrain. `backend` is the exception: an unreadable or invalid value fails closed to `"external"` (see below). `threshold` and `idle_seconds` are read once at startup — changing them needs a restart.
 
 The retrain keeps its held-out cross-validation gate: a run that fails to beat the current baseline writes nothing.
+
+### External learning backend
+
+The default `auto_retrain.backend` is `"native"`, preserving the local personal-ranker and keeper-head behaviour. Set `"backend": "external"` to retain preferences and pending comparison counts without starting local personal learning or evaluating learned heads on the CPU.
+
+This is a dispatch policy, not an external job service. It does not launch an external GPU worker or claim that a personal model has been trained. A separate operator-controlled training workflow must authenticate observations, qualify its model and publish the resulting scores. Existing ratings and comparisons remain available for that workflow.
+
+In external mode, notifications increment the existing durable counters without consuming them or scheduling a training thread. Queued workers recheck the policy and return their consumed pending count when deferred. Manual personal-ranker, keeper-head and weight-learning entry points return an explicit deferred result. Keeper probabilities are unavailable; the Compare learned-weights and confidence responses report `available: false` with an explanatory message.
+
+A malformed or unreadable backend policy (a non-object `auto_retrain` block, a `backend` other than `"native"` or `"external"`, an unreadable config) fails closed to external mode and logs a warning. A valid configuration with no `backend` key uses native mode. The viewer reads its already resolved server configuration path; CLI calls honor their explicit configuration. This option does not disable ordinary deterministic photo scoring or erase votes.
 
 ## Genre-Aware Culling Profiles
 
