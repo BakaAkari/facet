@@ -186,7 +186,8 @@ def _seed_stats_cache(db):
 
 def _stats_cache_keys(db):
     conn = sqlite3.connect(db)
-    keys = {r[0] for r in conn.execute("SELECT key FROM stats_cache").fetchall()}
+    # A NULL value is an eviction tombstone (invalidate_metric_ranges), not a kept entry.
+    keys = {r[0] for r in conn.execute("SELECT key FROM stats_cache WHERE value IS NOT NULL").fetchall()}
     conn.close()
     return keys
 
