@@ -1859,7 +1859,20 @@
     "calculation_unavailable": "完整的评分上下文不可用，仍显示已保存评分。",
     "advisories": "检测到的情况",
     "cached_commentary": "缓存评论没有经过验证的评分上下文。",
-    "stored_unavailable": "没有有效的已保存评分"
+    "stored_unavailable": "没有有效的已保存评分",
+    "stored_state": {
+      "missing": "尚未评分",
+      "invalid": "已存储的分数无法使用。请运行 python facet.py --recompute-average 重新生成。"
+    },
+    "unavailable_reason": {
+      "missing_scoring_inputs": "数据库缺少部分评分列，因此无法计算。请运行 python database.py 升级数据库结构。",
+      "normalization_snapshot_unavailable": "图库已保存的归一化快照不可用。请运行 python facet.py --recompute-average 重新生成。",
+      "invalid_scoring_inputs": "这张照片已存储的指标无效。请重新扫描以替换它们。"
+    },
+    "normalization_basis": {
+      "persisted_percentiles": "已按图库保存的百分位快照进行归一化。",
+      "stored_metrics": "由于尚无已保存的百分位快照，使用原始存储的指标值。"
+    }
   },
   "culling": {
     "compare": {

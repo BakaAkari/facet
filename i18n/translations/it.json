@@ -1859,7 +1859,20 @@
     "calculation_unavailable": "Il contesto completo del calcolo non è disponibile. Il punteggio salvato rimane visibile.",
     "advisories": "Condizioni rilevate",
     "cached_commentary": "Il commento salvato non ha un contesto di valutazione verificato.",
-    "stored_unavailable": "Nessun punteggio salvato valido"
+    "stored_unavailable": "Nessun punteggio salvato valido",
+    "stored_state": {
+      "missing": "Non ancora valutata",
+      "invalid": "Il punteggio salvato non è utilizzabile. Esegui python facet.py --recompute-average per ricostruirlo."
+    },
+    "unavailable_reason": {
+      "missing_scoring_inputs": "Nel database mancano alcune colonne di valutazione, quindi il calcolo non è possibile. Esegui python database.py per aggiornare lo schema.",
+      "normalization_snapshot_unavailable": "Lo snapshot di normalizzazione salvato della libreria non è disponibile. Esegui python facet.py --recompute-average per ricostruirlo.",
+      "invalid_scoring_inputs": "Le metriche salvate di questa foto non sono valide. Riscansionala per sostituirle."
+    },
+    "normalization_basis": {
+      "persisted_percentiles": "Normalizzato in base allo snapshot dei percentili salvato della libreria.",
+      "stored_metrics": "Vengono usati i valori grezzi delle metriche salvate perché non esiste ancora uno snapshot dei percentili."
+    }
   },
   "culling": {
     "compare": {

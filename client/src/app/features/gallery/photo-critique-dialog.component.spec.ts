@@ -177,9 +177,36 @@ describe('PhotoCritiqueDialogComponent current calculation DOM', () => {
   it('keeps stored score when context is unavailable without fabricating a total', async () => {
     const fixture = await render({ aggregate: 7, current_formula_score: null, native_adjustment: null, breakdown: [], category_reason: { reason_key: 'unavailable', category: 'portrait', details: [] }, explanation_unavailable_reason: 'normalization_snapshot_unavailable' });
     expect(fixture.nativeElement.textContent).toContain('7.00');
-    expect(fixture.nativeElement.textContent).toContain('critique.calculation_unavailable');
+    expect(fixture.nativeElement.textContent).toContain('critique.unavailable_reason.normalization_snapshot_unavailable');
+    expect(fixture.nativeElement.querySelector('[data-testid="score-calculation-context"]').textContent).not.toContain('critique.calculation_unavailable');
     expect(fixture.nativeElement.textContent).not.toContain('critique.reason.default');
     expect(fixture.nativeElement.querySelector('[data-testid="score-calculation-total"]')).toBeNull();
+  });
+  const unavailable = { current_formula_score: null, native_adjustment: null, breakdown: [], category_reason: { reason_key: 'unavailable', category: 'portrait', details: [] } };
+  it.each(['missing_scoring_inputs', 'normalization_snapshot_unavailable', 'invalid_scoring_inputs'] as const)('renders the %s reason', async (reason) => {
+    const fixture = await render({ ...unavailable, explanation_unavailable_reason: reason });
+    const text = fixture.nativeElement.querySelector('[data-testid="unavailable-reason"]').textContent;
+    expect(text).toContain('critique.unavailable_reason.' + reason);
+  });
+  it('falls back to the generic text when no unavailable reason is given', async () => {
+    const fixture = await render({ ...unavailable, explanation_unavailable_reason: null });
+    expect(fixture.nativeElement.querySelector('[data-testid="unavailable-reason"]')).toBeNull();
+    expect(fixture.nativeElement.querySelector('[data-testid="score-calculation-context"]').textContent).toContain('critique.calculation_unavailable');
+  });
+  it.each([['missing', 'critique.stored_state.missing'], ['invalid', 'critique.stored_state.invalid']] as const)('distinguishes a %s stored score', async (state, key) => {
+    const fixture = await render({ ...unavailable, aggregate: null, stored_score_state: state });
+    const text = fixture.nativeElement.querySelector('[data-testid="score-calculation-context"]').textContent;
+    expect(text).toContain(key);
+    expect(text).not.toContain('critique.stored_unavailable');
+  });
+  it('falls back to the generic stored text when the state is absent', async () => {
+    const fixture = await render({ ...unavailable, aggregate: null, stored_score_state: null });
+    expect(fixture.nativeElement.textContent).toContain('critique.stored_unavailable');
+  });
+  it.each(['persisted_percentiles', 'stored_metrics'] as const)('states the %s normalization basis', async (basis) => {
+    const fixture = await render({ normalization_basis: basis });
+    expect(fixture.nativeElement.querySelector('[data-testid="normalization-basis"]').textContent)
+      .toContain('critique.normalization_basis.' + basis);
   });
   it('marks cached commentary without claiming verified scoring context', async () => {
     const fixture = await render({ vlm_critique: 'Synthetic cached commentary', vlm_source: 'cached' });

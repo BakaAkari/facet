@@ -77,7 +77,6 @@ def test_normalized_current_calculation_does_not_erase_legacy_stored_score(confi
     assert result["aggregate"] == 7.0
     assert result["stored_score_state"] == "present"
     assert result["stored_score_matches_current_formula"] is False
-    assert result["generation_state"] == "unknown"
 
 
 @pytest.mark.parametrize("bonus", [4.0, -20.0, 0.007])
@@ -137,7 +136,6 @@ def test_stored_presence_and_generation_are_separate_from_recalculation(
         {"noise_sigma": 2.0, "aggregate": stored}, config=config
     )
     assert result["stored_score_state"] == state
-    assert result["generation_state"] == "unknown"
     assert result["current_formula_score"] == 8.6
     json.dumps(result, allow_nan=False)
 

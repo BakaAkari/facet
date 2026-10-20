@@ -111,7 +111,6 @@ class MediaCritiqueResponse(BaseModel):
     explanation_unavailable_reason: Optional[Literal[
         'missing_scoring_inputs', 'normalization_snapshot_unavailable',
         'invalid_scoring_inputs']] = None
-    generation_state: Optional[Literal['unknown']] = None
     stored_score_state: Optional[Literal['present', 'missing', 'invalid']] = None
     breakdown: list[MediaCritiqueBreakdownItem] = []
     strengths: list[MediaCritiqueMetricRef] = []

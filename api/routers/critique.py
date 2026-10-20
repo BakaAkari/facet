@@ -372,7 +372,6 @@ def _build_rule_critique(photo, *, config=None, normalizer=None, overrides=None)
             round(stored, 2) == displayed_total if stored is not None else None),
         'normalization_basis': ('persisted_percentiles' if normalizer is not None
                                 else 'stored_metrics'),
-        'generation_state': 'unknown',
         'stored_score_state': stored_state,
         'breakdown': breakdown,
         'strengths': sorted(strengths, key=lambda x: x['value'], reverse=True)[:5],
@@ -391,7 +390,7 @@ def _unavailable_critique(photo, reason):
             'aggregate': stored,
             'score_basis': 'current_formula', 'current_formula_score': None,
             'native_adjustment': None, 'stored_score_matches_current_formula': None,
-            'explanation_unavailable_reason': reason, 'generation_state': 'unknown',
+            'explanation_unavailable_reason': reason,
             'stored_score_state': stored_state,
             'breakdown': [], 'strengths': [], 'weaknesses': [], 'suggestions': [],
             'penalties': _check_penalties(photo),
