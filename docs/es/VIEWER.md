@@ -288,7 +288,7 @@ A diferencia de Descartar a carpeta, que deja intacta la fila de la base de dato
 
 Haz clic en el botón "Similar" de cualquier foto para elegir un modo de similitud:
 
-- **Visual** (predeterminado) — distancia de Hamming de pHash (70%) + similitud coseno de CLIP/SigLIP (30%). Recurre solo a CLIP cuando no hay pHash disponible.
+- **Visual** (predeterminado) — compara solo los indicios que tienen ambas fotos: similitud pHash (70%) + similitud coseno de CLIP/SigLIP (30%) cuando ambas fotos tienen los dos; cuando solo comparten uno (sin pHash, o con un embedding ausente, ilegible o de otra dimensión), ese cuenta con todo el peso; una foto que no comparte ninguno nunca se lista, ni siquiera al 0%. Se devuelven todas las coincidencias por encima del umbral, página a página, en lugar de las 500 primeras, y la clasificación se conserva dos minutos (o hasta que cambie la base de datos) para que las páginas siguientes carguen sin volver a recorrer la biblioteca. Si la propia foto no tiene ni pHash ni embedding, la galería lo indica y sugiere volver a escanearla con `--force` (un simple `python facet.py <dir>` omite los archivos ya procesados). La API responde `422` ante un `limit` fuera de 1–500, un `offset` negativo o un `min_similarity` fuera de 0–1.
 - **Color** — Intersección de histogramas (70%) + distancia de saturación (10%) + distancia de luminancia (10%) + bonificación monocromática (10%). Prefiltra por la marca monocromática y el rango de saturación.
 - **Persona** — Encuentra fotos que contengan a la misma persona o personas. Usa `person_id` cuando está disponible (rápido), de lo contrario recurre a la similitud coseno de los embeddings faciales.
 

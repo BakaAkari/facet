@@ -288,7 +288,7 @@ Diferente de Selecionar para pasta, que deixa a linha do banco de dados intacta 
 
 Clique no botão "Semelhantes" em qualquer foto para escolher um modo de similaridade:
 
-- **Visual** (padrão) — distância de Hamming do pHash (70%) + similaridade de cosseno CLIP/SigLIP (30%). Recorre apenas ao CLIP quando nenhum pHash está disponível.
+- **Visual** (padrão) — compara apenas os indícios que as duas fotos têm: similaridade pHash (70%) + similaridade de cosseno CLIP/SigLIP (30%) quando as duas fotos têm ambos; quando partilham apenas um (sem pHash, ou com um embedding ausente, ilegível ou de outra dimensão), esse conta com o peso total; uma foto que não partilha nenhum nunca é listada, nem mesmo a 0%. Todas as correspondências acima do limiar são devolvidas, página a página, em vez das 500 primeiras, e a classificação é mantida durante dois minutos (ou até a base de dados mudar) para que as páginas seguintes carreguem sem percorrer a biblioteca de novo. Se a própria foto não tiver pHash nem embedding, a galeria indica-o e sugere digitalizá-la novamente com `--force` (um simples `python facet.py <dir>` ignora os arquivos já processados). A API responde `422` a um `limit` fora de 1–500, um `offset` negativo ou um `min_similarity` fora de 0–1.
 - **Cor** — Interseção de histograma (70%) + distância de saturação (10%) + distância de luminância (10%) + bônus monocromático (10%). Pré-filtra pela marcação monocromática e faixa de saturação.
 - **Pessoa** — Encontra fotos contendo a(s) mesma(s) pessoa(s). Usa `person_id` quando disponível (rápido), caso contrário recorre à similaridade de cosseno do embedding facial.
 

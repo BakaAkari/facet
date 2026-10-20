@@ -533,7 +533,8 @@
     "mode_color": "Palette de couleurs",
     "mode_person": "Même personne",
     "no_faces": "Aucun visage détecté sur cette photo",
-    "no_histogram": "Aucune donnée de couleur disponible pour cette photo"
+    "no_histogram": "Aucune donnée de couleur disponible pour cette photo",
+    "no_visual_features": "La similarité visuelle n'est pas disponible : cette photo n'a ni empreinte visuelle ni embedding valide. Scannez-la de nouveau avec --force pour les calculer."
   },
   "merge_suggestions": {
     "title": "Suggestions de fusion",

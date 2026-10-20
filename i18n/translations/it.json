@@ -533,7 +533,8 @@
     "mode_color": "Tavolozza colori",
     "mode_person": "Stessa persona",
     "no_faces": "Nessun volto rilevato in questa foto",
-    "no_histogram": "Nessun dato colore disponibile per questa foto"
+    "no_histogram": "Nessun dato colore disponibile per questa foto",
+    "no_visual_features": "La similarità visiva non è disponibile: questa foto non ha un'impronta visiva né un embedding validi. Ripeti la scansione con --force per calcolarli."
   },
   "merge_suggestions": {
     "title": "Suggerimenti di unione",

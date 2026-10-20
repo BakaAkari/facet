@@ -289,7 +289,7 @@ A differenza di Scarta in cartella, che lascia intatta la riga del database fino
 
 Clicca il pulsante "Simili" su una foto qualsiasi per scegliere una modalità di somiglianza:
 
-- **Visivo** (predefinito) — distanza di Hamming pHash (70%) + somiglianza coseno CLIP/SigLIP (30%). Ricade su CLIP soltanto quando non è disponibile alcun pHash.
+- **Visivo** (predefinito) — confronta solo gli indizi presenti in entrambe le foto: somiglianza pHash (70%) + somiglianza coseno CLIP/SigLIP (30%) quando entrambe le foto hanno entrambi; quando ne condividono solo uno (nessun pHash, oppure un embedding mancante, illeggibile o di dimensione diversa), quello conta per intero; una foto che non ne condivide nessuno non viene mai elencata, nemmeno allo 0%. Vengono restituite tutte le corrispondenze sopra la soglia, pagina per pagina, invece delle prime 500, e la classifica resta in memoria per due minuti (o finché il database non cambia), così le pagine successive si caricano senza riesaminare la libreria. Se la foto stessa non ha né pHash né embedding, la galleria lo segnala e suggerisce di ripeterne la scansione con `--force` (un semplice `python facet.py <dir>` salta i file già elaborati). L'API risponde `422` per un `limit` fuori da 1–500, un `offset` negativo o un `min_similarity` fuori da 0–1.
 - **Colore** — Intersezione istogramma (70%) + distanza di saturazione (10%) + distanza di luminanza (10%) + bonus monocromatico (10%). Pre-filtra in base al flag monocromatico e all'intervallo di saturazione.
 - **Persona** — Trova le foto contenenti le stesse persone. Usa `person_id` quando disponibile (veloce), altrimenti ricade sulla somiglianza coseno degli embedding dei volti.
 
