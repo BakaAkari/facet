@@ -39,6 +39,7 @@ from api.models.comparison import (
 from config.category_filter import _to_float
 from db import DEFAULT_DB_PATH, record_weight_snapshot, delete_weight_snapshot
 from api.config_writes import update_category_weights
+from optimization.learning_policy import unavailable_if_external
 from utils.image_loading import RAW_EXTENSIONS
 from utils.panorama import DEFAULTS as PANORAMA_DEFAULTS
 
@@ -757,6 +758,10 @@ def api_comparison_learned_weights(
     include_ties_bool = include_ties.lower() == 'true'
     use_cv_bool = use_cv.lower() == 'true'
 
+    unavailable = unavailable_if_external(server_config_path())
+    if unavailable is not None:
+        return unavailable
+
     from optimization import WeightOptimizer
 
     optimizer = WeightOptimizer(DEFAULT_DB_PATH, server_config_path())
@@ -1438,6 +1443,10 @@ def api_comparison_confidence(
     user: CurrentUser = Depends(require_edition),
 ):
     """Get bootstrap confidence intervals for weights."""
+    unavailable = unavailable_if_external(server_config_path())
+    if unavailable is not None:
+        return unavailable
+
     from optimization import WeightOptimizer
 
     optimizer = WeightOptimizer(DEFAULT_DB_PATH, server_config_path())

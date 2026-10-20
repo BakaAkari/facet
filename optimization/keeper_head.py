@@ -27,6 +27,7 @@ import numpy as np
 
 from config import default_config_path
 from db import DEFAULT_DB_PATH, get_connection
+from optimization.learning_policy import deferred_if_external
 from optimization.personal_ranker import (
     DEFAULT_C, DEFAULT_CV_FOLDS, DEFAULT_MIN_IMPROVEMENT_PP, MIN_COMPARISONS,
     _cv_accuracy, _fit_logistic, _pairwise_accuracy, _scaled_feature,
@@ -145,6 +146,9 @@ def train_keeper_head(db_path=DEFAULT_DB_PATH, category=None, user_id=None,
     """
     if config_path is None:
         config_path = _default_config_path()
+    deferred = deferred_if_external(config_path)
+    if deferred is not None:
+        return deferred
     weights = _burst_weights_for(config_path)
     optimizer = WeightOptimizer(db_path, config_path)
     with get_connection(db_path) as conn:
